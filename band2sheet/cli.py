@@ -1,0 +1,184 @@
+"""명령줄 인터페이스.
+
+  band2sheet run "https://youtu.be/..." -o out/song         # 유튜브 -> 악보
+  band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
+  band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
+  band2sheet transpose score.musicxml -s -2                 # 기존 MusicXML 조옮김
+  band2sheet web                                            # 웹 화면 실행
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from . import __version__
+
+
+def _stems(text: str | None) -> list[str] | None:
+    if not text:
+        return None
+    return [s.strip() for s in text.split(",") if s.strip()]
+
+
+def _add_render_args(p: argparse.ArgumentParser) -> None:
+    g = p.add_argument_group("조옮김 / 악보 옵션")
+    g.add_argument("-k", "--key", dest="target_key", help="이 키로 조옮김 (예: G, Bb, F#m)")
+    g.add_argument("-s", "--semitones", type=int, help="반음 단위 조옮김 (예: +2, -3)")
+    g.add_argument("--direction", choices=["nearest", "up", "down"], default="nearest",
+                   help="--key 사용 시 올릴지/내릴지 (기본: 가까운 쪽)")
+    g.add_argument("--grid", type=int, default=None,
+                   help="한 박을 몇 칸으로 맞출지 (4=16분음표, 2=8분음표; 기본 4, 겹박자 6)")
+    g.add_argument("--no-chords", action="store_true", help="코드 인식/표기 끄기")
+    g.add_argument("--pdf", action="store_true", help="MuseScore 가 설치돼 있으면 PDF 도 만들기")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="band2sheet",
+        description="유튜브/음원 -> 악기별 분리 -> 자동 채보 -> 악보(MusicXML/MIDI/코드표) + 조옮김",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    r = sub.add_parser("run", help="유튜브 링크나 오디오/영상 파일로 악보 만들기")
+    r.add_argument("source", nargs="?", default="",
+                   help="유튜브 URL 또는 오디오/영상 파일 (--stems-dir 사용 시 생략 가능)")
+    r.add_argument("-o", "--out", type=Path, default=None, help="결과 폴더 (기본: output/<제목>)")
+    r.add_argument("--model", default="htdemucs_6s",
+                   help="Demucs 모델: htdemucs_6s(6스템, 기본) | htdemucs(4스템) | htdemucs_ft")
+    r.add_argument("--stems", help="이 스템만 채보 (예: vocals,bass,piano)")
+    r.add_argument("--stems-dir", type=Path,
+                   help="이미 분리된/멀티트랙 스템 폴더 (분리 단계 생략)")
+    r.add_argument("--device", help="cpu | cuda | mps (기본: 자동)")
+    r.add_argument("--bpm", type=float, help="템포를 직접 지정 (자동 인식이 2배/절반으로 틀릴 때)")
+    r.add_argument("--time-sig", default="4/4", help="박자표 (기본 4/4, 예: 3/4, 6/8)")
+    r.add_argument("--downbeat", type=int,
+                   help="몇 번째 비트(0부터)를 마디 첫 박으로 할지 (기본: 자동 추정)")
+    r.add_argument("--lyrics", action="store_true", help="보컬에서 가사 인식 (faster-whisper 필요)")
+    r.add_argument("--lang", default="ko", help="가사 언어 (기본 ko, 자동 감지는 auto)")
+    r.add_argument("--whisper-model", default="small", help="Whisper 모델 크기 (기본 small)")
+    r.add_argument("--vocal-engine", choices=["pyin", "basic_pitch"],
+                   help="보컬 채보 방식 (기본 pyin)")
+    r.add_argument("--start", type=float, help="이 시각(초)부터만 사용")
+    r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
+    _add_render_args(r)
+
+    t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
+    t.add_argument("input", type=Path, help="project.json 또는 .musicxml/.mxl/.xml 파일")
+    t.add_argument("-o", "--out", type=Path, help="결과 폴더 (기본: 입력 파일 옆)")
+    t.add_argument("--stems", help="이 스템만 다시 렌더링 (project.json 입력 시)")
+    _add_render_args(t)
+
+    w = sub.add_parser("web", help="웹 화면(Gradio) 실행")
+    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--port", type=int, default=7860)
+    w.add_argument("--share", action="store_true", help="외부 공유 링크 만들기")
+
+    k = sub.add_parser("keys", help="키 이름 확인/조옮김 계산기 (예: band2sheet keys G -s 3)")
+    k.add_argument("key", help="원래 키 (예: G, Bbm)")
+    k.add_argument("-s", "--semitones", type=int, default=0)
+    k.add_argument("-k", "--to", dest="target_key")
+    return parser
+
+
+def cmd_run(args) -> int:
+    from .audio_io import is_url, safe_name
+    from .pipeline import AnalyzeOptions, run
+
+    if not args.source and not args.stems_dir:
+        print("source(유튜브 URL/파일) 또는 --stems-dir 가 필요합니다.", file=sys.stderr)
+        return 2
+    out = args.out
+    if out is None:
+        if args.stems_dir:
+            name = Path(args.stems_dir).name
+        elif is_url(args.source):
+            name = "youtube_" + safe_name(args.source.rsplit("=", 1)[-1].rsplit("/", 1)[-1], 20)
+        else:
+            name = safe_name(Path(args.source).stem)
+        out = Path("output") / name
+    a = AnalyzeOptions(
+        model=args.model, stems=_stems(args.stems), stems_dir=args.stems_dir, device=args.device,
+        bpm=args.bpm, time_signature=args.time_sig, downbeat=args.downbeat, lyrics=args.lyrics,
+        language=None if args.lang == "auto" else args.lang, whisper_model=args.whisper_model,
+        vocal_engine=args.vocal_engine, start=args.start, duration=args.duration,
+    )
+    ro = _render_opts(args)
+    res = run(args.source, out, a, ro)
+    _report(res, out)
+    return 0
+
+
+def _render_opts(args):
+    from .pipeline import RenderOptions
+
+    return RenderOptions(
+        semitones=args.semitones, target_key=args.target_key, direction=args.direction,
+        subdiv=args.grid, stems=_stems(getattr(args, "stems", None)), pdf=args.pdf,
+        chords=not args.no_chords,
+    )
+
+
+def _report(res, out: Path) -> None:
+    print()
+    print(f"완료! 키: {res.key.name}" + (f" ({res.semitones:+d} 반음)" if res.semitones else ""))
+    print(f"결과 폴더: {res.out_dir}")
+    for f in res.files:
+        try:
+            print("  -", f.relative_to(out))
+        except ValueError:
+            print("  -", f)
+    if res.chord_chart:
+        print()
+        print(res.chord_chart)
+
+
+def cmd_transpose(args) -> int:
+    src: Path = args.input
+    if src.suffix.lower() == ".json":
+        from .pipeline import render
+        from .project import Project
+
+        project = Project.load(src)
+        out = args.out or src.parent
+        res = render(project, out, _render_opts(args))
+        _report(res, out)
+        return 0
+    from .xml_transpose import transpose_file
+
+    dst = transpose_file(src, args.out, args.semitones, args.target_key, args.direction)
+    print(f"저장: {dst}")
+    return 0
+
+
+def cmd_keys(args) -> int:
+    from .theory import Key, transpose_target
+
+    src = Key.parse(args.key)
+    shift, dst = transpose_target(src, args.target_key, args.semitones)
+    print(f"{src.name} ({src.fifths:+d}) -> {dst.name} ({dst.fifths:+d}) : {shift:+d} 반음")
+    return 0
+
+
+def cmd_web(args) -> int:
+    from .web import launch
+
+    launch(args.host, args.port, args.share)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return {
+            "run": cmd_run, "transpose": cmd_transpose, "web": cmd_web, "keys": cmd_keys,
+        }[args.command](args)
+    except (RuntimeError, FileNotFoundError, ValueError) as e:
+        print(f"오류: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "band2sheet"
+version = "0.1.0"
+description = "유튜브/음원을 악기별로 분리해 자동으로 악보(MusicXML/MIDI/코드표)를 만들고 조옮김까지 하는 도구"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "soundfile",
+    "librosa>=0.10",
+    "music21>=9",
+    "pretty_midi",
+    "yt-dlp",
+]
+
+[project.optional-dependencies]
+# 음원 분리(Demucs)와 다성 채보(Basic Pitch). 대부분의 사용자는 이것까지 설치합니다.
+ml = [
+    "torch",
+    "demucs>=4",
+    "basic-pitch",
+]
+lyrics = ["faster-whisper"]
+web = ["gradio>=4"]
+all = ["band2sheet[ml,lyrics,web]"]
+dev = ["pytest"]
+
+[project.scripts]
+band2sheet = "band2sheet.cli:main"
+
+[tool.setuptools]
+packages = ["band2sheet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: 합성 음원으로 전체 파이프라인을 돌리는 느린 테스트"]
