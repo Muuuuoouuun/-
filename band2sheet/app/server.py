@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import __version__
-from ..engines import status as engine_status, torch_device
+from ..engines import has, status as engine_status, torch_device
 from ..instruments import INSTRUMENTS
 from ..pipeline import find_musescore
 from .jobs import ALLOWED_EXT, JobManager
@@ -71,6 +71,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "device": torch_device(),
             "engines": engine_status(),
             "musescore": bool(find_musescore()),
+            "pdf": bool(find_musescore()) or all(has(m) for m in ("verovio", "cairosvg", "pypdf")),
             "instruments": [{"name": k, "label": v.label, "label_ko": v.label_ko}
                             for k, v in INSTRUMENTS.items()],
             "extensions": sorted(ALLOWED_EXT),

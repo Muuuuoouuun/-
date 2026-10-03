@@ -238,3 +238,103 @@ def transpose_target(src: Key, target: str | None = None, semitones: int | None 
 
 def chord_tone_names(root_pc: int, intervals: Sequence[int], key: Key) -> list[str]:
     return [spell_pc((root_pc + i) % 12, key.fifths, key.mode, key.tonic) for i in intervals]
+
+
+def key_segments(bar_hists: np.ndarray, window: int = 4, change_cost: float = 1.2,
+                 min_bars: int = 4) -> list[tuple[int, Key]]:
+    """마디별 음높이 분포(마디 수 x 12)로 곡 중간의 전조를 찾는다.
+
+    반환: [(시작 마디, 키)] — 전조가 없으면 항목 하나.
+    마디마다 주변 window 마디를 합친 분포로 24개 키와의 상관을 구하고,
+    키가 바뀔 때 비용을 주는 비터비 탐색으로 자주 흔들리지 않는 키 진행을 고른다.
+    """
+    n = len(bar_hists)
+    if n == 0:
+        return [(0, Key.from_tonic(0, "major"))]
+    profiles = []
+    for tonic in range(12):
+        for mode, prof in (("major", KK_MAJOR), ("minor", KK_MINOR)):
+            profiles.append((tonic, mode, np.roll(prof, tonic)))
+    emis = np.full((n, 24), -1.0)
+    for b in range(n):
+        lo, hi = max(0, b - window // 2), min(n, b + (window + 1) // 2)
+        h = bar_hists[lo:hi].sum(axis=0)
+        if h.sum() <= 0:
+            emis[b] = 0.0
+            continue
+        for s, (_, _, prof) in enumerate(profiles):
+            r = np.corrcoef(h, prof)[0, 1]
+            emis[b, s] = 0.0 if np.isnan(r) else r
+
+    def relative(a: int, b: int) -> bool:  # 나란한조 (G 장조 <-> E 단조)는 같은 조표
+        ta, ma, _ = profiles[a]
+        tb, mb, _ = profiles[b]
+        return ma != mb and (ta + (3 if ma == "minor" else 0)) % 12 == (tb + (3 if mb == "minor" else 0)) % 12
+
+    score = emis[0].copy()
+    back = np.zeros((n, 24), dtype=int)
+    for b in range(1, n):
+        new = np.empty(24)
+        for s in range(24):
+            costs = score - np.array([0 if p == s else (0.3 if relative(p, s) else change_cost)
+                                      for p in range(24)])
+            back[b, s] = int(np.argmax(costs))
+            new[s] = costs[back[b, s]] + emis[b, s]
+        score = new
+    path = [int(np.argmax(score))]
+    for b in range(n - 1, 0, -1):
+        path.append(int(back[b, path[-1]]))
+    path.reverse()
+
+    # 구간으로 묶기 (나란한조 사이 오감은 하나로), 너무 짧은 구간은 앞 구간에 합침
+    segs: list[list[int]] = []
+    for b, s in enumerate(path):
+        if segs and (segs[-1][1] == s or relative(segs[-1][1], s)):
+            continue
+        segs.append([b, s])
+    merged: list[list[int]] = []
+    for i, (start, s) in enumerate(segs):
+        end = segs[i + 1][0] if i + 1 < len(segs) else n
+        if merged and end - start < min_bars:
+            continue
+        merged.append([start, s])
+    if not merged:
+        merged = [[0, path[0]]]
+    merged[0][0] = 0
+
+    out = []
+    for i, (start, _) in enumerate(merged):
+        end = merged[i + 1][0] if i + 1 < len(merged) else n
+        # 구간 전체 분포로 키(장/단조 포함)를 다시 정한다
+        key, _ = detect_key((pc, w) for pc, w in enumerate(bar_hists[start:end].sum(axis=0)))
+        out.append((start, key))
+    # 같은 키가 연달아 나오면 합침
+    final: list[tuple[int, Key]] = []
+    for start, k in out:
+        if final and final[-1][1].tonic == k.tonic and final[-1][1].mode == k.mode:
+            continue
+        final.append((start, k))
+    return final
+
+
+class KeyMap:
+    """악보 위치(4분음표 단위) -> 그 위치의 키."""
+
+    def __init__(self, segments: list[tuple[float, Key]]):
+        self.segments = sorted(segments, key=lambda x: x[0]) or [(0.0, Key.from_tonic(0))]
+
+    def at(self, offset: float) -> Key:
+        key = self.segments[0][1]
+        for start, k in self.segments:
+            if start <= offset + 1e-6:
+                key = k
+            else:
+                break
+        return key
+
+    @property
+    def first(self) -> Key:
+        return self.segments[0][1]
+
+    def changes(self) -> list[tuple[float, Key]]:
+        return self.segments[1:]

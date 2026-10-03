@@ -16,7 +16,7 @@ from . import audio_io, rhythm
 from .chords import ChordEvent, detect_chords
 from .instruments import DRUM_NAMES, INSTRUMENTS, SCORE_ORDER, spec_for
 from .project import Note, Project, TimeMap, Track
-from .theory import Key, detect_key, transpose_target
+from .theory import Key, KeyMap, detect_key, key_segments, transpose_target
 
 Log = Callable[[str], None]
 
@@ -48,6 +48,7 @@ class AnalyzeOptions:
     start: float | None = None
     duration: float | None = None
     min_stem_db: float = -24.0  # 믹스 대비 이보다 작은 스템은 비어 있다고 보고 건너뜀
+    cleanup: bool = True  # 블리딩·유령음 정리, 악기 활동 구간 분석
 
 
 def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
@@ -93,26 +94,51 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         wanted = wanted + ["backing_vocals"]
     mix_audio, _ = sf.read(str(mix_path), always_2d=True)
 
+    # 분리 결과 분석: 악기별 활동 구간, 블리딩 정도
+    analyzer = None
+    separation: dict[str, dict] = {}
+    if opts.cleanup and len(stem_paths) >= 2:
+        from .cleanup import SeparationAnalyzer
+
+        step(0.42, "   · 분리 결과 점검 (악기 활동 구간, 블리딩)")
+        analyzer = SeparationAnalyzer(dict(stem_paths))
+        for name in stem_paths:
+            separation[name] = analyzer.analyze(name).report()
+            r = separation[name]
+            bleed = f", 블리딩 {r['bleed_db']:.0f} dB" if r["bleed_db"] is not None else ""
+            log(f"   - {name}: 연주 구간 {r['active_ratio'] * 100:.0f}%{bleed}")
+
     # 3) 채보
     tracks: dict[str, Track] = {}
     order = [s for s in SCORE_ORDER if s in stem_paths] + [s for s in stem_paths if s not in SCORE_ORDER]
     todo = [s for s in order if s in wanted]
     for i, name in enumerate(todo):
-        audio, _ = sf.read(str(stem_paths[name]), always_2d=True)
-        n = min(len(audio), len(mix_audio))
-        level = stem_level_db(audio[:n], mix_audio[:n]) if n else -99.0
-        if level < opts.min_stem_db and not opts.stems:
-            log(f"   - {name}: 소리가 거의 없어 건너뜀 ({level:.1f} dB)")
-            continue
+        if analyzer is not None and not opts.stems:
+            if separation[name]["active_ratio"] < 0.02:
+                log(f"   - {name}: 연주하는 구간이 없어 건너뜀")
+                continue
+        else:
+            audio, _ = sf.read(str(stem_paths[name]), always_2d=True)
+            n = min(len(audio), len(mix_audio))
+            level = stem_level_db(audio[:n], mix_audio[:n]) if n else -99.0
+            if level < opts.min_stem_db and not opts.stems:
+                log(f"   - {name}: 소리가 거의 없어 건너뜀 ({level:.1f} dB)")
+                continue
         spec = spec_for(name)
         engine = opts.vocal_engine if name == "vocals" and opts.vocal_engine else None
         step(0.45 + 0.35 * i / max(len(todo), 1), f"③ 채보 중: {spec.label_ko}")
         res = transcribe_stem(stem_paths[name], spec, engine,
                               drum_parts=sep.drum_parts if name == "drums" else None,
                               device=opts.device, log=log)
-        tracks[name] = Track(name, res.notes, pedals=res.pedals, engine=res.engine)
+        notes = res.notes
         extra = f", 페달 {len(res.pedals)}개" if res.pedals else ""
-        log(f"   - {len(res.notes)}개 음표 ({res.engine}{extra})")
+        if analyzer is not None and notes:
+            notes, removed = clean_notes(analyzer, name, notes, res.engine)
+            if removed:
+                extra += f", 블리딩·유령음 {removed}개 정리"
+                separation[name]["removed_notes"] = removed
+        tracks[name] = Track(name, notes, pedals=res.pedals, engine=res.engine)
+        log(f"   - {len(notes)}개 음표 ({res.engine}{extra})")
 
     # 4) 가사
     if opts.lyrics and "vocals" in tracks:
@@ -146,6 +172,7 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
                       stems_dir=str(Path(next(iter(stem_paths.values()))).parent),
                       stems={k: str(v) for k, v in stem_paths.items()},
                       drum_parts={k: str(v) for k, v in sep.drum_parts.items()},
+                      separation=separation,
                       engines=engines)
     if opts.downbeat is not None:
         project.downbeat = opts.downbeat
@@ -153,11 +180,34 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         db = rhythm.downbeat_from_model(beats, beat_info.downbeats, project.beats_per_bar)
         project.downbeat = db if db is not None else rhythm.estimate_downbeat(
             {k: t.notes for k, t in tracks.items()}, TimeMap(beats), project.beats_per_bar)
-    log(f"   - 템포 약 {project.tempo_bpm:.0f} BPM, {time_sig}, 키 {key.name}")
+    # 전조: 마디별 음높이 분포로 구간별 키를 찾는다
+    segs = key_segments(bar_pitch_hists(tracks, TimeMap(beats), project.downbeat,
+                                        project.beats_per_bar))
+    if len(segs) > 1:  # 전조가 있을 때만 구간별 키를 쓴다 (없으면 곡 전체 추정이 더 안정적)
+        project.key = segs[0][1]
+        project.key_changes = [(float(bar * project.beats_per_bar), k) for bar, k in segs[1:]]
+    key = project.key
+    mods = "".join(f" → {k.short_name}({int(b // project.beats_per_bar) + 1}마디)"
+                   for b, k in project.key_changes)
+    log(f"   - 템포 약 {project.tempo_bpm:.0f} BPM, {time_sig}, 키 {key.name}{mods}")
 
     project.save(out_dir / "project.json")
     step(0.95, "분석 완료")
     return project
+
+
+def clean_notes(analyzer, name: str, notes: list[Note], engine: str) -> tuple[list[Note], int]:
+    """채보 결과에서 블리딩(다른 악기 소리)과 옥타브 유령음을 지운다."""
+    from .cleanup import remove_ghosts
+
+    before = len(notes)
+    if engine in ("drums", "drum_parts"):
+        notes, _ = analyzer.filter_hits(name, notes)
+    else:
+        notes, _ = analyzer.verify_notes(name, notes)
+        if engine in ("basic_pitch", "piano_hr"):
+            notes, _ = remove_ghosts(analyzer, name, notes)
+    return notes, before - len(notes)
 
 
 def _mixdown(stems: dict[str, Path], dst: Path) -> Path:
@@ -187,6 +237,28 @@ def _mixdown(stems: dict[str, Path], dst: Path) -> Path:
     return dst
 
 
+def bar_pitch_hists(tracks: dict[str, Track], timemap: TimeMap, downbeat: int,
+                    beats_per_bar: int) -> np.ndarray:
+    """마디별 음높이 분포 (마디 수 x 12), 길이·세기 가중."""
+    weights = {"bass": 1.5, "piano": 1.0, "guitar": 1.0, "other": 0.8, "vocals": 1.0,
+               "backing_vocals": 0.5}
+    rows: dict[int, np.ndarray] = {}
+    for name, t in tracks.items():
+        w = weights.get(name)
+        if not w:
+            continue
+        for n in t.notes:
+            b = int((float(timemap.to_beats(n.start)) - downbeat) // beats_per_bar)
+            if b >= 0:
+                rows.setdefault(b, np.zeros(12))[n.pitch % 12] += n.duration * n.velocity / 127 * w
+    if not rows:
+        return np.zeros((0, 12))
+    out = np.zeros((max(rows) + 1, 12))
+    for b, h in rows.items():
+        out[b] = h
+    return out
+
+
 def estimate_key(tracks: dict[str, Track]) -> Key:
     weights = {"bass": 1.5, "piano": 1.0, "guitar": 1.0, "other": 0.8, "vocals": 1.0,
                "backing_vocals": 0.5}
@@ -212,6 +284,8 @@ class RenderOptions:
     stems: list[str] | None = None
     pdf: bool = False
     chords: bool = True
+    sections: bool = True  # 곡 구조 인식 + 리허설 마크
+    pickup: bool = True  # 못갖춘마디 자동 처리
 
 
 @dataclass
@@ -222,6 +296,10 @@ class RenderResult:
     files: list[Path] = field(default_factory=list)
     chord_chart: str = ""
     parts: list[dict] = field(default_factory=list)  # 악기별 요약 (앱 표시용)
+    key_changes: list[dict] = field(default_factory=list)  # 전조 [{bar, key}]
+    sections: list[dict] = field(default_factory=list)  # 곡 구조
+    nashville_chart: str = ""
+    pickup_ql: float = 0.0  # 못갖춘마디 길이를 뺀 앞부분 (0 이면 없음)
 
 
 def transpose_notes(notes: list[Note], semitones: int) -> list[Note]:
@@ -245,6 +323,11 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         log(f"조옮김: {project.key.name} -> {key.name} ({shift:+d} 반음)")
 
     grid = sc.Grid.for_project(project, opts.subdiv)
+    # 전조 지점 (악보 위치) -> 조옮김한 키
+    key_map = KeyMap([(0.0, key)] + [((b + grid.shift_beats) * grid.beat_ql, k.transposed(shift))
+                                     for b, k in project.key_changes])
+    result.key_changes = [{"bar": int(off // grid.bar_ql) + 1, "key": k.name, "key_short": k.short_name}
+                          for off, k in key_map.changes()]
     names = [n for n in SCORE_ORDER if n in project.tracks] + \
             [n for n in project.tracks if n not in SCORE_ORDER]
     if opts.stems:
@@ -263,9 +346,9 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
             c.transposed(shift)
             for c in detect_chords({k: project.tracks[k].notes for k in project.tracks},
                                    grid.timemap, project.key, project.beats_per_bar,
-                                   project.downbeat)
+                                   project.downbeat, key_at=project.key_at_beat)
         ]
-    chord_marks = sc.chord_offsets(chord_events, key, grid)
+    chord_marks = sc.chord_offsets(chord_events, key_map, grid)
 
     # 1차: 트랙별 악보 이벤트 계산
     events_by: dict[str, list[sc.Event]] = {}
@@ -294,6 +377,35 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
     total_ql = max(ends, default=grid.bar_ql)
     total_ql = float(max(grid.bar_ql, np.ceil(total_ql / grid.bar_ql - 1e-6) * grid.bar_ql))
 
+    # 곡 구조: 악보 마디 번호(1부터) -> 구간 이름
+    sections = []
+    if opts.sections:
+        from .sections import detect_sections
+
+        n_bars = int(round(total_ql / grid.bar_ql)) - grid.shift_beats // grid.beats_per_bar
+        sections = detect_sections(project, chord_events, max(n_bars, 1))
+    bar_offset = grid.shift_beats // grid.beats_per_bar
+
+    # 못갖춘마디: 첫 마디 앞쪽이 비어 있으면(첫 음이 마디 중간) 짧은 0번 마디로 만든다
+    starts = [e.offset for evs in events_by.values() for e in evs]
+    first_on = min(starts, default=0.0)
+    pickup_ql = first_on if (opts.pickup and 0 < first_on < grid.bar_ql and
+                             (first_on / grid.beat_ql) >= 1 - 1e-6) else 0.0
+    number_shift = -1 if pickup_ql else 0  # 못갖춘마디가 있으면 마디 번호가 하나씩 당겨짐
+    result.pickup_ql = pickup_ql
+
+    rehearsal = [(s.start_bar + bar_offset + 1 + number_shift, s.name)
+                 for s in sections] if len(sections) > 1 else []
+
+    def finish_score(score) -> None:
+        """못갖춘마디 적용 + 구간 표시 (못갖춘마디를 못 만들면 마디 번호를 원래대로)."""
+        marks = rehearsal
+        if pickup_ql and not sc.make_pickup(score, pickup_ql):
+            marks = [(n - number_shift, name) for n, name in rehearsal]
+        sc.add_section_marks(score, marks)
+    result.sections = [dict(s.to_dict(), start_measure=s.start_bar + bar_offset + 1 + number_shift,
+                            end_measure=s.end_bar + bar_offset + number_shift) for s in sections]
+
     # 2차: music21 파트 생성
     full_parts: list[stream.Part] = []
     groups: list[tuple[list[stream.Part], str]] = []
@@ -311,13 +423,13 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
                 marks, chords_on = chord_marks, name
             pedals = [(grid.ql(a), grid.ql(b)) for a, b in track.pedals]
             # 파트보: TAB 포함 / 총보: 오선보만 (총보를 간결하게)
-            parts = sc.build_pitched(spec, events, key, project, total_ql, marks or chord_marks,
+            parts = sc.build_pitched(spec, events, key_map, project, total_ql, marks or chord_marks,
                                      with_tempo=True, pedals_ql=pedals)
-            full_view = sc.build_pitched(spec, events, key, project, total_ql, marks,
+            full_view = sc.build_pitched(spec, events, key_map, project, total_ql, marks,
                                          with_tempo=not full_parts, pedals_ql=pedals,
                                          with_tab=False)
             if name == "vocals":
-                lead_parts = sc.build_pitched(spec, events, key, project, total_ql,
+                lead_parts = sc.build_pitched(spec, events, key_map, project, total_ql,
                                               chord_marks or None, with_tempo=True,
                                               with_dynamics=False)
         full_parts.extend(full_view)
@@ -328,6 +440,7 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         symbol = "bracket" if spec.tab else "brace"
         single = sc.assemble(parts, project.title, f"{spec.label} — {key.name}",
                              [(parts, symbol)] if len(parts) > 1 else None)
+        finish_score(single)
         files = _write(single, out_dir / f"{name}", opts.pdf)
         result.files += files
         pitches = [p for e in events for p in e.pitches]
@@ -342,10 +455,12 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
 
     if full_parts:
         full = sc.assemble(full_parts, project.title, f"Full Score — {key.name}", groups)
+        finish_score(full)
         result.files += _write(full, out_dir / "full_score", opts.pdf)
         log("   ✓ 총보 (full score)")
     if lead_parts:
         lead = sc.assemble(lead_parts, project.title, f"Lead Sheet — {key.name}")
+        finish_score(lead)
         result.files += _write(lead, out_dir / "lead_sheet", opts.pdf)
         log("   ✓ 리드시트 (멜로디 + 코드 + 가사)")
 
@@ -355,12 +470,16 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
     # 코드표
     if chord_events:
         lyrics = project.tracks["vocals"].lyrics if "vocals" in project.tracks else []
-        chart = chord_chart(chord_events, key, grid, project, lyrics)
-        path = out_dir / "chords.txt"
-        path.write_text(chart, encoding="utf-8")
-        result.chord_chart = chart
-        result.files.append(path)
-        log("   ✓ 코드표 (chords.txt)")
+        chart = chord_chart(chord_events, key_map, grid, project, lyrics, sections=sections,
+                            number_shift=number_shift)
+        numbers = chord_chart(chord_events, key_map, grid, project, lyrics, sections=sections,
+                              numbers=True, number_shift=number_shift)
+        for fname, text in (("chords.txt", chart), ("chords_nashville.txt", numbers)):
+            path = out_dir / fname
+            path.write_text(text, encoding="utf-8")
+            result.files.append(path)
+        result.chord_chart, result.nashville_chart = chart, numbers
+        log("   ✓ 코드표 (chords.txt, 내슈빌 넘버 chords_nashville.txt)")
     return result
 
 
@@ -394,15 +513,47 @@ def find_musescore() -> str | None:
 
 
 def export_pdf(xml: Path) -> Path | None:
-    exe = find_musescore()
-    if not exe:
-        return None
+    """PDF 악보: MuseScore 가 있으면 MuseScore 로(가장 깔끔), 없으면 Verovio 로 그린다."""
     pdf = xml.with_suffix(".pdf")
+    exe = find_musescore()
+    if exe:
+        try:
+            subprocess.run([exe, "-o", str(pdf), str(xml)], check=True, capture_output=True, timeout=300)
+            if pdf.exists():
+                return pdf
+        except (subprocess.SubprocessError, OSError):
+            pass
+    return export_pdf_verovio(xml, pdf)
+
+
+def export_pdf_verovio(xml: Path, pdf: Path) -> Path | None:
+    """Verovio(악보 조판) -> SVG -> PDF. 필요: pip install verovio cairosvg pypdf"""
     try:
-        subprocess.run([exe, "-o", str(pdf), str(xml)], check=True, capture_output=True, timeout=300)
-    except (subprocess.SubprocessError, OSError):
+        import io
+
+        import cairosvg
+        import verovio
+        from pypdf import PdfReader, PdfWriter
+    except ImportError:
         return None
-    return pdf if pdf.exists() else None
+    try:
+        tk = verovio.toolkit()
+        # A4 세로, 보기 좋은 크기
+        tk.setOptions({"pageWidth": 2100, "pageHeight": 2970, "pageMarginLeft": 80,
+                       "pageMarginRight": 80, "pageMarginTop": 60, "pageMarginBottom": 60,
+                       "scale": 42, "footer": "none", "breaks": "auto"})
+        if not tk.loadFile(str(xml)):
+            return None
+        writer = PdfWriter()
+        for page in range(1, tk.getPageCount() + 1):
+            data = cairosvg.svg2pdf(bytestring=tk.renderToSVG(page).encode("utf-8"))
+            for p in PdfReader(io.BytesIO(data)).pages:
+                writer.add_page(p)
+        with open(pdf, "wb") as f:
+            writer.write(f)
+        return pdf
+    except Exception:
+        return None
 
 
 def write_midi(tracks: dict[str, list[Note]], out_dir: Path) -> list[Path]:
@@ -445,44 +596,76 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _width(text))
 
 
-def chord_chart(chords_: list[ChordEvent], key: Key, grid, project: Project, lyrics=(),
-                bars_per_line: int = 4) -> str:
-    """마디별 코드 + (있으면) 가사를 나란히 적은 텍스트 코드표."""
+def chord_chart(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Project, lyrics=(),
+                bars_per_line: int = 4, sections=None, numbers: bool = False,
+                number_shift: int = 0) -> str:
+    """구간(섹션)별·마디별 코드 + (있으면) 가사를 적은 텍스트 코드표.
+
+    numbers=True 면 내슈빌 넘버(1, 4, 5, 6m …)로 적는다. 전조된 곳에는 새 키를 표시한다.
+    """
+    from .notation import capo_suggestion
+
+    km = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
     bpb = grid.beats_per_bar
     shift = grid.shift_beats  # 악보의 마디 번호와 맞춘다
     n_bars = int(np.ceil((max(c.end for c in chords_) + shift) / bpb)) if chords_ else 0
+
+    def label(c: ChordEvent, bar: int) -> str:
+        k = km.at(bar * grid.bar_ql)
+        return c.number(k) if numbers else c.name(k)
+
     bars: list[list[str]] = [[] for _ in range(n_bars)]
     for c in chords_:
         b = int((c.start + shift) // bpb)
         if 0 <= b < n_bars:
-            bars[b].append(c.name(key))
+            bars[b].append(label(c, b))
+        # 여러 마디 이어지는 코드는 각 마디 첫머리에 다시 적는다 (읽기 쉽게)
+        for b2 in range(b + 1, int(np.ceil((c.end + shift) / bpb - 1e-6))):
+            if 0 <= b2 < n_bars and not bars[b2]:
+                bars[b2].append(label(c, b2))
     bar_words: list[list[str]] = [[] for _ in range(n_bars)]
     for w in lyrics:
         b = int(grid.beat(w.start) // bpb)
         if 0 <= b < n_bars:
             bar_words[b].append(w.text)
 
-    from .notation import capo_suggestion
-
-    lines = [
-        f"{project.title}",
-        f"Key: {key.short_name}   Tempo: {project.tempo_bpm:.0f} BPM   Time: {project.time_signature}",
-    ]
-    capo = capo_suggestion(key.tonic, key.mode)
-    if capo:
+    first = km.first
+    head = f"Key: {first.short_name}   Tempo: {project.tempo_bpm:.0f} BPM   Time: {project.time_signature}"
+    if numbers:
+        head += "   (내슈빌 넘버: 1 = 으뜸음)"
+    lines = [f"{project.title}", head]
+    capo = capo_suggestion(first.tonic, first.mode)
+    if capo and not numbers:
         lines.append(f"Guitar: Capo {capo[0]} ({capo[1]} 코드 모양으로 연주)")
+    # 구간: 악보 마디 번호 기준으로 바꿔 둔다
+    secs = [(s.start_bar + shift // bpb, s.end_bar + shift // bpb, s) for s in (sections or [])]
+    if secs:
+        lines.append("구조: " + " - ".join(s.name for _, _, s in secs))
+    else:
+        secs = [(0, n_bars, None)]
     lines.append("")
-    for start in range(0, n_bars, bars_per_line):
-        cells_c, cells_l = [], []
-        for b in range(start, min(start + bars_per_line, n_bars)):
-            ctext = "  ".join(bars[b]) if bars[b] else "-"
-            ltext = " ".join(bar_words[b])
-            w = max(_width(ctext), _width(ltext), 6) + 2
-            cells_c.append(_pad(" " + ctext, w))
-            cells_l.append(_pad(" " + ltext, w))
-        lines.append(f"{start + 1:>3} |" + "|".join(cells_c) + "|")
-        if any(s.strip() for s in cells_l):
-            lines.append("    " + " " + " ".join(cells_l))
+    changes = {int(off // grid.bar_ql): k for off, k in km.changes()}
+    for s0, s1, sec in secs:
+        s1 = min(s1, n_bars)
+        if s0 >= s1:
+            continue
+        if sec is not None:
+            title = f"[{sec.name}]"
+            mods = [k for b, k in changes.items() if s0 <= b < s1]
+            if mods:
+                title += f"  ▶ Key: {mods[0].short_name}"
+            lines.append(title)
+        for start in range(s0, s1, bars_per_line):
+            cells_c, cells_l = [], []
+            for b in range(start, min(start + bars_per_line, s1)):
+                ctext = "  ".join(bars[b]) if bars[b] else "-"
+                ltext = " ".join(bar_words[b])
+                w = max(_width(ctext), _width(ltext), 6) + 2
+                cells_c.append(_pad(" " + ctext, w))
+                cells_l.append(_pad(" " + ltext, w))
+            lines.append(f"{start + 1 + number_shift:>3} |" + "|".join(cells_c) + "|")
+            if any(x.strip() for x in cells_l):
+                lines.append("    " + " " + " ".join(cells_l))
         lines.append("")
     return "\n".join(lines)
 

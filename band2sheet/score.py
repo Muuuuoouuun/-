@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from music21 import (
@@ -15,7 +15,7 @@ from music21 import (
 from .chords import ChordEvent
 from .instruments import InstrumentSpec
 from .project import Note, Project, TimeMap
-from .theory import Key, spell_midi
+from .theory import Key, KeyMap, spell_midi
 
 
 @dataclass
@@ -38,14 +38,42 @@ class Grid:
     beats_per_bar: int
     subdiv: int  # 한 박을 몇 칸으로 나눌지
     shift_beats: int = 0  # 시작 전 음표가 있을 때 마디 단위로 밀어주는 양
+    triplets: frozenset[int] = frozenset()  # 셋잇단 격자로 맞출 박 번호
+    auto_triplets: bool = True
+    phase: float = 0.0  # 비트 추적이 음 시작보다 일정하게 앞/뒤로 찍힌 양 (박 단위)
 
     @property
     def bar_ql(self) -> float:
         return self.beats_per_bar * self.beat_ql
 
+    def raw_beat(self, t: float) -> float:
+        return float(self.timemap.to_beats(t)) - self.downbeat + self.shift_beats - self.phase
+
     def beat(self, t: float) -> float:
-        b = float(self.timemap.to_beats(t)) - self.downbeat + self.shift_beats
-        return round(b * self.subdiv) / self.subdiv
+        b = self.raw_beat(t)
+        g = 3 if math.floor(b) in self.triplets else self.subdiv
+        return round(b * g) / g
+
+    def with_triplets(self, notes: list[Note]) -> "Grid":
+        """박마다 16분음표 격자와 셋잇단 격자 중 음 시작 위치에 더 잘 맞는 쪽을 고른다."""
+        if not self.auto_triplets or self.subdiv % 3 == 0 or not notes:
+            return self
+        by_beat: dict[int, list[float]] = {}
+        for n in notes:
+            b = self.raw_beat(n.start)
+            k = math.floor(b + 1 / 24)  # 박 직전에 살짝 이르게 친 음은 다음 박으로
+            by_beat.setdefault(k, []).append(b - k)
+        trip = set()
+        for k, fr in by_beat.items():
+            inner = [f for f in fr if 0.1 < f < 0.9]  # 박 안쪽(정박이 아닌) 음
+            if not inner:
+                continue
+            e4 = sum(abs(f - round(f * self.subdiv) / self.subdiv) for f in fr)
+            e3 = sum(abs(f - round(f * 3) / 3) for f in fr)
+            # 셋잇단 위치(1/3, 2/3)에 분명히 가깝고 16분 격자로는 많이 어긋날 때만
+            if e3 < 0.5 * e4 and e4 / len(fr) > 0.035:
+                trip.add(k)
+        return replace(self, triplets=frozenset(trip)) if trip else self
 
     def ql(self, t: float) -> float:
         return self.beat(t) * self.beat_ql
@@ -57,6 +85,13 @@ class Grid:
             subdiv = 6 if project.compound else 4
         g = cls(tm, project.downbeat, project.beat_ql, project.beats_per_bar, subdiv)
         starts = [n.start for t in project.tracks.values() for n in t.notes]
+        # 정박 근처 음들의 평균 어긋남 = 비트 추적의 위상 오차 -> 보정 (최대 ±0.2박)
+        if starts:
+            fr = np.array([float(tm.to_beats(t)) for t in starts])
+            dev = fr - np.round(fr)
+            near = dev[np.abs(dev) < 0.2]
+            if near.size >= 8:
+                g.phase = float(np.clip(np.median(near), -0.2, 0.2))
         if starts:
             first = g.beat(min(starts))
             if first < 0:
@@ -71,6 +106,7 @@ class Grid:
 
 def mono_events(notes: list[Note], grid: Grid) -> list[Event]:
     """단선율: 같은 위치에 겹치면 하나만, 다음 음 시작에서 이전 음을 자른다."""
+    grid = grid.with_triplets(notes)
     min_ql = grid.beat_ql / grid.subdiv
     events: list[Event] = []
     for i, n in sorted(enumerate(notes), key=lambda x: x[1].start):
@@ -88,6 +124,7 @@ def mono_events(notes: list[Note], grid: Grid) -> list[Event]:
 
 def poly_events(notes: list[Note], grid: Grid) -> list[Event]:
     """다성: 같은 위치에서 시작하는 음들을 화음 하나로 묶는다 (한 성부로 단순화)."""
+    grid = grid.with_triplets(notes)
     min_ql = grid.beat_ql / grid.subdiv
     groups: dict[float, list[tuple[float, Note, int]]] = {}
     for i, n in enumerate(notes):
@@ -127,7 +164,10 @@ def tidy_durations(events: list[Event], grid: Grid, legato: float = 0.25) -> lis
     beat = grid.beat_ql
     u = beat / grid.subdiv
     nice = [k * u for k in _nice_units(grid.subdiv)]
+    nice_trip = sorted(set(nice) | {beat / 3, 2 * beat / 3})
     for i, e in enumerate(events):
+        pos = e.offset / beat
+        in_triplet = math.floor(pos + 1e-6) in grid.triplets
         nxt = events[i + 1].offset if i + 1 < len(events) else None
         room = (nxt - e.offset) if nxt is not None else None
         if room is not None:
@@ -136,7 +176,8 @@ def tidy_durations(events: list[Event], grid: Grid, legato: float = 0.25) -> lis
                 e.dur = room
                 continue
         if e.dur <= nice[-1]:
-            cands = [d for d in nice if room is None or d <= room + 1e-9] or [e.dur]
+            pool = nice_trip if in_triplet else nice
+            cands = [d for d in pool if room is None or d <= room + 1e-9] or [e.dur]
             e.dur = min(cands, key=lambda d: (abs(d - e.dur), -d))
     return events
 
@@ -219,7 +260,7 @@ def _metronome(project: Project) -> tempo.MetronomeMark:
     return tempo.MetronomeMark(number=int(round(project.tempo_bpm)), referent=referent)
 
 
-def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: Project,
+def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key | KeyMap, project: Project,
                   total_ql: float, chords_: list[tuple[float, str]] | None = None,
                   with_tempo: bool = True, pedals_ql: list[tuple[float, float]] | None = None,
                   with_dynamics: bool = True, with_tab: bool = True) -> list[stream.Part]:
@@ -231,7 +272,14 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: 
     """
     from . import notation as nt
 
+    key_map = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
+    key = key_map.first
     bar_ql = project.beats_per_bar * project.beat_ql
+
+    def add_key_changes(st):
+        for off, k in key_map.changes():
+            if off < total_ql:
+                st.insert(off, m21key.KeySignature(k.fifths))
     dyn = nt.dynamic_marks(events, bar_ql) if with_dynamics else []
 
     if spec.staff == "grand":
@@ -242,9 +290,10 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: 
             ps.insert(0, _m21_instrument(spec))
             ps.insert(0, cl)
             _header(ps, key, project, with_tempo and not staves)
+            add_key_changes(ps)
             for e in evs:
                 if e.pitches:
-                    ps.insert(e.offset, _make_element(e, key))
+                    ps.insert(e.offset, _make_element(e, key_map.at(e.offset)))
             if not staves:
                 if chords_:
                     _insert_chords(ps, chords_)
@@ -266,8 +315,9 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: 
     part.insert(0, _m21_instrument(spec))
     part.insert(0, _clef_for(spec, events))
     _header(part, key, project, with_tempo)
+    add_key_changes(part)
     for e in events:
-        part.insert(e.offset, _make_element(e, key))
+        part.insert(e.offset, _make_element(e, key_map.at(e.offset)))
     if chords_:
         _insert_chords(part, chords_)
     nt.insert_dynamics(part, dyn)
@@ -288,6 +338,7 @@ def build_drums(events: list[Event], project: Project, total_ql: float,
 
 def drum_events(notes: list[Note], grid: Grid) -> list[Event]:
     """드럼: 같은 위치의 타격을 묶고, 길이는 다음 타격까지(최대 1박)."""
+    grid = grid.with_triplets(notes)
     groups: dict[float, list[Note]] = {}
     for n in notes:
         groups.setdefault(grid.ql(n.start), []).append(n)
@@ -317,8 +368,14 @@ def _insert_chords(part: stream.Stream, chords_: list[tuple[float, str]]) -> Non
         part.insert(offset, cs)
 
 
-def chord_offsets(chords_: list[ChordEvent], key: Key, grid: Grid) -> list[tuple[float, str]]:
-    return [((c.start + grid.shift_beats) * grid.beat_ql, c.name(key)) for c in chords_]
+def chord_offsets(chords_: list[ChordEvent], key: Key | KeyMap,
+                  grid: Grid) -> list[tuple[float, str]]:
+    km = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
+    out = []
+    for c in chords_:
+        off = (c.start + grid.shift_beats) * grid.beat_ql
+        out.append((off, c.name(km.at(off))))
+    return out
 
 
 def assemble(parts: list[stream.Part], title: str, subtitle: str | None = None,
@@ -335,3 +392,78 @@ def assemble(parts: list[stream.Part], title: str, subtitle: str | None = None,
     for group, symbol in groups or []:
         sc.insert(0, layout.StaffGroup(group, symbol=symbol, barTogether=True))
     return sc
+
+
+def add_section_marks(score: stream.Score, marks: list[tuple[int, str]]) -> None:
+    """구간 시작 마디에 리허설 마크(상자 글씨)를 달고, 구간 경계에 겹세로줄을 긋는다.
+
+    marks: [(마디 번호(1부터), 이름)] — 마크는 맨 위 보표에만, 겹세로줄은 모든 보표에.
+    """
+    from music21 import expressions
+
+    if not marks:
+        return
+    starts = {m for m, _ in marks}
+    for i, part in enumerate(score.parts):
+        measures = {m.number: m for m in part.getElementsByClass(stream.Measure)}
+        for number, name in marks:
+            m = measures.get(number)
+            if m is None:
+                continue
+            if i == 0:
+                m.insert(0, expressions.RehearsalMark(name))
+            prev = measures.get(number - 1)
+            if prev is not None and number in starts and number > 1:
+                prev.rightBarline = bar.Barline("light-light")
+
+
+def _first_measure_ok_for_pickup(part: stream.Stream, lead_ql: float) -> bool:
+    ms = part.getElementsByClass(stream.Measure)
+    if not ms:
+        return True
+    m = ms.first()
+    for c in list(m.voices) or [m]:
+        for el in c.notesAndRests:
+            if el.offset < lead_ql - 1e-6 and not el.isRest:
+                return False
+    return True
+
+
+def make_pickup(score: stream.Score, lead_ql: float) -> bool:
+    """첫 마디 앞부분이 모두 쉼표면 그 부분을 지워 못갖춘마디(0번 마디)로 만든다.
+
+    lead_ql: 첫 마디에서 지울 앞부분 길이(4분음표 단위). 모든 보표에서 가능할 때만 적용.
+    """
+    if lead_ql <= 0 or not all(_first_measure_ok_for_pickup(p, lead_ql) for p in score.parts):
+        return False
+    keep_at_zero = (clef.Clef, m21key.KeySignature, meter.TimeSignature, tempo.MetronomeMark,
+                    layout.StaffLayout, stream.Voice)
+    for part in score.parts:
+        ms = list(part.getElementsByClass(stream.Measure))
+        if not ms:
+            continue
+        m = ms[0]
+        for c in list(m.voices) + [m]:
+            for el in list(c.elements):
+                if isinstance(el, keep_at_zero):
+                    continue
+                if getattr(el, "isRest", False) and el.offset < lead_ql - 1e-6:
+                    end = el.offset + el.quarterLength
+                    if end > lead_ql + 1e-6:  # 앞부분에 걸친 쉼표는 남는 길이만큼으로 줄인다
+                        el.duration = duration.Duration(round((end - lead_ql) * 48) / 48)
+                        c.setElementOffset(el, 0.0)
+                    else:
+                        c.remove(el)
+                elif el.offset >= lead_ql - 1e-6:
+                    c.setElementOffset(el, el.offset - lead_ql)
+                else:  # 앞부분에 걸친 표시(셈여림·코드 등)는 마디 처음으로
+                    c.setElementOffset(el, 0.0)
+            c.coreElementsChanged()
+        m.paddingLeft = lead_ql
+        for k, mm in enumerate(ms):
+            mm.number = k
+        # 뒤 마디들의 위치를 당긴다
+        for mm in ms[1:]:
+            part.setElementOffset(mm, part.elementOffset(mm) - lead_ql)
+        part.coreElementsChanged()
+    return True

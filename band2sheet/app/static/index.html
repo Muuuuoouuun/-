@@ -49,6 +49,8 @@
           </div>
           <label class="check"><input type="checkbox" id="split-vocals" checked> 메인 보컬 / 코러스(화음) 나누기</label>
           <label class="check"><input type="checkbox" id="split-drums" checked> 드럼 조각 나누기 (킥·스네어·탐·하이햇·심벌)</label>
+          <label class="check"><input type="checkbox" id="cleanup" checked> 다른 악기 소리(블리딩)·유령음 정리</label>
+          <label class="check"><input type="checkbox" id="pdf"> PDF 악보도 만들기</label>
         </div>
         <div class="card">
           <h3>악보로 만들 악기</h3>
@@ -122,6 +124,11 @@
         </div>
       </div>
 
+      <div id="structure" class="structure hidden">
+        <div class="structure-head"><span class="label">곡 구조</span><span class="muted small">구간을 누르면 그 부분부터 재생해요</span></div>
+        <div id="sections" class="sections"></div>
+      </div>
+
       <nav id="tabs" class="tabs"></nav>
       <div id="part-info" class="part-info"></div>
       <div class="sheet-wrap card"><div id="sheet"></div><div id="sheet-loading" class="loading hidden">악보 그리는 중…</div></div>
@@ -138,11 +145,18 @@
           <div id="mixer"></div>
         </div>
         <div class="card">
-          <h3>코드표</h3>
+          <div class="chart-head"><h3>코드표</h3>
+            <div class="seg small-seg" id="chart-mode"><button data-v="letters" class="on">코드</button><button data-v="numbers">넘버(1·4·5)</button></div>
+          </div>
           <pre id="chart" class="chart"></pre>
           <h3>파일</h3>
           <ul id="files" class="files"></ul>
         </div>
+      </div>
+      <div class="card bottom" id="sep-card">
+        <h3>분리 결과 — 악기별 연주 구간</h3>
+        <p class="muted small">막대가 그 악기가 실제로 연주하는 구간입니다. 연주하지 않는 구간에 새어 들어온 소리와 유령음은 악보에서 자동으로 지웠어요.</p>
+        <div id="activity" class="activity"></div>
       </div>
     </section>
   </main>

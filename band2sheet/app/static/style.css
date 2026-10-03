@@ -141,3 +141,25 @@ dialog td { padding: .35rem; border-top: 1px solid var(--line); vertical-align: 
   main { padding: 1rem; }
   .files { columns: 1; }
 }
+
+.structure { margin: .4rem 0 1rem; }
+.structure-head { display: flex; gap: .6rem; align-items: baseline; margin-bottom: .35rem; }
+.sections { display: flex; gap: 3px; width: 100%; }
+.sections button {
+  flex-direction: column; align-items: flex-start; gap: 0; padding: .35rem .5rem; min-width: 0;
+  border-radius: 6px; font-size: .78rem; overflow: hidden; white-space: nowrap; color: #1c2030;
+}
+.sections button small { color: rgba(0,0,0,.55); font-size: .68rem; }
+.sections button.now { outline: 2px solid var(--accent); }
+.sec-Intro, .sec-Outro, .sec-Interlude { background: #e5e7ee; }
+.sec-Verse { background: #cfe3ff; } .sec-Pre-Chorus { background: #e3d9ff; }
+.sec-Chorus { background: #ffd9b3; } .sec-Bridge { background: #c9f0d6; } .sec-Section { background: #eee; }
+.chart-head { display: flex; justify-content: space-between; align-items: center; }
+.small-seg button { padding: .2rem .5rem; font-size: .78rem; }
+.small-seg button small { display: none; }
+.activity { display: grid; grid-template-columns: 110px 1fr 120px; gap: .35rem .6rem; align-items: center; font-size: .82rem; }
+.activity .track { position: relative; height: 14px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+.activity .track span { position: absolute; top: 0; bottom: 0; background: var(--accent); opacity: .75; border-radius: 3px; }
+.activity .track i { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--danger); }
+.activity .stat { color: var(--muted); font-size: .75rem; }
+.keychip { background: #ffe6a8 !important; }

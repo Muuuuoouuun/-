@@ -134,6 +134,7 @@ class JobManager:
                 quality=opts.get("quality", "standard"),
                 split_vocals=bool(opts.get("split_vocals", True)),
                 split_drums=bool(opts.get("split_drums", True)),
+                cleanup=bool(opts.get("cleanup", True)),
                 stems=opts.get("stems") or None,
                 bpm=float(opts["bpm"]) if opts.get("bpm") else None,
                 time_signature=opts.get("time_signature") or "auto",
@@ -156,7 +157,8 @@ class JobManager:
             job.result = render_summary(res, project, d)
             job.renders[job.result["key_short"]] = job.result
             if opts.get("target_key"):
-                res2 = render(project, d, RenderOptions(target_key=opts["target_key"]), log)
+                res2 = render(project, d, RenderOptions(target_key=opts["target_key"],
+                                                        pdf=bool(opts.get("pdf"))), log)
                 job.result = render_summary(res2, project, d)
                 job.renders[job.result["key_short"]] = job.result
             job.status, job.progress, job.stage = "done", 1.0, "완료"
@@ -175,7 +177,8 @@ class JobManager:
         d = self.job_dir(job_id)
         project = Project.load(d / "project.json")
         res = render(project, d, RenderOptions(target_key=target_key, semitones=semitones,
-                                               direction=direction, subdiv=subdiv),
+                                               direction=direction, subdiv=subdiv,
+                                               pdf=bool(job.options.get("pdf"))),
                      log=lambda m: None)
         summary = render_summary(res, project, d)
         with self.lock:
@@ -233,6 +236,14 @@ def render_summary(res: RenderResult, project: Project, job_dir: Path) -> dict:
         "measures": measure_times(project),
         "stems": sorted({p.stem for p in (job_dir / "preview").glob("*.*")
                          if p.suffix in (".mp3", ".m4a")}),
+        "nashville_chart": res.nashville_chart,
+        "key_changes": res.key_changes,
+        "pickup": res.pickup_ql > 0,
+        # 구간 시작 마디 -> 재생 위치 목록(measures)의 인덱스 (못갖춘마디가 있으면 0번 마디가 있음)
+        "sections": [dict(sec, index=sec["start_measure"] - (0 if res.pickup_ql > 0 else 1))
+                     for sec in res.sections],
+        "separation": project.separation,
+        "duration": round(max((n.end for t in project.tracks.values() for n in t.notes), default=0.0), 2),
     }
 
 

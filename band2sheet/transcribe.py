@@ -364,13 +364,19 @@ def filter_notes(notes: list[Note], spec: InstrumentSpec, min_velocity: int = 20
     ]
 
 
-def merge_fragments(notes: list[Note], gap: float = 0.035) -> list[Note]:
-    """같은 음이 아주 짧은 틈으로 끊긴 경우 하나로 합친다."""
+def merge_fragments(notes: list[Note], gap: float = 0.035, restrike: float | None = None) -> list[Note]:
+    """같은 음이 아주 짧은 틈으로 끊긴 경우 하나로 합친다.
+
+    restrike 를 주면, 뒤 음이 앞 음 세기의 restrike 배 이상일 때는 같은 음을 다시 친 것
+    (반복 스트로크·화음)으로 보고 합치지 않는다. 다성 엔진(Basic Pitch)은 음마다 타격을 검출하므로
+    이 값을 쓰고, 단선율 엔진(음높이 곡선 분할)은 조각을 모두 합친다.
+    """
     out: list[Note] = []
     last_by_pitch: dict[int, Note] = {}
     for n in sorted(notes, key=lambda n: n.start):
         prev = last_by_pitch.get(n.pitch)
-        if prev is not None and 0 <= n.start - prev.end <= gap:
+        if prev is not None and 0 <= n.start - prev.end <= gap and \
+                (restrike is None or n.velocity < restrike * prev.velocity):
             prev.end = max(prev.end, n.end)
             prev.velocity = max(prev.velocity, n.velocity)
             continue
@@ -444,7 +450,8 @@ def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None,
         notes = basic_pitch_notes(path, spec)
     else:
         raise ValueError(f"알 수 없는 채보 엔진: {engine}")
-    notes = merge_fragments(filter_notes(notes, spec))
+    notes = merge_fragments(filter_notes(notes, spec),
+                            restrike=0.7 if engine in ("basic_pitch", "piano_hr") else None)
     if spec.mono:
         notes = make_monophonic(notes, prefer_low=spec.stem == "bass")
     return Transcription(notes, engine, pedals)

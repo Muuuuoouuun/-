@@ -165,7 +165,9 @@ def separate_detailed(mix_path: Path, out_dir: Path, quality: str = "standard",
             roformer_vocals = None
 
     log(f"   · 악기 분리 (Demucs {demucs_model})")
-    demucs_out = separate(source, work / "demucs", demucs_model, device)
+    # 고품질: 시간축을 조금씩 옮겨 여러 번 분리한 뒤 평균 (Demucs shifts) — 더 깨끗하지만 느림
+    demucs_out = separate(source, work / "demucs", demucs_model, device,
+                          shifts=2 if quality == "high" else 1)
     result.notes.append(f"악기: Demucs {demucs_model}")
     for name, path in demucs_out.items():
         if name == "vocals" and roformer_vocals is not None:

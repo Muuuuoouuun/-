@@ -47,9 +47,27 @@ class ChordEvent:
             text += "/" + spell_pc(self.bass, key.fifths, key.mode, key.tonic)
         return text
 
+    def number(self, key: Key) -> str:
+        """내슈빌 넘버 표기 (예: G 키에서 D/F# -> 5/7, Em -> 6m)."""
+        if self.root is None:
+            return "N.C."
+        text = nashville_degree(self.root, key) + self.quality
+        if self.bass is not None and self.bass != self.root:
+            text += "/" + nashville_degree(self.bass, key)
+        return text
+
     def transposed(self, semitones: int) -> "ChordEvent":
         t = lambda pc: None if pc is None else (pc + semitones) % 12  # noqa: E731
         return ChordEvent(self.start, self.end, t(self.root), self.quality, t(self.bass))
+
+
+_DEGREES = {0: "1", 1: "b2", 2: "2", 3: "b3", 4: "3", 5: "4", 6: "#4", 7: "5", 8: "b6", 9: "6",
+            10: "b7", 11: "7"}
+
+
+def nashville_degree(pc: int, key: Key) -> str:
+    """키의 으뜸음 기준 음 번호. 단조 키는 으뜸음(1)을 단조 으뜸음으로 본다 (b3, b6, b7 이 조 안의 음)."""
+    return _DEGREES[(pc - key.tonic) % 12]
 
 
 def _beat_chroma(tracks: dict[str, list[Note]], timemap: TimeMap, n_beats: int,
@@ -95,8 +113,12 @@ def _templates(key: Key):
 
 
 def detect_chords(tracks: dict[str, list[Note]], timemap: TimeMap, key: Key,
-                  beats_per_bar: int, downbeat: int, n_beats: int | None = None) -> list[ChordEvent]:
-    """박 단위 코드 진행 추정. 반환되는 start/end 는 '악보 박'(downbeat 기준) 단위."""
+                  beats_per_bar: int, downbeat: int, n_beats: int | None = None,
+                  key_at=None) -> list[ChordEvent]:
+    """박 단위 코드 진행 추정. 반환되는 start/end 는 '악보 박'(downbeat 기준) 단위.
+
+    key_at(박) 을 주면 전조된 구간에서는 그 구간의 키를 기준으로 '조에 맞는 코드'를 선호한다.
+    """
     all_notes = [n for name, ns in tracks.items() if name in HARMONY_WEIGHTS for n in ns]
     if not all_notes:
         return []
@@ -109,6 +131,15 @@ def detect_chords(tracks: dict[str, list[Note]], timemap: TimeMap, key: Key,
 
     labels, T, priors = _templates(key)
     roots = np.array([r for r, _ in labels])
+    prior_cache: dict[tuple[int, str], np.ndarray] = {(key.tonic, key.mode): priors}
+
+    def priors_at(k: int) -> np.ndarray:
+        if key_at is None:
+            return priors
+        kk = key_at(k)
+        if (kk.tonic, kk.mode) not in prior_cache:
+            prior_cache[(kk.tonic, kk.mode)] = _templates(kk)[2]
+        return prior_cache[(kk.tonic, kk.mode)]
     n_states = len(labels) + 1  # 마지막 상태 = N.C.
     energy = chroma.sum(axis=1)
     loud = np.percentile(energy[energy > 0], 75) if np.any(energy > 0) else 1.0
@@ -118,7 +149,7 @@ def detect_chords(tracks: dict[str, list[Note]], timemap: TimeMap, key: Key,
         c = chroma[k]
         norm = np.linalg.norm(c)
         if norm > 0:
-            sim = T @ (c / norm) + priors
+            sim = T @ (c / norm) + priors_at(k)
             bvec = bass[k]
             if bvec.sum() > 0:
                 # 베이스가 한 음을 뚜렷하게 지속할수록 그 음을 근음으로 보는 가중치를 키운다

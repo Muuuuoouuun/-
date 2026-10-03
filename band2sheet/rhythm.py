@@ -110,9 +110,38 @@ def estimate_downbeat(tracks: dict[str, list[Note]], timemap: TimeMap, beats_per
     add([n for n in tracks.get("drums", []) if n.pitch == KICK], 1.0, False)
     for name in ("piano", "guitar", "other"):
         add(tracks.get(name, []), 0.3, True)
+    if scores.sum() > 0:
+        scores = scores / scores.sum()
+
+    # 화성 리듬: 코드가 바뀌는 곳은 대부분 마디 첫 박이다 (킥·베이스가 1·3박에 똑같이 나올 때 결정적)
+    changes = harmonic_change_by_phase(tracks, timemap, beats_per_bar)
+    if changes.sum() > 0:
+        scores = scores + 1.5 * changes / changes.sum()
     if not scores.any():
         return 0
     return int(np.argmax(scores))
+
+
+def harmonic_change_by_phase(tracks: dict[str, list[Note]], timemap: TimeMap,
+                             beats_per_bar: int) -> np.ndarray:
+    """박마다 화음(음높이 분포)이 얼마나 바뀌는지를 마디 위상별로 더한다."""
+    from .chords import _beat_chroma
+
+    harm = {k: v for k, v in tracks.items() if k in ("piano", "guitar", "other", "bass")}
+    notes = [n for ns in harm.values() for n in ns]
+    out = np.zeros(beats_per_bar)
+    if not notes:
+        return out
+    n_beats = int(np.ceil(float(timemap.to_beats(max(n.end for n in notes))))) + 1
+    if n_beats < beats_per_bar * 2:
+        return out
+    chroma, _ = _beat_chroma(harm, timemap, n_beats, 0.0)
+    norm = np.linalg.norm(chroma, axis=1) + 1e-9
+    unit = chroma / norm[:, None]
+    for k in range(1, n_beats):
+        if norm[k] > 1e-6 and norm[k - 1] > 1e-6:
+            out[k % beats_per_bar] += 1.0 - float(unit[k] @ unit[k - 1])
+    return out
 
 
 def quantize(value: float, grid: int) -> float:

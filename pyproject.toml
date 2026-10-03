@@ -34,7 +34,9 @@ detail = [
 ]
 lyrics = ["faster-whisper"]
 app = ["fastapi", "uvicorn", "python-multipart"]
-all = ["band2sheet[ml,detail,lyrics,app]"]
+# MuseScore 없이 PDF 악보 만들기
+pdf = ["verovio", "cairosvg", "pypdf"]
+all = ["band2sheet[ml,detail,lyrics,app,pdf]"]
 dev = ["pytest", "httpx"]
 
 [project.scripts]

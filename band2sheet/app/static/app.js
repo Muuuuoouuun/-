@@ -16,6 +16,7 @@ const state = {
   job: null,
   result: null,
   tab: "full_score",
+  chartMode: "letters",
   zoom: 1.0,
   osmd: null,
   pollTimer: null,
@@ -73,6 +74,8 @@ async function loadInfo() {
   const whisper = (eng.whisper && eng.whisper.installed) || (eng.whisperx && eng.whisperx.installed);
   $("#lyrics-hint").textContent = whisper ? "Whisper 로 가사를 인식합니다." :
     "가사 인식 엔진이 설치되지 않았습니다: pip install faster-whisper";
+  $("#pdf").disabled = !state.info.pdf;
+  if (!state.info.pdf) $("#pdf").parentElement.title = "MuseScore 또는 pip install verovio cairosvg pypdf 필요";
   const sep = eng.audio_separator && eng.audio_separator.installed;
   for (const id of ["#split-vocals", "#split-drums"]) {
     $(id).disabled = !sep;
@@ -122,6 +125,8 @@ async function startJob() {
     start: $("#start").value || null,
     duration: $("#duration").value || null,
     lyrics: $("#lyrics").checked,
+    cleanup: $("#cleanup").checked,
+    pdf: $("#pdf").checked,
     language: $("#language").value,
   };
   const fd = new FormData();
@@ -202,11 +207,17 @@ function renderResult() {
   $("#r-title").textContent = job.title;
   const eng = r.engines || {};
   const meta = [
-    `키 ${r.key}`, `템포 ${Math.round(r.tempo)} BPM`, `${r.time_signature}`,
+    `키 ${r.key}`,
+    ...(r.key_changes || []).map((k) => `${k.bar}마디부터 ${k.key_short} (전조)`),
+    `템포 ${Math.round(r.tempo)} BPM`, `${r.time_signature}`,
+    ...(r.pickup ? ["못갖춘마디로 시작"] : []),
     ...(eng.separation ? [eng.separation] : []), ...(eng.beats ? [`박자: ${eng.beats}`] : []),
   ];
-  $("#r-meta").innerHTML = meta.map((m) => `<span></span>`).join("");
-  $$("#r-meta span").forEach((s, i) => { s.textContent = meta[i]; });
+  $("#r-meta").innerHTML = meta.map(() => `<span></span>`).join("");
+  $$("#r-meta span").forEach((s, i) => {
+    s.textContent = meta[i];
+    if (meta[i].includes("전조")) s.classList.add("keychip");
+  });
   $("#r-zip").href = `/api/jobs/${job.id}/zip/${r.sheet_dir}`;
 
   // 키 선택
@@ -242,7 +253,9 @@ function renderResult() {
   showPartInfo();
   loadSheet();
 
-  $("#chart").textContent = r.chord_chart || "(코드 없음)";
+  showChart();
+  renderStructure();
+  renderActivity();
   $("#files").innerHTML = "";
   for (const f of r.files) {
     const li = document.createElement("li");
@@ -326,6 +339,10 @@ function initResultView() {
     show("new");
   });
   $("#m-play").addEventListener("click", togglePlay);
+  $$("#chart-mode button").forEach((b) => b.addEventListener("click", () => {
+    state.chartMode = b.dataset.v;
+    showChart();
+  }));
   $("#m-seek").addEventListener("input", (e) => {
     const a = masterAudio();
     if (a && isFinite(a.duration)) seekAll((e.target.value / 1000) * a.duration);
@@ -336,6 +353,90 @@ function setZoom(z) {
   state.zoom = Math.min(2, Math.max(0.4, Math.round(z * 10) / 10));
   $("#z-val").textContent = `${Math.round(state.zoom * 100)}%`;
   if (state.osmd) { state.osmd.zoom = state.zoom; state.osmd.render(); }
+}
+
+function showChart() {
+  const r = state.result;
+  const text = state.chartMode === "numbers" ? r.nashville_chart : r.chord_chart;
+  $("#chart").textContent = text || "(코드 없음)";
+  $$("#chart-mode button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.chartMode));
+}
+
+function renderStructure() {
+  const secs = state.result.sections || [];
+  $("#structure").classList.toggle("hidden", secs.length < 2);
+  const box = $("#sections");
+  box.innerHTML = "";
+  for (const sec of secs) {
+    const b = document.createElement("button");
+    b.className = `sec-${sec.kind}`;
+    b.style.flex = `${sec.end_bar - sec.start_bar} 1 0`;
+    b.title = `${sec.name_ko} — ${sec.start_measure}~${sec.end_measure}마디`;
+    b.innerHTML = `<span></span><small></small>`;
+    b.firstChild.textContent = sec.name_ko;
+    b.lastChild.textContent = `${sec.start_measure}마디`;
+    b.dataset.index = sec.index;
+    b.addEventListener("click", () => playFrom(sec.index));
+    box.appendChild(b);
+  }
+}
+
+function playFrom(measureIndex) {
+  const ms = state.result.measures || [];
+  const t = Math.max(0, ms[Math.min(measureIndex, ms.length - 1)] || 0);
+  seekAll(t);
+  const master = masterAudio();
+  if (master && master.paused) togglePlay();
+}
+
+function highlightSection(measureIndex) {
+  for (const b of $$("#sections button")) {
+    const next = b.nextElementSibling ? Number(b.nextElementSibling.dataset.index) : 1e9;
+    b.classList.toggle("now", measureIndex >= Number(b.dataset.index) && measureIndex < next);
+  }
+}
+
+function renderActivity() {
+  const r = state.result;
+  const sep = r.separation || {};
+  const names = Object.keys(sep);
+  $("#sep-card").classList.toggle("hidden", !names.length);
+  const box = $("#activity");
+  box.innerHTML = "";
+  const dur = Math.max(r.duration || 0, ...names.flatMap((n) => (sep[n].intervals || []).map((iv) => iv[1]))) || 1;
+  const order = ["vocals", "backing_vocals", "guitar", "piano", "other", "bass", "drums"];
+  names.sort((a, b) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99);
+  for (const n of names) {
+    const info = sep[n];
+    const label = document.createElement("span");
+    label.textContent = STEM_LABELS[n] || n;
+    const track = document.createElement("div");
+    track.className = "track";
+    for (const [a, b] of info.intervals || []) {
+      const bar = document.createElement("span");
+      bar.style.left = `${(a / dur) * 100}%`;
+      bar.style.width = `${Math.max(0.3, ((b - a) / dur) * 100)}%`;
+      bar.title = `${fmtTime(a)} ~ ${fmtTime(b)}`;
+      track.appendChild(bar);
+    }
+    for (const k of r.key_changes || []) {
+      const ms = r.measures || [];
+      const idx = k.bar - (r.pickup ? 0 : 1);
+      if (ms[idx] !== undefined) {
+        const mark = document.createElement("i");
+        mark.style.left = `${(ms[idx] / dur) * 100}%`;
+        mark.title = `전조: ${k.key_short}`;
+        track.appendChild(mark);
+      }
+    }
+    const stat = document.createElement("span");
+    stat.className = "stat";
+    const bits = [`연주 ${Math.round((info.active_ratio || 0) * 100)}%`];
+    if (info.removed_notes) bits.push(`정리 ${info.removed_notes}음`);
+    stat.textContent = bits.join(" · ");
+    stat.title = info.bleed_db != null ? `블리딩(새어 들어온 소리) 약 ${info.bleed_db} dB` : "";
+    box.append(label, track, stat);
+  }
 }
 
 // ------------------------------------------------------------------ 믹서
@@ -425,6 +526,7 @@ function onTime() {
     if (!master.paused && Math.abs(a.currentTime - t) > 0.08) a.currentTime = t;
   }
   if ($("#m-follow").checked) followMeasure(t);
+  highlightSection(measureAt(t));
 }
 
 function measureAt(t) {
