@@ -119,3 +119,44 @@ def test_project_roundtrip(tmp_path):
 def test_instrument_table():
     assert INSTRUMENTS["bass"].mono and INSTRUMENTS["vocals"].mono
     assert not INSTRUMENTS["piano"].mono
+
+
+def test_tab_fingering_and_playable():
+    from band2sheet.instruments import BASS_TUNING, GUITAR_TUNING
+    from band2sheet.notation import assign_frets, capo_suggestion, playable_subset
+
+    # G 코드 (G2 B2 D3 G3 B3 G4) -> 개방현 위주의 1~3프렛 운지
+    fing = assign_frets([[43, 47, 50, 55, 59, 67]], GUITAR_TUNING)[0]
+    assert fing is not None and max(f for _, f in fing.frets) <= 3
+    # 같은 음이라도 앞뒤 손 위치를 따라간다: 높은 포지션 다음의 A4 는 개방현이 아닌 프렛으로
+    seq = assign_frets([[74], [76], [69]], GUITAR_TUNING)
+    assert all(f is not None for f in seq)
+    assert playable_subset(list(range(40, 52)), GUITAR_TUNING, 17)  # 12음 -> 6음 이하로 줄임
+    assert len(playable_subset(list(range(40, 52)), GUITAR_TUNING, 17)) <= 6
+    assert assign_frets([[28], [33]], BASS_TUNING)[0].frets == ((0, 0),)
+    assert capo_suggestion(8, "major") == (1, "G")  # Ab -> 카포 1, G 모양
+    assert capo_suggestion(7, "major") is None
+
+
+def test_split_hands_follows_position():
+    from band2sheet.notation import split_hands
+    from band2sheet.score import Event
+
+    up, low = split_hands([Event(0, 1, [43, 50, 59, 62, 67], 80), Event(1, 1, [36, 48, 64, 67, 72], 80)])
+    assert low[0].pitches == [43, 50] and up[0].pitches == [59, 62, 67]
+    assert 36 in low[1].pitches and 72 in up[1].pitches
+
+
+def test_drum_parts_transcription(tmp_path):
+    from collections import Counter
+
+    from band2sheet.instruments import CRASH, HIHAT, HIHAT_OPEN, KICK, SNARE, TOM_FLOOR, TOM_HIGH
+    from band2sheet.transcribe import drum_hits_from_parts
+    from tests.synth import make_stems
+
+    make_stems(tmp_path, bars=4, drum_parts=True)
+    parts = {p.stem: p for p in (tmp_path / "drums").glob("*.wav")}
+    c = Counter(n.pitch for n in drum_hits_from_parts(parts))
+    assert c[KICK] == 8 and c[SNARE] == 7  # 4마디 x 2, 필인 마디는 스네어 1개 적음
+    assert c[HIHAT] >= 20 and c[HIHAT_OPEN] >= 2
+    assert c[CRASH] == 1 and c[TOM_HIGH] >= 1 and c[TOM_FLOOR] >= 1

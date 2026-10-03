@@ -25,16 +25,26 @@ ml = [
     "demucs>=4",
     "basic-pitch",
 ]
+# 더 자세한 분리/채보 엔진 (메인·코러스 분리, 드럼 조각, CREPE, 피아노 페달, 다운비트)
+detail = [
+    "audio-separator",
+    "torchcrepe",
+    "piano-transcription-inference",
+    "beat-this",
+]
 lyrics = ["faster-whisper"]
-web = ["gradio>=4"]
-all = ["band2sheet[ml,lyrics,web]"]
-dev = ["pytest"]
+app = ["fastapi", "uvicorn", "python-multipart"]
+all = ["band2sheet[ml,detail,lyrics,app]"]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 band2sheet = "band2sheet.cli:main"
 
 [tool.setuptools]
-packages = ["band2sheet"]
+packages = ["band2sheet", "band2sheet.app"]
+
+[tool.setuptools.package-data]
+"band2sheet.app" = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

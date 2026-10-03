@@ -281,6 +281,10 @@ def part_onsets(path: Path, sr: int = 22050, hop: int = 256,
         # 다른 조각에서 새어 들어온 작은 소리는 버린다
         if peak < gate * ref:
             continue
+        # 울림(심벌 꼬리 등) 속의 흔들림이 아니라 실제로 소리가 커지는 타격만
+        before = rms[max(f - 6, 0):max(f - 2, 1)]
+        if before.size and peak < 1.4 * float(before.min()):
+            continue
         vel = int(np.clip(45 + 82 * min(peak / ref, 1.0), 1, 127))
         out.append((float(f * hop / sr), int(f), vel))
     return out, 20 * np.log10(rms + 1e-10), hop / sr

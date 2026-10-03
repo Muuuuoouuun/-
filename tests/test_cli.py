@@ -1,4 +1,3 @@
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -68,10 +67,3 @@ def test_end_to_end_synthetic(tmp_path):
     chart = (out / "sheets_G" / "chords.txt").read_text(encoding="utf-8")
     # 베이스+보컬만으로도 근음 진행은 잡혀야 한다
     assert "G" in chart and "D" in chart
-
-
-@pytest.mark.skipif(importlib.util.find_spec("gradio") is None, reason="gradio 미설치")
-def test_web_app_builds():
-    from band2sheet.web import build_app
-
-    build_app()

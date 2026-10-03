@@ -322,7 +322,7 @@ def _drum_element(pitches: list[int], dur: float, velocity: int):
     el.duration = duration.Duration(round(dur * 48) / 48)
     el.volume.velocity = int(velocity)
     if any(p == 46 for p in pitches):  # 열린 하이햇 'o'
-        el.articulations.append(articulations.OpenString())
+        el.articulations.append(articulations.OpenString(placement="above"))
     return el
 
 
@@ -360,3 +360,58 @@ def build_drum_kit(events, time_signature: str, metronome: tempo.MetronomeMark |
     out.insert(0, inst)
     return merge_voices([voice_part(hands), voice_part(feet)], out, hide_rests_from=1,
                         stems=["up", "down"], metronome=metronome)
+
+
+# ---------------------------------------------------------------------------
+# MusicXML 후처리: TAB 보표 줄 수 / 조율
+# ---------------------------------------------------------------------------
+
+def add_tab_details(xml_path) -> int:
+    """music21 이 내보내지 않는 TAB 보표의 <staff-details>(줄 수, 각 줄의 조율)를 넣는다.
+
+    MuseScore·OSMD 가 6줄(기타)/4줄(베이스) TAB 으로 정확히 그리게 된다. 반환: 고친 보표 수.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    from .instruments import BASS_TUNING, GUITAR_TUNING
+
+    path = _Path(xml_path)
+    text = path.read_text(encoding="utf-8")
+    names = dict(_re.findall(r'<score-part id="([^"]+)">\s*<part-name>([^<]*)</part-name>', text))
+    steps = ["C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"]
+    alters = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
+    fixed = 0
+
+    def details(number: str | None, tuning) -> str:
+        num = f' number="{number}"' if number else ""
+        rows = "".join(
+            f'<staff-tuning line="{i + 1}"><tuning-step>{steps[m % 12]}</tuning-step>'
+            + (f"<tuning-alter>{alters[m % 12]}</tuning-alter>" if alters[m % 12] else "")
+            + f"<tuning-octave>{m // 12 - 1}</tuning-octave></staff-tuning>"
+            for i, m in enumerate(tuning))
+        return f"<staff-details{num}><staff-lines>{len(tuning)}</staff-lines>{rows}</staff-details>"
+
+    def fix_part(match):
+        nonlocal fixed
+        pid, body = match.group(1), match.group(2)
+        tuning = BASS_TUNING if "bass" in names.get(pid, "").lower() else GUITAR_TUNING
+        clef = _re.search(r'<clef(?: number="(\d+)")?>\s*<sign>TAB</sign>.*?</clef>', body, _re.S)
+        if not clef or "<staff-details" in body[: clef.end() + 200]:
+            return match.group(0)
+        fixed += 1
+        # <attributes> 안에서 clef 뒤에 staff-details 가 와야 한다 (MusicXML 순서)
+        attrs_end = body.find("</attributes>", clef.end())
+        insert_at = attrs_end if attrs_end != -1 else clef.end()
+        # clef 들이 여러 개면 마지막 clef 다음에
+        last_clef = max(m.end() for m in _re.finditer(r"</clef>", body[:insert_at]))
+        between = body[last_clef:insert_at]
+        anchor = last_clef + (between.find("<transpose") if "<transpose" in between else
+                              between.find("<directive") if "<directive" in between else len(between))
+        body = body[:anchor] + details(clef.group(1), tuning) + body[anchor:]
+        return f'<part id="{pid}">{body}</part>'
+
+    text = _re.sub(r'<part id="([^"]+)">(.*?)</part>', fix_part, text, flags=_re.S)
+    if fixed:
+        path.write_text(text, encoding="utf-8")
+    return fixed

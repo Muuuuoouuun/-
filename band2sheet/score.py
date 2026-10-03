@@ -295,7 +295,9 @@ def drum_events(notes: list[Note], grid: Grid) -> list[Event]:
     events = []
     for k, on in enumerate(onsets):
         nxt = onsets[k + 1] if k + 1 < len(onsets) else on + grid.beat_ql
-        dur = min(nxt - on, grid.beat_ql)
+        bar_end = (math.floor(on / grid.bar_ql + 1e-9) + 1) * grid.bar_ql
+        # 드럼은 울림을 길게 적지 않는다: 다음 타격, 1박, 마디 끝 중 가장 가까운 곳까지
+        dur = min(nxt - on, grid.beat_ql, bar_end - on)
         ns = groups[on]
         events.append(Event(on, dur, sorted({n.pitch for n in ns}), max(n.velocity for n in ns)))
     return events

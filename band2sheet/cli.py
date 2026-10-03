@@ -4,7 +4,7 @@
   band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
   band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
   band2sheet transpose score.musicxml -s -2                 # 기존 MusicXML 조옮김
-  band2sheet web                                            # 웹 화면 실행
+  band2sheet app                                            # 악보 스튜디오 앱 실행
 """
 
 from __future__ import annotations
@@ -78,10 +78,14 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--stems", help="이 스템만 다시 렌더링 (project.json 입력 시)")
     _add_render_args(t)
 
-    w = sub.add_parser("web", help="웹 화면(Gradio) 실행")
-    w.add_argument("--host", default="127.0.0.1")
-    w.add_argument("--port", type=int, default=7860)
-    w.add_argument("--share", action="store_true", help="외부 공유 링크 만들기")
+    for name in ("app", "web"):
+        w = sub.add_parser(name, help="악보 스튜디오 앱 실행 (브라우저 화면)" if name == "app"
+                           else "app 과 같음")
+        w.add_argument("--host", default="127.0.0.1",
+                       help="같은 네트워크의 다른 기기에서 쓰려면 0.0.0.0")
+        w.add_argument("--port", type=int, default=8765)
+        w.add_argument("--data", type=Path, help="작업 저장 폴더 (기본: ~/band2sheet-data)")
+        w.add_argument("--no-browser", action="store_true", help="브라우저 자동으로 열지 않기")
 
     sub.add_parser("engines", help="설치된 엔진(오픈소스 모델) 확인")
 
@@ -184,10 +188,12 @@ def cmd_engines(args) -> int:
     return 0
 
 
-def cmd_web(args) -> int:
-    from .web import launch
-
-    launch(args.host, args.port, args.share)
+def cmd_app(args) -> int:
+    try:
+        from .app.server import launch
+    except ImportError as e:
+        raise RuntimeError("앱 실행에는 fastapi, uvicorn 이 필요합니다: pip install 'band2sheet[app]'") from e
+    launch(args.host, args.port, not args.no_browser, args.data)
     return 0
 
 
@@ -195,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return {
-            "run": cmd_run, "transpose": cmd_transpose, "web": cmd_web, "keys": cmd_keys,
+            "run": cmd_run, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
             "engines": cmd_engines,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:

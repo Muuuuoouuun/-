@@ -367,6 +367,9 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
 def _write(score, base: Path, pdf: bool) -> list[Path]:
     xml = base.with_suffix(".musicxml")
     score.write("musicxml", fp=str(xml))
+    from .notation import add_tab_details
+
+    add_tab_details(xml)
     files = [xml]
     if pdf:
         out = export_pdf(xml)
