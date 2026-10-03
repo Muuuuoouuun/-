@@ -15,10 +15,23 @@ def test_keys_command(capsys):
 
 
 def test_stems_dir_aliases(tmp_path):
-    for name in ("01_Lead Vocal.wav", "Kick+Snare drums.wav", "BassDI.wav", "Keys.wav", "notes.txt"):
+    for name in ("01_Lead Vocal.wav", "BGV.wav", "Kick+Snare drums.wav", "BassDI.wav", "Keys.wav",
+                 "notes.txt"):
         (tmp_path / name).write_bytes(b"")
     found = load_stems_dir(tmp_path)
-    assert set(found) == {"vocals", "drums", "bass", "piano"}
+    assert set(found.stems) == {"vocals", "backing_vocals", "drums", "bass", "piano"}
+
+
+def test_stems_dir_drum_multitrack(tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    for name in ("Kick In.wav", "Snare Top.wav", "HiHat.wav", "Tom 1.wav", "Tom 2.wav", "Floor Tom.wav",
+                 "Vox.wav"):
+        sf.write(tmp_path / name, np.zeros(1000), 22050)
+    found = load_stems_dir(tmp_path, tmp_path / "work")
+    assert set(found.drum_parts) == {"kick", "snare", "hh", "tom1", "tom2", "floor"}
+    assert "drums" in found.stems and "vocals" in found.stems
 
 
 def test_xml_transpose(tmp_path):

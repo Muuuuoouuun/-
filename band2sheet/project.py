@@ -41,6 +41,8 @@ class Track:
     name: str  # 스템 이름: vocals, bass, guitar, piano, other, drums
     notes: list[Note] = field(default_factory=list)
     lyrics: list[Word] = field(default_factory=list)
+    pedals: list[tuple[float, float]] = field(default_factory=list)  # 서스테인 페달 (초)
+    engine: str = ""  # 채보에 쓴 엔진
 
 
 @dataclass
@@ -53,6 +55,9 @@ class Project:
     downbeat: int = 0  # 몇 번째 비트(0부터)가 마디 첫 박인지
     tracks: dict[str, Track] = field(default_factory=dict)
     stems_dir: str | None = None
+    stems: dict[str, str] = field(default_factory=dict)  # 스템 이름 -> 오디오 경로 (재생/믹서용)
+    drum_parts: dict[str, str] = field(default_factory=dict)  # 드럼 조각 이름 -> 오디오 경로
+    engines: dict[str, str] = field(default_factory=dict)  # 단계 -> 사용한 엔진
 
     @property
     def tempo_bpm(self) -> float:
@@ -88,6 +93,9 @@ class Project:
             "time_signature": self.time_signature,
             "downbeat": self.downbeat,
             "stems_dir": self.stems_dir,
+            "stems": self.stems,
+            "drum_parts": self.drum_parts,
+            "engines": self.engines,
             "tracks": {
                 name: {
                     "notes": [
@@ -95,6 +103,8 @@ class Project:
                         for n in t.notes
                     ],
                     "lyrics": [asdict(w) for w in t.lyrics],
+                    "pedals": [[round(a, 4), round(b, 4)] for a, b in t.pedals],
+                    "engine": t.engine,
                 }
                 for name, t in self.tracks.items()
             },
@@ -110,6 +120,8 @@ class Project:
                 name=name,
                 notes=[Note(float(s), float(e), int(p), int(v)) for s, e, p, v in t["notes"]],
                 lyrics=[Word(**w) for w in t.get("lyrics", [])],
+                pedals=[(float(a), float(b)) for a, b in t.get("pedals", [])],
+                engine=t.get("engine", ""),
             )
         return cls(
             title=data["title"],
@@ -120,6 +132,9 @@ class Project:
             downbeat=int(data.get("downbeat", 0)),
             tracks=tracks,
             stems_dir=data.get("stems_dir"),
+            stems=data.get("stems", {}),
+            drum_parts=data.get("drum_parts", {}),
+            engines=data.get("engines", {}),
         )
 
 

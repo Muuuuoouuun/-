@@ -46,21 +46,28 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("source", nargs="?", default="",
                    help="유튜브 URL 또는 오디오/영상 파일 (--stems-dir 사용 시 생략 가능)")
     r.add_argument("-o", "--out", type=Path, default=None, help="결과 폴더 (기본: output/<제목>)")
-    r.add_argument("--model", default="htdemucs_6s",
-                   help="Demucs 모델: htdemucs_6s(6스템, 기본) | htdemucs(4스템) | htdemucs_ft")
+    r.add_argument("-q", "--quality", choices=["fast", "standard", "high"], default="standard",
+                   help="분리 품질: fast(4스템) | standard(6스템, 기본) | high(BS-RoFormer 보컬 + 6스템)")
+    r.add_argument("--model", help="Demucs 모델 직접 지정 (htdemucs_6s | htdemucs | htdemucs_ft)")
+    r.add_argument("--no-split-vocals", action="store_true",
+                   help="메인 보컬/코러스 분리 끄기 (audio-separator 필요)")
+    r.add_argument("--no-split-drums", action="store_true",
+                   help="드럼 조각(킥/스네어/탐/하이햇/심벌) 분리 끄기 (audio-separator 필요)")
+    r.add_argument("--beat-engine", choices=["auto", "beat_this", "librosa"], default="auto",
+                   help="비트 추적 엔진 (기본: Beat This! 설치 시 사용)")
     r.add_argument("--stems", help="이 스템만 채보 (예: vocals,bass,piano)")
     r.add_argument("--stems-dir", type=Path,
                    help="이미 분리된/멀티트랙 스템 폴더 (분리 단계 생략)")
     r.add_argument("--device", help="cpu | cuda | mps (기본: 자동)")
     r.add_argument("--bpm", type=float, help="템포를 직접 지정 (자동 인식이 2배/절반으로 틀릴 때)")
-    r.add_argument("--time-sig", default="4/4", help="박자표 (기본 4/4, 예: 3/4, 6/8)")
+    r.add_argument("--time-sig", default="auto", help="박자표 (기본 auto, 예: 4/4, 3/4, 6/8)")
     r.add_argument("--downbeat", type=int,
                    help="몇 번째 비트(0부터)를 마디 첫 박으로 할지 (기본: 자동 추정)")
     r.add_argument("--lyrics", action="store_true", help="보컬에서 가사 인식 (faster-whisper 필요)")
     r.add_argument("--lang", default="ko", help="가사 언어 (기본 ko, 자동 감지는 auto)")
     r.add_argument("--whisper-model", default="small", help="Whisper 모델 크기 (기본 small)")
-    r.add_argument("--vocal-engine", choices=["pyin", "basic_pitch"],
-                   help="보컬 채보 방식 (기본 pyin)")
+    r.add_argument("--vocal-engine", choices=["crepe", "pyin", "basic_pitch"],
+                   help="보컬 채보 방식 (기본: crepe 설치 시 crepe, 아니면 pyin)")
     r.add_argument("--start", type=float, help="이 시각(초)부터만 사용")
     r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
     _add_render_args(r)
@@ -75,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--host", default="127.0.0.1")
     w.add_argument("--port", type=int, default=7860)
     w.add_argument("--share", action="store_true", help="외부 공유 링크 만들기")
+
+    sub.add_parser("engines", help="설치된 엔진(오픈소스 모델) 확인")
 
     k = sub.add_parser("keys", help="키 이름 확인/조옮김 계산기 (예: band2sheet keys G -s 3)")
     k.add_argument("key", help="원래 키 (예: G, Bbm)")
@@ -100,7 +109,9 @@ def cmd_run(args) -> int:
             name = safe_name(Path(args.source).stem)
         out = Path("output") / name
     a = AnalyzeOptions(
-        model=args.model, stems=_stems(args.stems), stems_dir=args.stems_dir, device=args.device,
+        model=args.model, quality=args.quality, split_vocals=not args.no_split_vocals,
+        split_drums=not args.no_split_drums, beat_engine=args.beat_engine,
+        stems=_stems(args.stems), stems_dir=args.stems_dir, device=args.device,
         bpm=args.bpm, time_signature=args.time_sig, downbeat=args.downbeat, lyrics=args.lyrics,
         language=None if args.lang == "auto" else args.lang, whisper_model=args.whisper_model,
         vocal_engine=args.vocal_engine, start=args.start, duration=args.duration,
@@ -162,6 +173,17 @@ def cmd_keys(args) -> int:
     return 0
 
 
+def cmd_engines(args) -> int:
+    from .engines import status
+
+    for e in status():
+        mark = "✓" if e["installed"] else "·"
+        print(f" {mark} {e['key']:<16} {e['role']}")
+        if not e["installed"]:
+            print(f"   {'':<16} 설치: pip install {e['pip']}")
+    return 0
+
+
 def cmd_web(args) -> int:
     from .web import launch
 
@@ -174,6 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {
             "run": cmd_run, "transpose": cmd_transpose, "web": cmd_web, "keys": cmd_keys,
+            "engines": cmd_engines,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:
         print(f"오류: {e}", file=sys.stderr)

@@ -12,7 +12,25 @@ HANGUL = re.compile(r"[가-힣]")
 
 def transcribe_lyrics(vocals_path: Path, language: str | None = "ko",
                       model_size: str = "small") -> list[Word]:
-    """faster-whisper(우선) 또는 openai-whisper 로 단어 단위 타임스탬프를 얻는다."""
+    """WhisperX(정밀 정렬) > faster-whisper > openai-whisper 순으로 단어 단위 타임스탬프를 얻는다."""
+    try:
+        import whisperx
+
+        from .engines import torch_device
+
+        device = "cuda" if torch_device() == "cuda" else "cpu"
+        audio = whisperx.load_audio(str(vocals_path))
+        model = whisperx.load_model(model_size, device, compute_type="int8", language=language)
+        result = model.transcribe(audio, language=language)
+        align_model, meta = whisperx.load_align_model(language_code=result["language"], device=device)
+        aligned = whisperx.align(result["segments"], align_model, meta, audio, device)
+        return [
+            Word(float(w["start"]), float(w["end"]), w["word"].strip())
+            for seg in aligned["segments"] for w in seg.get("words", [])
+            if w.get("word", "").strip() and "start" in w
+        ]
+    except ImportError:
+        pass
     try:
         from faster_whisper import WhisperModel
 

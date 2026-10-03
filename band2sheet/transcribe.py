@@ -1,23 +1,37 @@
 """채보(오디오 -> 음표): 스템마다 알맞은 엔진으로 음표를 추출한다.
 
-- basic_pitch : Spotify Basic Pitch (다성 악기: 기타, 피아노, 건반, 베이스)
-- pyin        : librosa pYIN 기본 주파수 추적 (단선율: 보컬). 추가 모델 없이 동작
-- drums       : 대역별 온셋 검출로 킥/스네어/하이햇 추출
+- basic_pitch : Spotify Basic Pitch (다성: 기타, 건반, 코러스)
+- crepe       : CREPE 딥러닝 음높이 추적 (단선율: 보컬, 베이스) — torchcrepe 설치 시 기본
+- pyin        : librosa pYIN 음높이 추적 (단선율, 추가 모델 없이 동작하는 대체 엔진)
+- piano_hr    : ByteDance 고해상도 피아노 채보 (음 + 서스테인 페달)
+- drums       : 드럼 조각(DrumSep/멀티트랙) 또는 대역 분석으로 킥·스네어·탐·하이햇·심벌 검출
 """
 
 from __future__ import annotations
 
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import librosa
 import numpy as np
 
-from .instruments import HIHAT, KICK, SNARE, InstrumentSpec
+from .engines import available, torch_device
+from .instruments import (
+    CRASH, HIHAT, HIHAT_OPEN, KICK, RIDE, SNARE, TOM_FLOOR, TOM_HIGH, TOM_MID, InstrumentSpec,
+)
 from .project import Note
 
 
+@dataclass
+class Transcription:
+    notes: list[Note]
+    engine: str
+    pedals: list[tuple[float, float]] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
-# 엔진들
+# 다성: Basic Pitch
 # ---------------------------------------------------------------------------
 
 def basic_pitch_notes(path: Path, spec: InstrumentSpec, onset_threshold: float = 0.5,
@@ -46,43 +60,97 @@ def basic_pitch_notes(path: Path, spec: InstrumentSpec, onset_threshold: float =
     return sorted(notes, key=lambda n: (n.start, n.pitch))
 
 
-def pyin_notes(path: Path, spec: InstrumentSpec, sr: int = 22050, hop: int = 256) -> list[Note]:
-    """pYIN 피치 곡선을 음표로 분할한다 (보컬 멜로디용)."""
-    y, sr = librosa.load(str(path), sr=sr, mono=True)
-    if not np.any(y):
-        return []
-    fmin = float(librosa.midi_to_hz(spec.low))
-    fmax = float(librosa.midi_to_hz(spec.high))
-    f0, voiced, voiced_prob = librosa.pyin(
-        y, fmin=fmin, fmax=fmax, sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan
-    )
-    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
-    n = min(len(f0), len(rms))
-    f0, voiced, voiced_prob, rms = f0[:n], voiced[:n], voiced_prob[:n], rms[:n]
+# ---------------------------------------------------------------------------
+# 피아노: ByteDance High-resolution Piano Transcription (페달 포함)
+# ---------------------------------------------------------------------------
 
-    # 너무 작은 소리(블리딩/잔향)는 무성 처리
-    loud = rms > (np.percentile(rms[rms > 0], 95) if np.any(rms > 0) else 0) * 0.08
-    voiced = voiced & loud & (voiced_prob > 0.3)
-    midi = librosa.hz_to_midi(np.where(voiced, f0, np.nan))
+def piano_hr_notes(path: Path, device: str | None = None) -> tuple[list[Note], list[tuple[float, float]]]:
+    from piano_transcription_inference import PianoTranscription, load_audio, sample_rate
+
+    audio, _ = load_audio(str(path), sr=sample_rate, mono=True)
+    pt = PianoTranscription(device=torch_device(device))
+    with tempfile.TemporaryDirectory() as tmp:
+        out = pt.transcribe(audio, str(Path(tmp) / "piano.mid"))
+
+    def get(e, key, idx):
+        return e[key] if isinstance(e, dict) else e[idx]
+
+    notes = [
+        Note(float(get(e, "onset_time", 0)), float(get(e, "offset_time", 1)),
+             int(get(e, "midi_note", 2)), int(get(e, "velocity", 3)))
+        for e in out["est_note_events"]
+    ]
+    pedals = [(float(get(e, "onset_time", 0)), float(get(e, "offset_time", 1)))
+              for e in out.get("est_pedal_events", [])]
+    return sorted(notes, key=lambda n: (n.start, n.pitch)), pedals
+
+
+# ---------------------------------------------------------------------------
+# 단선율: 음높이 곡선(f0) -> 음표
+# ---------------------------------------------------------------------------
+
+def pyin_f0(y: np.ndarray, sr: int, hop: int, spec: InstrumentSpec) -> np.ndarray:
+    """pYIN. 반환: 프레임별 MIDI 음높이 (무성 = nan)."""
+    f0, voiced, prob = librosa.pyin(
+        y, fmin=float(librosa.midi_to_hz(spec.low)), fmax=float(librosa.midi_to_hz(spec.high)),
+        sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan,
+    )
+    voiced = voiced & (prob > 0.3)
+    return librosa.hz_to_midi(np.where(voiced, f0, np.nan))
+
+
+def crepe_f0(y: np.ndarray, sr: int, hop: int, spec: InstrumentSpec, device: str | None = None,
+             threshold: float = 0.5) -> np.ndarray:
+    """CREPE (torchcrepe). GPU 가 있으면 full 모델, 없으면 tiny 모델."""
+    import torch
+    import torchcrepe
+
+    device = torch_device(device)
+    if device == "mps":  # torchcrepe 는 mps 에서 불안정
+        device = "cpu"
+    model = "full" if device == "cuda" else "tiny"
+    audio = torch.tensor(y, dtype=torch.float32)[None]
+    pitch, periodicity = torchcrepe.predict(
+        audio, sr, hop_length=hop,
+        fmin=float(max(librosa.midi_to_hz(spec.low), 32.0)),
+        fmax=float(min(librosa.midi_to_hz(spec.high), 1975.0)),
+        model=model, decoder=torchcrepe.decode.viterbi, return_periodicity=True,
+        batch_size=512, device=device, pad=True,
+    )
+    periodicity = torchcrepe.filter.median(periodicity, 3)
+    hz = pitch[0].cpu().numpy()
+    per = periodicity[0].cpu().numpy()
+    return librosa.hz_to_midi(np.where(per > threshold, hz, np.nan))
+
+
+def notes_from_f0(y: np.ndarray, sr: int, hop: int, midi: np.ndarray,
+                  spec: InstrumentSpec) -> list[Note]:
+    """프레임별 음높이를 음표로 분할 (비브라토 무시, 음절 재발음/음량 틈에서 분할)."""
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop)[0]
+    n = min(len(midi), len(rms))
+    midi, rms = midi[:n].copy(), rms[:n]
+    voiced = ~np.isnan(midi)
+    # 너무 작은 소리(다른 악기 블리딩/잔향)는 무성 처리
+    if np.any(rms > 0):
+        voiced &= rms > np.percentile(rms[rms > 0], 95) * 0.08
+    midi[~voiced] = np.nan
 
     # 라이브 연주는 A=440 에서 조금 벗어나 있을 수 있으므로 전체 튜닝 오프셋을 보정
     frac = midi[voiced] - np.round(midi[voiced])
-    tuning = float(np.median(frac)) if frac.size else 0.0
-    midi = midi - tuning
+    midi = midi - (float(np.median(frac)) if frac.size else 0.0)
 
     onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="frames", backtrack=True)
     onset_set = set(int(o) for o in onsets)
 
     frame_t = hop / sr
     min_frames = max(2, int(round(spec.min_note / frame_t)))
-    notes: list[Note] = []
+    raw: list[tuple[float, float, int, float]] = []
     seg: list[int] = []
 
     def flush():
         if len(seg) >= min_frames:
             pitch = int(np.round(np.median(midi[seg])))
-            vel = float(np.max(rms[seg]))
-            notes.append(Note(seg[0] * frame_t, (seg[-1] + 1) * frame_t, pitch, vel))  # type: ignore[arg-type]
+            raw.append((seg[0] * frame_t, (seg[-1] + 1) * frame_t, pitch, float(np.max(rms[seg]))))
         seg.clear()
 
     for i in range(n):
@@ -100,7 +168,7 @@ def pyin_notes(path: Path, spec: InstrumentSpec, sr: int = 22050, hop: int = 256
             if jump:
                 ahead = midi[i:i + 3]
                 ahead = ahead[~np.isnan(ahead)]
-                jump = ahead.size > 0 and np.all(np.abs(ahead - current) > 0.6)
+                jump = ahead.size > 0 and bool(np.all(np.abs(ahead - current) > 0.6))
             # 같은 음 반복(가사 음절)은 온셋으로 분할
             restrike = i in onset_set and len(seg) >= min_frames
             if jump or restrike:
@@ -108,18 +176,49 @@ def pyin_notes(path: Path, spec: InstrumentSpec, sr: int = 22050, hop: int = 256
         seg.append(i)
     flush()
 
-    if notes:
-        peak = max(n_.velocity for n_ in notes) or 1.0
-        for n_ in notes:
-            n_.velocity = int(np.clip(40 + 87 * (n_.velocity / peak), 1, 127))
-    return notes
+    peak = max((r[3] for r in raw), default=1.0) or 1.0
+    return [Note(s, e, p, int(np.clip(40 + 87 * (v / peak), 1, 127))) for s, e, p, v in raw]
+
+
+def mono_notes(path: Path, spec: InstrumentSpec, engine: str, device: str | None = None) -> list[Note]:
+    if engine == "crepe":
+        sr, hop = 16000, 160
+        y, _ = librosa.load(str(path), sr=sr, mono=True)
+        if not np.any(y):
+            return []
+        midi = crepe_f0(y, sr, hop, spec, device)
+    else:
+        sr, hop = 22050, 256
+        y, _ = librosa.load(str(path), sr=sr, mono=True)
+        if not np.any(y):
+            return []
+        midi = pyin_f0(y, sr, hop, spec)
+    return notes_from_f0(y, sr, hop, midi, spec)
+
+
+def pyin_notes(path: Path, spec: InstrumentSpec) -> list[Note]:
+    return mono_notes(path, spec, "pyin")
+
+
+# ---------------------------------------------------------------------------
+# 드럼
+# ---------------------------------------------------------------------------
+
+def _decay_time(env_db: np.ndarray, f: int, frame_t: float, drop_db: float = 20.0) -> float:
+    """타격 후 에너지가 drop_db 만큼 줄어들 때까지 걸린 시간(초)."""
+    peak_i = f + int(np.argmax(env_db[f:f + 4])) if f < len(env_db) else len(env_db) - 1
+    peak = env_db[peak_i]
+    tail = env_db[peak_i:]
+    below = np.nonzero(tail < peak - drop_db)[0]
+    return (below[0] if below.size else len(tail)) * frame_t
 
 
 def drum_hits(path: Path, sr: int = 22050, hop: int = 256, threshold: float = 0.45) -> list[Note]:
-    """킥(저역) / 스네어(중역) / 하이햇(고역) 타격 검출.
+    """드럼 스템 하나에서 킥 / 스네어 / 하이햇(열림·닫힘) / 크래시 검출 (조각 분리가 없을 때).
 
     전체 대역에서 타격 시점을 찾은 뒤, 그 순간 각 대역의 에너지 증가량(스펙트럴 플럭스)을
     대역별 '전형적인 타격 세기'로 나눠 비교해 어떤 악기가 쳤는지 판단한다.
+    고역 타격은 울림 길이로 닫힌 하이햇 / 열린 하이햇 / 크래시를 구분한다.
     """
     y, sr = librosa.load(str(path), sr=sr, mono=True)
     if not np.any(y):
@@ -127,6 +226,7 @@ def drum_hits(path: Path, sr: int = 22050, hop: int = 256, threshold: float = 0.
     S = np.abs(librosa.stft(y, n_fft=2048, hop_length=hop)) ** 2
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
     bands = {KICK: (30, 120), SNARE: (150, 2000), HIHAT: (6000, sr / 2)}
+    frame_t = hop / sr
 
     onset_env = librosa.onset.onset_strength(S=librosa.power_to_db(S, ref=np.max), sr=sr,
                                              hop_length=hop)
@@ -135,31 +235,116 @@ def drum_hits(path: Path, sr: int = 22050, hop: int = 256, threshold: float = 0.
     if len(frames) == 0:
         return []
 
-    flux: dict[int, np.ndarray] = {}
+    hits: list[Note] = []
     for drum, (lo, hi) in bands.items():
         band = S[(freqs >= lo) & (freqs < hi)].sum(axis=0) + 1e-10
         db = 10 * np.log10(band)
-        rise = np.zeros_like(db)
-        # 직전 몇 프레임 대비 직후 몇 프레임의 에너지 증가 (dB)
-        for f in frames:
+        rise = np.zeros(len(frames))
+        for k, f in enumerate(frames):
             before = db[max(0, f - 4):max(1, f - 1)].mean()
             after = db[f:f + 3].max() if f < len(db) else db[-1]
             # 절대 크기가 너무 작은 대역은 무시 (곡 전체 최대 대비 -40 dB 미만)
-            rise[f] = max(0.0, after - before) if after > db.max() - 40 else 0.0
-        flux[drum] = rise
-
-    hits: list[Note] = []
-    for drum, rise in flux.items():
-        vals = rise[frames]
-        if not np.any(vals > 0):
+            rise[k] = max(0.0, after - before) if after > db.max() - 40 else 0.0
+        if not np.any(rise > 0):
             continue
-        typical = np.percentile(vals[vals > 0], 90)
-        for f, v in zip(frames, vals):
+        typical = np.percentile(rise[rise > 0], 90)
+        for f, v in zip(frames, rise):
             if typical <= 0 or v / typical < threshold:
                 continue
-            t = float(f * hop / sr)
+            piece = drum
+            if drum == HIHAT:
+                decay = _decay_time(db, int(f), frame_t)
+                if decay > 0.6:
+                    piece = CRASH
+                elif decay > 0.18:
+                    piece = HIHAT_OPEN
+            t = float(f * frame_t)
             vel = int(np.clip(50 + 77 * min(v / typical, 1.0), 1, 127))
-            hits.append(Note(t, t + 0.1, drum, vel))
+            hits.append(Note(t, t + 0.1, piece, vel))
+    return sorted(hits, key=lambda n: (n.start, n.pitch))
+
+
+def part_onsets(path: Path, sr: int = 22050, hop: int = 256,
+                gate: float = 0.12) -> tuple[list[tuple[float, int, int]], np.ndarray, float]:
+    """드럼 조각 트랙 하나의 타격 목록 [(시각, 프레임, 세기)] 과 dB 엔벌로프."""
+    y, sr = librosa.load(str(path), sr=sr, mono=True)
+    if not np.any(y):
+        return [], np.zeros(1), hop / sr
+    rms = librosa.feature.rms(y=y, frame_length=1024, hop_length=hop)[0]
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=hop, units="frames",
+                                        backtrack=False, delta=0.08, wait=3)
+    ref = np.percentile(rms, 99.5) or 1.0
+    out = []
+    for f in frames:
+        peak = float(rms[f:f + 4].max()) if f < len(rms) else 0.0
+        # 다른 조각에서 새어 들어온 작은 소리는 버린다
+        if peak < gate * ref:
+            continue
+        vel = int(np.clip(45 + 82 * min(peak / ref, 1.0), 1, 127))
+        out.append((float(f * hop / sr), int(f), vel))
+    return out, 20 * np.log10(rms + 1e-10), hop / sr
+
+
+def _tom_pitch(path: Path, times: list[float], sr: int = 22050) -> list[float]:
+    """탐 타격마다 기본 주파수(60~400Hz 스펙트럼 피크) 추정."""
+    y, sr = librosa.load(str(path), sr=sr, mono=True)
+    out = []
+    win = int(0.12 * sr)
+    for t in times:
+        i = int(t * sr)
+        seg = y[i:i + win]
+        if len(seg) < 256:
+            out.append(np.nan)
+            continue
+        spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)), n=8192))
+        f = np.fft.rfftfreq(8192, 1 / sr)
+        mask = (f >= 60) & (f <= 400)
+        out.append(float(f[mask][np.argmax(spec[mask])]))
+    return out
+
+
+def classify_toms(freqs: list[float]) -> list[int]:
+    """탐 음높이를 하이/미드/플로어로 묶는다 (로그 주파수 1차원 군집)."""
+    valid = [f for f in freqs if not np.isnan(f)]
+    if not valid:
+        return [TOM_MID] * len(freqs)
+    logs = np.log2(np.asarray(valid))
+    # 반음 2개(약 12%) 이상 떨어진 값들로 군집 경계 찾기
+    order = np.sort(logs)
+    gaps = np.diff(order)
+    cut_idx = np.argsort(gaps)[::-1][:2]
+    cuts = sorted(order[i] + gaps[i] / 2 for i in cut_idx if gaps[i] > 2 / 12)
+    n_groups = len(cuts) + 1
+    names = {1: [TOM_MID], 2: [TOM_FLOOR, TOM_HIGH], 3: [TOM_FLOOR, TOM_MID, TOM_HIGH]}[n_groups]
+    out = []
+    for f in freqs:
+        if np.isnan(f):
+            out.append(TOM_MID)
+            continue
+        g = int(np.searchsorted(cuts, np.log2(f)))
+        out.append(names[g])
+    return out
+
+
+def drum_hits_from_parts(parts: dict[str, Path]) -> list[Note]:
+    """드럼 조각별 트랙(DrumSep 결과 또는 멀티트랙)에서 키트 전체 채보."""
+    fixed = {"kick": KICK, "snare": SNARE, "ride": RIDE, "crash": CRASH,
+             "tom1": TOM_HIGH, "tom2": TOM_MID, "tom3": TOM_FLOOR, "floor": TOM_FLOOR}
+    hits: list[Note] = []
+    for part, path in parts.items():
+        onsets, env_db, frame_t = part_onsets(path)
+        if not onsets:
+            continue
+        if part == "hh":
+            for t, f, vel in onsets:
+                piece = HIHAT_OPEN if _decay_time(env_db, f, frame_t) > 0.2 else HIHAT
+                hits.append(Note(t, t + 0.1, piece, vel))
+        elif part == "toms":
+            pieces = classify_toms(_tom_pitch(path, [t for t, _, _ in onsets]))
+            hits += [Note(t, t + 0.1, p, vel) for (t, _, vel), p in zip(onsets, pieces)]
+        elif part in fixed:
+            hits += [Note(t, t + 0.1, fixed[part], vel) for t, _, vel in onsets]
     return sorted(hits, key=lambda n: (n.start, n.pitch))
 
 
@@ -216,12 +401,41 @@ def make_monophonic(notes: list[Note], prefer_low: bool = False, together: float
     return [n for n in picked if n.duration > 0.02]
 
 
-def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None) -> list[Note]:
+def resolve_engine(spec: InstrumentSpec, engine: str | None = None) -> str:
+    """'auto' 를 설치 상태에 맞는 실제 엔진 이름으로 바꾼다."""
     engine = engine or spec.engine
+    if engine != "auto":
+        return engine
+    if spec.stem == "piano":
+        return "piano_hr" if available("piano_hr") else "basic_pitch"
+    if spec.mono:
+        return "crepe" if available("crepe") else "pyin"
+    return "basic_pitch"
+
+
+def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None,
+                    drum_parts: dict[str, Path] | None = None, device: str | None = None,
+                    log=print) -> Transcription:
+    engine = resolve_engine(spec, engine)
+    pedals: list[tuple[float, float]] = []
     if engine == "drums":
-        return drum_hits(path)
-    if engine == "pyin":
-        notes = pyin_notes(path, spec)
+        if drum_parts:
+            return Transcription(drum_hits_from_parts(drum_parts), "drum_parts")
+        return Transcription(drum_hits(path), "drums")
+    if engine == "piano_hr":
+        try:
+            notes, pedals = piano_hr_notes(path, device)
+        except Exception as e:  # 체크포인트 다운로드 실패 등
+            log(f"   ! 피아노 고해상도 채보 생략 ({e}) — Basic Pitch 사용")
+            engine, notes = "basic_pitch", basic_pitch_notes(path, spec)
+    elif engine in ("crepe", "pyin"):
+        try:
+            notes = mono_notes(path, spec, engine, device)
+        except Exception as e:
+            if engine != "crepe":
+                raise
+            log(f"   ! CREPE 생략 ({e}) — pYIN 사용")
+            engine, notes = "pyin", mono_notes(path, spec, "pyin")
     elif engine == "basic_pitch":
         notes = basic_pitch_notes(path, spec)
     else:
@@ -229,4 +443,4 @@ def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None)
     notes = merge_fragments(filter_notes(notes, spec))
     if spec.mono:
         notes = make_monophonic(notes, prefer_low=spec.stem == "bass")
-    return notes
+    return Transcription(notes, engine, pedals)

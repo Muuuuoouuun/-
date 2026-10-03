@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 import numpy as np
 from music21 import (
     bar, chord, clef, duration, harmony, instrument, key as m21key, layout, metadata,
-    meter, note, percussion, stream, tempo,
+    meter, note, stream, tempo,
 )
 
 from .chords import ChordEvent
-from .instruments import HIHAT, KICK, SNARE, InstrumentSpec
+from .instruments import InstrumentSpec
 from .project import Note, Project, TimeMap
 from .theory import Key, spell_midi
 
@@ -172,6 +172,7 @@ def _make_element(ev: Event, key: Key):
 def _m21_instrument(spec: InstrumentSpec):
     inst = {
         "vocals": instrument.Vocalist,
+        "backing_vocals": instrument.Choir,
         "guitar": instrument.AcousticGuitar,
         "piano": instrument.Piano,
         "other": instrument.ElectricPiano,
@@ -200,28 +201,41 @@ def _header(part: stream.Stream, key: Key, project: Project, with_tempo: bool):
     part.insert(0, m21key.KeySignature(key.fifths))
     part.insert(0, meter.TimeSignature(project.time_signature))
     if with_tempo:
-        referent = duration.Duration(1.5) if project.compound else duration.Duration(project.beat_ql)
-        bpm = project.tempo_bpm
-        part.insert(0, tempo.MetronomeMark(number=int(round(bpm)), referent=referent))
+        part.insert(0, _metronome(project))
 
 
-def _finish(part: stream.Stream, total_ql: float) -> stream.Stream:
+def _finish(part: stream.Stream, total_ql: float, final_bar: bool = True) -> stream.Stream:
     part.makeRests(refStreamOrTimeRange=[0.0, total_ql], fillGaps=True, inPlace=True,
                    timeRangeFromBarDuration=False)
     part = part.makeNotation()
     last = part.getElementsByClass(stream.Measure).last()
-    if last is not None:
+    if last is not None and final_bar:
         last.rightBarline = bar.Barline("final")
     return part
 
 
+def _metronome(project: Project) -> tempo.MetronomeMark:
+    referent = duration.Duration(1.5) if project.compound else duration.Duration(project.beat_ql)
+    return tempo.MetronomeMark(number=int(round(project.tempo_bpm)), referent=referent)
+
+
 def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: Project,
                   total_ql: float, chords_: list[tuple[float, str]] | None = None,
-                  with_tempo: bool = True) -> list[stream.Part]:
-    """음높이 악기 파트. grand 보표면 오른손/왼손 두 PartStaff 를 반환."""
+                  with_tempo: bool = True, pedals_ql: list[tuple[float, float]] | None = None,
+                  with_dynamics: bool = True, with_tab: bool = True) -> list[stream.Part]:
+    """음높이 악기 파트.
+
+    - grand 보표(피아노/건반): 양손 자동 분리한 PartStaff 2개 (+ 페달)
+    - TAB 이 있는 악기(기타/베이스): 오선보 + TAB PartStaff 2개
+    - 나머지: Part 1개
+    """
+    from . import notation as nt
+
+    bar_ql = project.beats_per_bar * project.beat_ql
+    dyn = nt.dynamic_marks(events, bar_ql) if with_dynamics else []
+
     if spec.staff == "grand":
-        upper = [Event(e.offset, e.dur, [p for p in e.pitches if p >= 60], e.velocity) for e in events]
-        lower = [Event(e.offset, e.dur, [p for p in e.pitches if p < 60], e.velocity) for e in events]
+        upper, lower = nt.split_hands(events)
         staves = []
         for evs, cl in ((upper, clef.TrebleClef()), (lower, clef.BassClef())):
             ps = stream.PartStaff()
@@ -231,12 +245,24 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: 
             for e in evs:
                 if e.pitches:
                     ps.insert(e.offset, _make_element(e, key))
-            if chords_ and not staves:
-                _insert_chords(ps, chords_)
+            if not staves:
+                if chords_:
+                    _insert_chords(ps, chords_)
+                nt.insert_dynamics(ps, dyn)
             staves.append(_finish(ps, total_ql))
+        if pedals_ql:
+            nt.add_pedals(staves[1], pedals_ql)
         return staves
 
-    part = stream.Part()
+    fingerings = None
+    if spec.tab and with_tab:
+        max_fret = 17 if len(spec.tab) == 6 else 15
+        playable = [nt.playable_subset(e.pitches, spec.tab, max_fret) for e in events]
+        events = [Event(e.offset, e.dur, p, e.velocity, e.lyric, e.sources)
+                  for e, p in zip(events, playable) if p]
+        fingerings = nt.assign_frets([e.pitches for e in events], spec.tab, max_fret)
+
+    part = stream.PartStaff() if fingerings is not None else stream.Part()
     part.insert(0, _m21_instrument(spec))
     part.insert(0, _clef_for(spec, events))
     _header(part, key, project, with_tempo)
@@ -244,36 +270,20 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key, project: 
         part.insert(e.offset, _make_element(e, key))
     if chords_:
         _insert_chords(part, chords_)
-    return [_finish(part, total_ql)]
-
-
-DRUM_DISPLAY = {KICK: ("F", 4, "normal"), SNARE: ("C", 5, "normal"), HIHAT: ("G", 5, "x")}
+    nt.insert_dynamics(part, dyn)
+    staves = [_finish(part, total_ql)]
+    if fingerings is not None:
+        staves.append(nt.build_tab_staff(events, fingerings, spec.tab, project.time_signature,
+                                         total_ql, _finish))
+    return staves
 
 
 def build_drums(events: list[Event], project: Project, total_ql: float,
                 with_tempo: bool = True) -> stream.Part:
-    part = stream.Part()
-    inst = instrument.UnpitchedPercussion()
-    inst.partName = "Drums"
-    inst.partAbbreviation = "Dr."
-    part.insert(0, inst)
-    part.insert(0, clef.PercussionClef())
-    part.insert(0, meter.TimeSignature(project.time_signature))
-    if with_tempo:
-        referent = duration.Duration(1.5) if project.compound else duration.Duration(project.beat_ql)
-        part.insert(0, tempo.MetronomeMark(number=int(round(project.tempo_bpm)), referent=referent))
-    for e in events:
-        heads = []
-        for p in e.pitches:
-            step, octave, head = DRUM_DISPLAY.get(p, ("C", 5, "normal"))
-            u = note.Unpitched(displayName=f"{step}{octave}")
-            u.notehead = head
-            heads.append(u)
-        el = heads[0] if len(heads) == 1 else percussion.PercussionChord(heads)
-        el.duration = duration.Duration(_clean_duration(e.dur))
-        el.volume.velocity = int(e.velocity)
-        part.insert(e.offset, el)
-    return _finish(part, total_ql)
+    from .notation import build_drum_kit
+
+    return build_drum_kit(events, project.time_signature,
+                          _metronome(project) if with_tempo else None, total_ql, _finish)
 
 
 def drum_events(notes: list[Note], grid: Grid) -> list[Event]:
@@ -310,7 +320,8 @@ def chord_offsets(chords_: list[ChordEvent], key: Key, grid: Grid) -> list[tuple
 
 
 def assemble(parts: list[stream.Part], title: str, subtitle: str | None = None,
-             grand_groups: list[list[stream.Part]] | None = None) -> stream.Score:
+             groups: list[tuple[list[stream.Part], str]] | None = None) -> stream.Score:
+    """groups: [(묶을 보표들, 'brace' | 'bracket')] — 피아노 큰보표, 기타 오선+TAB 등."""
     sc = stream.Score()
     md = metadata.Metadata()
     md.title = title
@@ -319,7 +330,6 @@ def assemble(parts: list[stream.Part], title: str, subtitle: str | None = None,
     sc.metadata = md
     for p in parts:
         sc.insert(0, p)
-    for group in grand_groups or []:
-        sg = layout.StaffGroup(group, symbol="brace", barTogether=True)
-        sc.insert(0, sg)
+    for group, symbol in groups or []:
+        sc.insert(0, layout.StaffGroup(group, symbol=symbol, barTogether=True))
     return sc
