@@ -23,6 +23,8 @@ from .project import Note
 SR = 22050
 N_FFT = 4096
 HOP = 1024
+FINE_FFT = 2048
+FINE_HOP = 256
 
 
 def _smooth(x: np.ndarray, n: int) -> np.ndarray:
@@ -108,6 +110,7 @@ class SeparationAnalyzer:
     _ys: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     _mix: np.ndarray | None = field(default=None, repr=False)
     _cache: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict, repr=False)
+    _fine_cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     activity: dict[str, StemActivity] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -128,6 +131,14 @@ class SeparationAnalyzer:
             X = librosa.stft(self._ys[name], n_fft=N_FFT, hop_length=HOP)
             self._cache[name] = (np.abs(X), np.abs(self._mix - X))
         return self._cache[name]
+
+    def fine_power(self, name: str) -> np.ndarray:
+        """음 시작(어택) 판별용 촘촘한 시간 해상도(약 12ms)의 파워 스펙트럼 — 스템 하나만 캐시."""
+        if name not in self._fine_cache:
+            self._fine_cache.clear()
+            X = librosa.stft(self._ys[name], n_fft=FINE_FFT, hop_length=FINE_HOP)
+            self._fine_cache[name] = (np.abs(X) ** 2).astype(np.float32)
+        return self._fine_cache[name]
 
     def analyze(self, name: str) -> StemActivity:
         if name in self.activity:
@@ -178,7 +189,9 @@ class SeparationAnalyzer:
             f0, f1 = min(f0, n_frames - 1), min(f1, n_frames)
             hz = float(librosa.midi_to_hz(n.pitch))
             bins = []
-            for h in (1, 2, 3, 4):
+            # 기본음 자리로 판정한다. 배음까지 합치면 이 악기가 실제로 내는 다른 음(예: 화음의 옥타브 위 음)과
+            # 겹쳐서 새어 든 음도 통과해 버린다. 아주 낮은 음(E2 아래)만 기본음이 약할 수 있어 2배음까지.
+            for h in ((1,) if n.pitch >= 40 else (1, 2)):
                 b = int(round(h * hz * N_FFT / SR))
                 if b + 1 < A.shape[0]:
                     bins += [b - 1, b, b + 1]
@@ -248,6 +261,105 @@ def remove_ghosts(analyzer: "SeparationAnalyzer", name: str, notes: list[Note],
             if d in (12, 19, 24) and not has_fundamental(lo):
                 drop.add(id(lo))  # 기본음이 실제로는 없는 아래 유령음
             elif d in (12, 19, 24) and hi.velocity < weaker * lo.velocity and has_fundamental(lo):
+                drop.add(id(hi))
+    kept = [n for n in notes if id(n) not in drop]
+    return kept, len(notes) - len(kept)
+
+
+def remove_unstruck(analyzer: "SeparationAnalyzer", name: str, notes: list[Note],
+                    min_rise_db: float = 2.0, merge_gap: float = 0.1) -> tuple[list[Note], int]:
+    """새로 치지 않은 음표를 지운다 (건반·기타처럼 '치는' 악기용).
+
+    실제로 친 음은 시작 순간 그 음 주파수의 소리가 커진다(어택). 이미 울리던 낮은 음의 배음(옥타브 위),
+    다른 악기에서 새어 든 작은 소리, 울리는 음이 중간에 끊겨 다시 잡힌 조각은 커지지 않는다.
+    음 시작 직전의 가장 작은 값과 직후의 가장 큰 값을 비교한다.
+    어택이 없는 음이 같은 음 바로 뒤에 붙어 있으면(끊겨 잡힌 조각) 지우지 않고 앞 음에 합친다.
+    """
+    if not notes:
+        return notes, 0
+    P = analyzer.fine_power(name)
+    n_frames = P.shape[1]
+    fps = SR / FINE_HOP
+    pre0, pre1 = int(0.12 * fps), int(0.03 * fps)  # 시작 120ms~30ms 전
+    post = int(0.08 * fps)  # 시작 ~80ms 후 (채보 시작 시각 오차 감안해 30ms 전부터)
+    kept: list[Note] = []
+    last: dict[int, Note] = {}
+    for n in sorted(notes, key=lambda n: n.start):
+        f = int(round(n.start * fps))
+        b = int(round(float(librosa.midi_to_hz(n.pitch)) * FINE_FFT / SR))
+        struck = True  # 판단할 수 없으면(곡 처음·끝, 너무 높은 음) 남긴다
+        if f - pre0 >= 0 and f + post < n_frames and 1 <= b and b + 2 < P.shape[0]:
+            e = P[b - 1:b + 2].sum(0)
+            before = float(e[f - pre0:f - pre1].min())
+            after = float(e[f - pre1:f + post].max())
+            struck = before <= 0 or 10 * np.log10(after / before + 1e-12) >= min_rise_db
+        if struck:
+            kept.append(n)
+            last[n.pitch] = n
+            continue
+        prev = last.get(n.pitch)
+        if prev is not None and n.start - prev.end <= merge_gap:
+            prev.end = max(prev.end, n.end)
+    return kept, len(notes) - len(kept)
+
+
+def remove_harmonic_ghosts(analyzer: "SeparationAnalyzer", name: str, notes: list[Note],
+                           together: float = 0.1, factor: float = 2.5,
+                           min_samples: int = 10) -> tuple[list[Note], int]:
+    """아래 음의 배음만으로 설명되는 옥타브·12도·2옥타브 위 음표를 지운다.
+
+    악기마다 배음 세기(2배음/기본음 …)가 다르므로, 같은 스템에서 옥타브 짝이 없는 음표들로
+    '이 악기의 배음 비율'을 먼저 배운다. 짝이 있는 위 음 자리의 에너지가 아래 음 기본음 × 배음 비율의
+    factor 배도 안 되면, 그 위 음은 따로 친 음이 아니라 아래 음의 배음이다. 정말로 옥타브를 함께 친
+    경우에는 위 음 소리가 더해져 훨씬 커진다.
+    """
+    if len(notes) < 2:
+        return notes, 0
+    P = analyzer.fine_power(name)
+    n_frames = P.shape[1]
+    fps = SR / FINE_HOP
+    win = max(1, int(0.15 * fps))
+
+    def energy(n: Note, mult: int, t0: float) -> float:
+        f0 = int(t0 * fps)
+        b = int(round(mult * float(librosa.midi_to_hz(n.pitch)) * FINE_FFT / SR))
+        if f0 >= n_frames or b < 1 or b + 2 >= P.shape[0]:
+            return 0.0
+        return float(P[b - 1:b + 2, f0:min(n_frames, f0 + win)].sum())
+
+    notes = sorted(notes, key=lambda n: n.start)
+    starts = np.array([n.start for n in notes])
+    intervals = {12: 2, 19: 3, 24: 4}
+
+    def partners(i: int) -> list[int]:
+        lo_i = int(np.searchsorted(starts, starts[i] - together))
+        hi_i = int(np.searchsorted(starts, starts[i] + together, side="right"))
+        return [j for j in range(lo_i, hi_i) if j != i]
+
+    # 1) 옥타브 짝이 없는 음표로 배음 비율 배우기
+    samples: dict[int, list[float]] = {h: [] for h in intervals.values()}
+    for i, n in enumerate(notes):
+        if any(abs(notes[j].pitch - n.pitch) in intervals for j in partners(i)):
+            continue
+        e1 = energy(n, 1, n.start)
+        if e1 <= 0:
+            continue
+        for h in samples:
+            samples[h].append(energy(n, h, n.start) / e1)
+    if len(samples[2]) < min_samples:
+        return notes, 0
+    ratio = {h: float(np.median(v)) for h, v in samples.items()}
+
+    # 2) 짝이 있는 위 음: 위 음이 시작하는 때부터 같은 구간에서 비교
+    drop: set[int] = set()
+    for i, lo in enumerate(notes):
+        for j in partners(i):
+            hi = notes[j]
+            h = intervals.get(hi.pitch - lo.pitch)
+            if not h or id(lo) in drop:
+                continue
+            t0 = max(lo.start, hi.start)
+            if energy(lo, h, t0) < factor * ratio[h] * energy(lo, 1, t0):
                 drop.add(id(hi))
     kept = [n for n in notes if id(n) not in drop]
     return kept, len(notes) - len(kept)

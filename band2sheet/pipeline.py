@@ -129,7 +129,8 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         step(0.45 + 0.35 * i / max(len(todo), 1), f"③ 채보 중: {spec.label_ko}")
         res = transcribe_stem(stem_paths[name], spec, engine,
                               drum_parts=sep.drum_parts if name == "drums" else None,
-                              device=opts.device, log=log)
+                              device=opts.device, log=log,
+                              restrike_by_attack=analyzer is not None and name in STRUCK)
         notes = res.notes
         extra = f", 페달 {len(res.pedals)}개" if res.pedals else ""
         if analyzer is not None and notes:
@@ -209,17 +210,24 @@ def project_chords(project: Project) -> list[ChordEvent]:
                          key_at=project.key_at_beat)
 
 
+# 치는 악기 — 음이 시작할 때 소리가 커져야 진짜 음 (보컬·패드처럼 서서히 커지는 소리는 제외)
+STRUCK = {"piano", "guitar"}
+
+
 def clean_notes(analyzer, name: str, notes: list[Note], engine: str) -> tuple[list[Note], int]:
     """채보 결과에서 블리딩(다른 악기 소리)과 옥타브 유령음을 지운다."""
-    from .cleanup import remove_ghosts
+    from .cleanup import remove_ghosts, remove_harmonic_ghosts, remove_unstruck
 
     before = len(notes)
     if engine in ("drums", "drum_parts"):
         notes, _ = analyzer.filter_hits(name, notes)
     else:
         notes, _ = analyzer.verify_notes(name, notes)
-        if engine in ("basic_pitch", "piano_hr"):
+        if engine in ("basic_pitch", "piano_hr"):  # 다성 채보: 배음을 음표로 잘못 잡는 일이 많다
             notes, _ = remove_ghosts(analyzer, name, notes)
+            notes, _ = remove_harmonic_ghosts(analyzer, name, notes)
+            if name in STRUCK:
+                notes, _ = remove_unstruck(analyzer, name, notes)
     return notes, before - len(notes)
 
 

@@ -110,6 +110,18 @@ def test_separation_cleanup(tmp_path):
     kept, removed = remove_ghosts(sa, "guitar", [real, ghost])
     assert kept == [real] and removed == 1
 
+    # 피아노: 화음(G B D)의 배음일 뿐인 옥타브 위 음(G4), 울리는 D4 의 배음이 반 박 뒤에 다시 잡힌 음(D5)
+    from band2sheet.cleanup import remove_harmonic_ghosts, remove_unstruck
+    from tests.song import truth_notes
+
+    piano = [Note(t, t + d, p, 80) for t, p, d in truth_notes("piano")]
+    octave_ghost = Note(10.1, 10.6, 67, 90)  # 절 첫 박, G3 의 2배음
+    late_ghost = Note(10.4, 10.6, 74, 60)  # 반 박 뒤, D4 의 2배음
+    kept, removed = remove_harmonic_ghosts(sa, "piano", piano + [octave_ghost])
+    assert removed == 1 and octave_ghost not in kept
+    kept, removed = remove_unstruck(sa, "piano", piano + [late_ghost])
+    assert late_ghost not in kept and removed <= 1 + len(piano) // 50
+
 
 @pytest.mark.skipif(any(importlib.util.find_spec(m) is None for m in ("verovio", "cairosvg", "pypdf")),
                     reason="verovio/cairosvg/pypdf 미설치")

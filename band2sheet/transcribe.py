@@ -425,7 +425,9 @@ def resolve_engine(spec: InstrumentSpec, engine: str | None = None) -> str:
 
 def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None,
                     drum_parts: dict[str, Path] | None = None, device: str | None = None,
-                    log=print) -> Transcription:
+                    log=print, restrike_by_attack: bool = False) -> Transcription:
+    """restrike_by_attack: 다성 엔진에서 같은 음 조각을 세기로 합치지 않고 남겨 둔다
+    (뒤에서 스펙트럼의 어택으로 '다시 친 음'과 '끊긴 조각'을 가린다 — cleanup.remove_unstruck)."""
     engine = resolve_engine(spec, engine)
     pedals: list[tuple[float, float]] = []
     if engine == "drums":
@@ -450,8 +452,10 @@ def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None,
         notes = basic_pitch_notes(path, spec)
     else:
         raise ValueError(f"알 수 없는 채보 엔진: {engine}")
-    notes = merge_fragments(filter_notes(notes, spec),
-                            restrike=0.7 if engine in ("basic_pitch", "piano_hr") else None)
+    poly = engine in ("basic_pitch", "piano_hr")
+    notes = filter_notes(notes, spec)
+    if not (poly and restrike_by_attack):
+        notes = merge_fragments(notes, restrike=0.7 if poly else None)
     if spec.mono:
         notes = make_monophonic(notes, prefer_low=spec.stem == "bass")
     return Transcription(notes, engine, pedals)
