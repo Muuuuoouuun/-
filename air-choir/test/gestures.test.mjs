@@ -92,3 +92,56 @@ test('추적기: 가장 큰(가까운) 손을 쓰고, 높이·좌우를 음량·
   assert.ok(t.update([fake(3, 0.1, 0.5)], 30).brightness > 0.95);
   assert.ok(t.update([fake(3, 0.9, 0.5)], 40).brightness < 0.05);
 });
+
+// 편 손에서 검지를 구부려 엄지 끝에 붙인 모양 (OK 사인처럼 나머지 손가락은 편 채로)
+function pinchFrom(landmarks) {
+  const p = landmarks.map((q) => [...q]);
+  const thumbTip = p[4];
+  const pip = p[6];
+  p[8] = thumbTip.map((v, k) => v + (pip[k] - thumbTip[k]) * 0.05);
+  p[7] = pip.map((v, k) => (v + p[8][k]) / 2 + (p[5][k] - p[0][k]) * 0.15);
+  return p;
+}
+
+test('핀치: 실제 사진 속 손은 하나도 핀치로 잡히지 않는다 (주먹 포함)', () => {
+  for (const name of Object.keys(fixtures)) {
+    for (const h of hands(name)) assert.equal(h.pinch, false, name);
+  }
+  assert.equal(hands('fist')[0].fist, true);
+});
+
+test('핀치: 검지를 엄지에 붙이면 핀치, 주먹으로는 판정하지 않는다', () => {
+  const f = fixtures.open_two_hands;
+  const aspect = f.width / f.height;
+  for (const h of f.hands) {
+    const a = analyzeHand(pinchFrom(h.landmarks), aspect);
+    assert.equal(a.pinch, true, `거리 ${a.pinchDist.toFixed(2)}`);
+    assert.equal(a.fist, false);
+  }
+});
+
+test('추적기: 핀치는 잠깐 끊겨도 유지되고, 그동안 손가락 개수는 고정된다', () => {
+  const t = new GestureTracker({ pinchOnMs: 50, pinchOffMs: 120 });
+  const pin = (on, fingers = 2) => ({ ...fake(fingers), pinch: on, pinchShape: true, pinchDist: on ? 0.1 : 0.9, pinchPoint: { x: 0.4, y: 0.5 } });
+  t.update([pin(false, 2)], 0);
+  assert.equal(t.update([pin(true, 0)], 30).pinch, false); // 아직 50ms 안 됨
+  const on = t.update([pin(true, 0)], 90);
+  assert.equal(on.pinch, true);
+  assert.equal(on.fist, false);
+  assert.equal(t.update([pin(true, 3)], 300).fingers, 2); // 핀치 중 개수 고정
+  assert.equal(t.update([pin(false, 2)], 320).pinch, true); // 한 프레임 끊김
+  assert.equal(t.update([pin(true, 2)], 340).pinch, true);
+  t.update([pin(false, 2)], 400);
+  assert.equal(t.update([pin(false, 2)], 540).pinch, false); // 120ms 넘게 떨어지면 끝
+  assert.deepEqual(on.screen.pinchPoint, { x: 0.6, y: 0.5 }); // 화면은 거울
+});
+
+test('추적기: 손 속도 (던지기 판정용)', () => {
+  const t = new GestureTracker();
+  t.update([fake(2, 0.8, 0.5)], 0);
+  let s;
+  for (let i = 1; i <= 5; i++) s = t.update([fake(2, 0.8 - 0.05 * i, 0.5)], i * 33);
+  // 카메라 원본에서 왼쪽으로 = 화면에서 오른쪽으로 약 1.5 화면폭/초
+  assert.ok(s.velocity.x > 1.2 && s.velocity.x < 1.7, `속도 ${s.velocity.x}`);
+  assert.ok(Math.abs(s.velocity.y) < 0.01);
+});

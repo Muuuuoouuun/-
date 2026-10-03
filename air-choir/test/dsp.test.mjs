@@ -160,3 +160,19 @@ test('하모나이저: 데모 멜로디 처리 중 값이 튀지 않음 + 처리
     for (const n of [60, 62, 64, 65, 67, 69]) assert.ok(notes.has(n), `${engine}: ${n} 검출 안 됨`);
   }
 });
+
+test('녹음 링 버퍼: 절대 프레임으로 구간 꺼내기, 지난 구간은 null', async () => {
+  const { RingRecorder } = await import('../core/recorder.js');
+  const r = new RingRecorder(1000, { channels: 2, seconds: 1 }); // 1024 프레임
+  let f = 0;
+  for (let b = 0; b < 20; b++) {
+    const block = new Float32Array(128).map((_, i) => f + i);
+    r.write([block], f); // 모노 → 두 채널에 복사
+    f += 128;
+  }
+  const got = r.read(2000, 2010);
+  assert.deepEqual([...got[0]], [...Array(10)].map((_, i) => 2000 + i));
+  assert.deepEqual([...got[1]], [...got[0]]);
+  assert.equal(r.read(100, 200), null); // 이미 덮어씀
+  assert.equal(r.read(2500, 2600), null); // 아직 안 들어옴
+});

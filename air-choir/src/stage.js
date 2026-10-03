@@ -1,5 +1,6 @@
-// 카메라 위에 그리는 무대: 손 뼈대, 손가락 개수 링, 합창단 오브, 음량·밝기 게이지
+// 카메라 위에 그리는 무대: 손 뼈대, 손가락 개수 링, 합창단 오브, 음량·밝기 게이지, 루프 오브
 import { HAND_CONNECTIONS, FINGER_TIPS } from './gestures.js';
+import { MUTE_DWELL, orbRadius } from './orbs.js';
 import { midiName } from '../core/dsp.js';
 
 // object-fit: cover로 보이는 영상 위의 좌표 (화면은 거울처럼 좌우 반전)
@@ -14,12 +15,13 @@ export function coverMapper(W, H, vw, vh) {
 
 const glow = new Float32Array(4);
 
-export function drawStage(g, W, H, { mapper, gesture, stats, theme }) {
+export function drawStage(g, W, H, { mapper, gesture, stats, theme, loops }) {
   g.clearRect(0, 0, W, H);
   const { colors, fonts } = theme;
   const s = gesture;
 
   drawMeters(g, W, H, s, colors, fonts);
+  if (loops) drawLoops(g, W, H, loops, colors, fonts);
   if (!s.present || !s.hand) return;
 
   const hand = s.hand;
@@ -61,7 +63,11 @@ export function drawStage(g, W, H, { mapper, gesture, stats, theme }) {
   g.font = `${Math.round(Math.max(26, ringR * 0.9))}px ${fonts.display}`;
   g.fillText(s.fist ? '정지' : String(s.fingers), px, py + 2);
 
-  // 합창단 오브: 손 위쪽 반원에 성부마다 하나씩
+  // 합창단 오브: 손 위쪽 반원에 성부마다 하나씩 (루프 오브를 들고 있거나 녹음 중일 때는 숨김)
+  if (loops && loops.station.mode !== 'idle') {
+    g.textAlign = 'start';
+    return;
+  }
   const targets = s.fist ? [] : stats?.targets || [];
   const voiced = !!stats?.voiced && !s.fist;
   const n = Math.max(targets.length, s.fist ? 0 : s.preset);
@@ -144,4 +150,132 @@ function roundRect(g, x, y, w, h, r) {
   g.beginPath();
   if (g.roundRect) g.roundRect(x, y, w, h, Math.min(r, h / 2, w / 2));
   else g.rect(x, y, w, h);
+}
+
+// ───────────── 루프 오브 ─────────────
+
+// 녹음한 음의 높이로 색을 정한다: 낮으면 파랑, 높으면 주황·분홍
+export function orbColor(midi, alpha = 1) {
+  if (midi == null) return `hsl(250 25% 72% / ${alpha})`;
+  const t = Math.max(0, Math.min(1, (midi - 45) / 36));
+  return `hsl(${Math.round(225 - t * 215)} 85% 66% / ${alpha})`;
+}
+
+function drawLoops(g, W, H, { station, transport, now, pinchAt }, colors, fonts) {
+  const beat = transport.position(now);
+  const pulse = 1 + 0.07 * Math.pow(1 - beat.frac, 3);
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  for (const o of station.orbs) {
+    const x = o.x * W;
+    const y = o.y * H;
+    const playing = o.state === 'placed' && o.ready && !o.muted;
+    const r = o.r * H * (playing ? pulse : 1);
+    g.save();
+    g.globalAlpha = o.muted ? 0.4 : 1;
+    if (playing) {
+      g.shadowColor = orbColor(o.midi);
+      g.shadowBlur = 28;
+    }
+    const grad = g.createRadialGradient(x - r * 0.3, y - r * 0.35, r * 0.08, x, y, r);
+    grad.addColorStop(0, orbColor(o.midi, 1));
+    grad.addColorStop(0.55, orbColor(o.midi, 0.75));
+    grad.addColorStop(1, orbColor(o.midi, 0.12));
+    g.fillStyle = grad;
+    g.beginPath();
+    g.arc(x, y, r, 0, Math.PI * 2);
+    g.fill();
+    g.restore();
+
+    // 루프 진행 위치 (12시부터 시계 방향)
+    g.lineWidth = 2.5;
+    if (o.ready && o.state === 'placed') {
+      const p = ((((now - o.begin) % o.len) + o.len) % o.len) / o.len;
+      g.strokeStyle = o.muted ? colors.muted : colors.voice;
+      g.beginPath();
+      g.arc(x, y, r + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
+      g.stroke();
+    } else if (!o.ready) {
+      g.setLineDash([4, 5]);
+      g.strokeStyle = colors.voice;
+      g.beginPath();
+      g.arc(x, y, r + 6, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+    }
+    g.fillStyle = colors.ink;
+    g.font = `600 13px ${fonts.data}`;
+    g.fillText(o.muted ? '음소거' : `${o.bars}마디`, x, y + 1);
+    if (o.state === 'held') {
+      g.fillStyle = colors.label;
+      g.font = `500 14px ${fonts.body}`;
+      g.fillText('휙 던지기', x, y - r - 16);
+    }
+    if (station.drag?.orb === o) {
+      g.fillStyle = colors.label;
+      g.font = `12px ${fonts.data}`;
+      const side = o.x < 0.45 ? '왼쪽' : o.x > 0.55 ? '오른쪽' : '가운데';
+      g.fillText(`${side} · 음량 ${Math.round(Math.max(0, Math.min(1, (0.9 - o.y) / 0.8)) * 100)}%`, x, y + r + 18);
+    }
+  }
+
+  // 편 손을 대고 있는 동안 음소거 진행
+  const d = station.dwell;
+  if (d && !d.done) {
+    const p = Math.min(1, (now - d.since) / MUTE_DWELL);
+    g.lineWidth = 4;
+    g.strokeStyle = colors.bad;
+    g.beginPath();
+    g.arc(d.orb.x * W, d.orb.y * H, d.orb.r * H + 12, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p);
+    g.stroke();
+  }
+
+  // 터지는 오브
+  for (const p of station.pops) {
+    const k = (now - p.t) / 0.5;
+    g.lineWidth = 3;
+    g.strokeStyle = orbColor(p.midi, Math.max(0, 1 - k));
+    g.beginPath();
+    g.arc(p.x * W, p.y * H, p.r * H * (1 + 1.6 * k), 0, Math.PI * 2);
+    g.stroke();
+  }
+
+  // 녹음 표시: 핀치한 자리에
+  const mode = station.mode;
+  if (mode === 'countin' || mode === 'recording' || mode === 'finishing') {
+    const at = pinchAt || station.lastPoint;
+    const x = at.x * W;
+    const y = at.y * H;
+    const rec = station.rec;
+    if (mode === 'countin') {
+      const left = Math.max(1, Math.ceil((rec.begin - now) / transport.beat - 1e-6));
+      g.lineWidth = 3;
+      g.strokeStyle = colors.voice;
+      g.beginPath();
+      g.arc(x, y, 30, 0, Math.PI * 2);
+      g.stroke();
+      g.fillStyle = colors.voice;
+      g.font = `400 34px ${fonts.display}`;
+      g.fillText(String(left), x, y + 2);
+      g.font = `500 13px ${fonts.body}`;
+      g.fillText('다음 마디부터 녹음', x, y - 46);
+    } else {
+      const bars = Math.max(1, Math.ceil((now - rec.begin) / transport.bar));
+      const r = orbRadius(Math.min(4, bars)) * H * (0.7 + 0.3 * pulse);
+      g.fillStyle = 'rgba(255, 112, 112, 0.22)';
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = colors.bad;
+      g.beginPath();
+      g.arc(x, y, 7 + 3 * (pulse - 1) * 14, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = colors.label;
+      g.font = `500 13px ${fonts.body}`;
+      const label = mode === 'recording' ? `녹음 중 · ${bars}마디째` : '마디 끝까지 마저 부르세요';
+      g.fillText(label, x, y - r - 14);
+    }
+  }
+  g.textAlign = 'start';
 }

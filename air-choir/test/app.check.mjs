@@ -84,6 +84,7 @@ try {
   const p2 = await newPage({ width: 1280, height: 820 });
   await p2.goto('http://localhost:8125/index.html');
   await p2.click('#start-pointer');
+  await p2.waitForFunction(() => document.getElementById('st-cam').textContent === '마우스 모드');
   const box = await p2.locator('#stage').boundingBox();
   await p2.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.3);
   await p2.keyboard.press('3');
@@ -95,7 +96,61 @@ try {
   await p2.waitForTimeout(400);
   if (!(await p2.textContent('#hud-preset')).includes('정지')) failed.push('마우스 모드 주먹(0) 정지 안 됨');
 
-  // 3) 휴대폰 폭
+  // 3) 오브: 핀치(마우스 버튼) 유지로 녹음 → 던지기 → 옮기기 → 음소거 → 터뜨리기
+  const p3 = await newPage({ width: 1280, height: 820 });
+  await p3.goto('http://localhost:8125/index.html');
+  await p3.click('#start-pointer');
+  await p3.waitForFunction(() => window.airchoir.audio.ready && document.getElementById('st-cam').textContent === '마우스 모드');
+  await p3.selectOption('#bpm', '130');
+  const sb = await p3.locator('#stage').boundingBox();
+  const at = (x, y) => [sb.x + sb.width * x, sb.y + sb.height * y];
+  const st = (expr) => p3.evaluate(expr);
+  await p3.mouse.move(...at(0.3, 0.6));
+  await p3.waitForTimeout(300);
+  await p3.mouse.down();
+  await p3.waitForFunction(() => window.airchoir.station.mode === 'recording', null, { timeout: 8000 });
+  await p3.waitForTimeout(1200);
+  await p3.mouse.up();
+  await p3.waitForFunction(() => window.airchoir.station.mode === 'holding', null, { timeout: 8000 });
+  await p3.waitForTimeout(400);
+  await p3.mouse.move(...at(0.75, 0.35), { steps: 4 }); // 휙
+  await p3.waitForFunction(() => window.airchoir.station.orbs[0]?.state === 'placed' && window.airchoir.station.orbs[0]?.ready, null, { timeout: 8000 });
+  await p3.waitForTimeout(600);
+  const orb = await st(() => {
+    const o = window.airchoir.station.orbs[0];
+    const d = o.buffer.getChannelData(0);
+    let e = 0;
+    for (let i = 0; i < d.length; i++) e += d[i] * d[i];
+    return { x: o.x, y: o.y, bars: o.bars, rms: Math.sqrt(e / d.length), playing: window.airchoir.audio.orbNodes.size, midi: o.midi };
+  });
+  console.log('오브:', JSON.stringify(orb));
+  if (!(orb.x > 0.5)) failed.push('오브가 던진 방향으로 날아가지 않음');
+  if (!(orb.rms > 0.01)) failed.push('오브 녹음이 비어 있음');
+  if (orb.playing !== 1) failed.push('오브가 재생되지 않음');
+  await p3.screenshot({ path: join(SHOTS, 'app-orbs.png') });
+  // 옮기기
+  await p3.mouse.move(...at(orb.x, orb.y));
+  await p3.waitForTimeout(200);
+  await p3.mouse.down();
+  await p3.waitForTimeout(200);
+  await p3.mouse.move(...at(0.5, 0.25), { steps: 10 });
+  await p3.waitForTimeout(200);
+  await p3.mouse.up();
+  const moved = await st(() => window.airchoir.station.orbs[0]);
+  console.log('옮긴 위치:', moved.x.toFixed(2), moved.y.toFixed(2));
+  if (Math.abs(moved.x - 0.5) > 0.06 || Math.abs(moved.y - 0.25) > 0.06) failed.push('오브 옮기기 실패');
+  // 음소거: 편 손(5)을 1초 대기
+  await p3.keyboard.press('5');
+  await p3.waitForTimeout(1300);
+  if (!(await st(() => window.airchoir.station.orbs[0].muted))) failed.push('음소거 안 됨');
+  // 터뜨리기: 주먹(0)
+  await p3.keyboard.press('0');
+  await p3.waitForTimeout(400);
+  const left = await st(() => [window.airchoir.station.count, window.airchoir.audio.orbNodes.size]);
+  console.log('터뜨린 뒤 오브 수 / 재생 중:', left.join(' / '));
+  if (left[0] !== 0 || left[1] !== 0) failed.push('터뜨리기 실패');
+
+  // 4) 휴대폰 폭
   await p2.setViewportSize({ width: 400, height: 860 });
   await p2.keyboard.press('2');
   await p2.waitForTimeout(500);

@@ -3,6 +3,7 @@ import { analyzeHand, GestureTracker } from './gestures.js';
 import { HandCamera } from './hands.js';
 import { ChoirAudio } from './audio.js';
 import { drawStage, coverMapper } from './stage.js';
+import { Transport, OrbStation } from './orbs.js';
 
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
@@ -33,7 +34,26 @@ let gesture = tracker.state();
 let stats = null;
 let history = [];
 let mode = null; // 'camera' | 'pointer'
-const pointer = { inside: false, x: 0.5, y: 0.5, fingers: 2 };
+const pointer = { inside: false, down: false, x: 0.5, y: 0.5, fingers: 2 };
+
+// 오브 모드: 마디 그리드 + 오브 상태. 녹음한 구간의 음 높이로 오브 색을 정한다.
+const transport = new Transport(90, 0);
+const pitchLog = []; // 최근 30초 { t, midi }
+function medianMidi(from, to) {
+  const ms = pitchLog.filter((p) => p.t >= from && p.t <= to && p.midi != null).map((p) => p.midi).sort((a, b) => a - b);
+  return ms.length ? ms[ms.length >> 1] : null;
+}
+const station = new OrbStation({
+  transport,
+  audio: {
+    capture: (orb) => audio.capture(orb).then(() => (orb.midi = medianMidi(orb.begin, orb.begin + orb.len))),
+    play: (orb) => audio.play(orb),
+    stop: (orb) => audio.stop(orb),
+    mix: (orb) => audio.mix(orb),
+  },
+});
+let metronomeWanted = false;
+window.airchoir = { station, audio, transport, tracker }; // 디버그·자동 테스트용
 
 // ───────────── 상태 표시 ─────────────
 
@@ -71,6 +91,8 @@ audio.onStats = (s) => {
   history.push({ t: s.t, midi: s.midi, targets: s.targets });
   const cut = s.t - HISTORY_SEC;
   while (history.length && history[0].t < cut) history.shift();
+  pitchLog.push({ t: s.t, midi: s.midi });
+  while (pitchLog.length && pitchLog[0].t < s.t - 30) pitchLog.shift();
 };
 
 async function startSound(kind, file) {
@@ -141,12 +163,18 @@ async function start(kind) {
 function pointerHand() {
   if (!pointer.inside) return [];
   const f = pointer.fingers;
+  const palm = { x: 1 - pointer.x, y: pointer.y }; // 카메라 원본 좌표로 (화면은 거울)
   return [{
     fingers: f,
     fist: f === 0,
     extended: [f === 5, f >= 1, f >= 2, f >= 3, f >= 4],
-    palm: { x: 1 - pointer.x, y: pointer.y }, // 카메라 원본 좌표로 (화면은 거울)
+    palm,
     size: 0.09,
+    // 마우스 버튼을 누르고 있으면 핀치
+    pinch: pointer.down,
+    pinchShape: true,
+    pinchDist: pointer.down ? 0.1 : 1,
+    pinchPoint: palm,
   }];
 }
 
@@ -159,8 +187,18 @@ function bindPointer() {
     pointer.inside = true;
   };
   stage.addEventListener('pointermove', move);
-  stage.addEventListener('pointerdown', move);
-  stage.addEventListener('pointerleave', () => (pointer.inside = false));
+  stage.addEventListener('pointerdown', (e) => {
+    if (mode !== 'pointer') return;
+    move(e);
+    pointer.down = true;
+    stage.setPointerCapture?.(e.pointerId);
+  });
+  const up = () => (pointer.down = false);
+  stage.addEventListener('pointerup', up);
+  stage.addEventListener('pointercancel', up);
+  stage.addEventListener('pointerleave', () => {
+    if (!pointer.down) pointer.inside = false;
+  });
 }
 
 // ───────────── 컨트롤 ─────────────
@@ -184,6 +222,12 @@ function bindControls() {
   key.onchange = () => audio.setParams({ tonic: +key.value });
   $('scale').onchange = (e) => audio.setParams({ scale: e.target.value });
   $('lock').onchange = (e) => audio.setParams({ lock: e.target.checked });
+
+  const bpm = $('bpm');
+  [70, 80, 90, 100, 110, 120, 130].forEach((b) => bpm.add(new Option(`${b} BPM`, b, b === 90, b === 90)));
+  bpm.onchange = () => transport.set(+bpm.value);
+  $('metronome').onchange = (e) => (metronomeWanted = e.target.checked);
+  $('clear-orbs').onclick = () => station.clear();
   document.querySelectorAll('[data-engine]').forEach((b) => (b.onclick = () => setEngine(b.dataset.engine)));
 
   window.addEventListener('keydown', (e) => {
@@ -213,11 +257,38 @@ function fitCanvas(canvas, g) {
   return [w, h];
 }
 
+// 손 위치를 무대 화면 기준 0~1 좌표로 (카메라 영상이 잘려 보이는 만큼 보정)
+function toStage(mapper, W, H, p) {
+  const [x, y] = mapper.map(p.x, p.y);
+  return { x: x / W, y: y / H };
+}
+
 function drawOverlay() {
   const [W, H] = fitCanvas(overlay, og);
   const video = $('video');
   const mapper = mode === 'camera' && video.videoWidth ? coverMapper(W, H, video.videoWidth, video.videoHeight) : coverMapper(W, H, W, H);
-  drawStage(og, W, H, { mapper, gesture, stats, theme });
+  let loops = null;
+  if (audio.ready) {
+    const now = audio.ctx.currentTime;
+    const hand = gesture.present ? gesture.hand : null;
+    const screen = hand
+      ? { palm: toStage(mapper, W, H, hand.palm), pinchPoint: toStage(mapper, W, H, hand.pinchPoint || hand.palm) }
+      : null;
+    station.aspect = W / H;
+    // 오브가 HUD 아래, 음량 게이지 왼쪽, 밝기 바 위에 머물도록
+    const hud = document.querySelector('.hud');
+    station.bounds = {
+      x0: 0.03,
+      x1: 1 - 62 / W,
+      y0: Math.min(0.45, (hud.offsetTop + hud.offsetHeight + 10) / H),
+      y1: 1 - 52 / H,
+    };
+    station.update({ ...gesture, screen }, now);
+    const recording = ['countin', 'recording', 'finishing'].includes(station.mode);
+    audio.setMetronome(metronomeWanted || recording, transport);
+    loops = { station, transport, now, pinchAt: screen?.pinchPoint };
+  }
+  drawStage(og, W, H, { mapper, gesture, stats, theme, loops });
 }
 
 let center = 64;
@@ -293,6 +364,33 @@ function renderHud() {
   document.querySelectorAll('#guide li[data-g]').forEach((li) => li.classList.toggle('now', li.dataset.g === g));
 
   if (mode === 'camera' && cam.fps) status('st-cam', `손 인식 ${Math.round(cam.fps)}fps`, 'on');
+  renderLoopHud();
+}
+
+const ORB_STATUS = {
+  countin: '다음 마디부터 녹음해요',
+  recording: '● 녹음 중 · 놓으면 마디 끝에서 완성',
+  finishing: '마디 끝까지 마저 부르세요',
+  holding: '휙 던지면 그 자리에서 반복돼요',
+  drag: '옮기는 중 · 놓으면 내려놓기',
+};
+
+function renderLoopHud() {
+  if (!audio.ready) return;
+  const pos = transport.position(audio.ctx.currentTime);
+  document.querySelectorAll('#hud-beat i').forEach((el, i) => el.classList.toggle('on', i === pos.beat));
+  $('hud-bpm').textContent = `${transport.bpm}`;
+  const text = station.message?.text || ORB_STATUS[station.mode] || '';
+  const card = $('hud-orb');
+  card.hidden = !text;
+  $('hud-orb-text').textContent = text;
+  card.classList.toggle('rec', station.mode === 'recording' || station.mode === 'finishing');
+  $('orb-count').textContent = `${station.count} / ${station.maxOrbs}`;
+  $('bpm').disabled = station.count > 0;
+  $('bpm-lock').hidden = station.count === 0;
+  $('clear-orbs').disabled = station.count === 0;
+  const g = station.mode === 'idle' ? null : station.mode === 'drag' ? 'drag' : station.mode === 'holding' ? 'throw' : 'pinch';
+  document.querySelectorAll('#orb-guide li[data-o]').forEach((li) => li.classList.toggle('now', li.dataset.o === g));
 }
 
 let lastHud = 0;
