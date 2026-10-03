@@ -1,0 +1,327 @@
+<meta charset="utf-8">
+<title>AirChoir 화음 테스트 벤치</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600&family=Instrument+Serif&display=swap">
+<style>
+  /* 무대 조명 아래의 합창 지휘대: 어두운 잉크 바탕, 성부마다 고유한 색. 한 가지 어두운 룩으로 고정한다. */
+  :root {
+    --ink: #13121d;
+    --panel: #1c1a2a;
+    --raised: #262438;
+    --line: #34314b;
+    --fg: #eeebf6;
+    --muted: #a19db9;
+    --voice: #f6ead0;
+    --v1: #ffb454;
+    --v2: #ff7fa9;
+    --v3: #5fd3c4;
+    --v4: #93b5ff;
+    --good: #72d892;
+    --warn: #ffcc66;
+    --bad: #ff7070;
+    --font-display: "Instrument Serif", "Times New Roman", serif;
+    --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --r: 10px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--fg);
+    font: 15px/1.5 var(--font-body);
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 18px 40px;
+    display: grid;
+    gap: 16px;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 20px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .brand h1 {
+    margin: 0;
+    font: 400 34px/1 var(--font-display);
+    letter-spacing: 0.01em;
+  }
+  .brand span { color: var(--muted); font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  button, select, .file-btn {
+    font: 500 14px/1 var(--font-body);
+    color: var(--fg);
+    background: var(--raised);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+  }
+  button:hover, .file-btn:hover, select:hover { border-color: var(--muted); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .file-btn:focus-within {
+    outline: 2px solid var(--v4);
+    outline-offset: 2px;
+  }
+  button[aria-pressed="true"] { background: var(--fg); color: var(--ink); border-color: var(--fg); }
+  .file-btn input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .file-btn { position: relative; display: inline-flex; align-items: center; }
+  kbd {
+    font: 500 11px/1 var(--font-data);
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 2px 4px;
+    margin-left: 6px;
+  }
+  button[aria-pressed="true"] kbd { color: var(--ink); border-color: var(--ink); }
+
+  .notice {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--warn);
+    background: var(--panel);
+    border-radius: var(--r);
+    padding: 10px 14px;
+    color: var(--fg);
+    font-size: 14px;
+  }
+  .notice.error { border-left-color: var(--bad); }
+
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+    gap: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    padding: 16px;
+    min-width: 0;
+  }
+  .label {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+  .readout { display: grid; gap: 14px; align-content: start; }
+  .note-big {
+    font: 400 84px/0.9 var(--font-display);
+    color: var(--voice);
+    font-variant-numeric: tabular-nums;
+  }
+  .note-big.off { color: var(--line); }
+  .data { font: 400 13px/1.4 var(--font-data); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meter { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--good); transition: width 80ms linear; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
+  .chip {
+    font: 500 14px/1 var(--font-data);
+    padding: 7px 9px;
+    border-radius: 6px;
+    background: var(--raised);
+    border: 1px solid currentColor;
+  }
+  .chip.v0 { color: var(--v1); } .chip.v1 { color: var(--v2); }
+  .chip.v2 { color: var(--v3); } .chip.v3 { color: var(--v4); }
+  .chip.idle { color: var(--muted); border-color: var(--line); }
+
+  .trace { padding: 12px 0 0; overflow: hidden; display: grid; gap: 4px; }
+  .trace canvas { display: block; width: 100%; height: 320px; }
+  .legend {
+    padding-inline: 14px;
+    display: flex; gap: 6px 12px; flex-wrap: wrap; justify-content: flex-end;
+    font: 400 12px/1 var(--font-data); color: var(--muted);
+  }
+  .legend b { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+  }
+  .stack { display: grid; gap: 8px; }
+  .engine-btn { text-align: left; display: grid; gap: 4px; padding: 10px 12px; line-height: 1.3; }
+  .engine-btn small { font-weight: 400; font-size: 12px; color: var(--muted); }
+  .engine-btn[aria-pressed="true"] small { color: var(--ink); opacity: 0.75; }
+  .fingers { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+  .fingers button { padding: 10px 0; font: 500 18px/1 var(--font-data); }
+  .preset-name { font-size: 14px; }
+  .slider { display: grid; grid-template-columns: 88px minmax(0, 1fr) 52px; gap: 8px; align-items: center; font-size: 13px; }
+  .slider output { font: 400 12px/1 var(--font-data); color: var(--muted); text-align: right; }
+  input[type="range"] { width: 100%; accent-color: var(--v1); }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  input[type="checkbox"] { accent-color: var(--v1); width: 16px; height: 16px; }
+
+  .bottom { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+  .lat-bar { display: flex; height: 22px; border-radius: 5px; overflow: hidden; background: var(--raised); position: relative; }
+  .lat-bar span { height: 100%; }
+  .lat-bar .target {
+    position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--fg);
+  }
+  .lat-list { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; margin-top: 12px; font-size: 13px; align-items: center; }
+  .lat-list .sw { width: 10px; height: 10px; border-radius: 2px; }
+  .lat-list .v { font: 400 13px/1 var(--font-data); text-align: right; font-variant-numeric: tabular-nums; }
+  .lat-total { display: flex; align-items: baseline; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .lat-total strong { font: 400 40px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+  .pill { font: 500 12px/1 var(--font-body); padding: 5px 8px; border-radius: 99px; background: var(--raised); }
+  .pill.good { color: var(--good); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); }
+  audio { width: 100%; margin-top: 10px; }
+  .rec-on { background: var(--bad) !important; color: var(--ink) !important; border-color: var(--bad) !important; }
+  .muted { color: var(--muted); font-size: 13px; margin: 0; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  @media (max-width: 860px) {
+    .stage, .bottom { grid-template-columns: minmax(0, 1fr); }
+    .controls { grid-template-columns: minmax(0, 1fr); }
+    .note-big { font-size: 64px; }
+    .trace canvas { height: 260px; }
+  }
+  @media (max-width: 480px) {
+    .wrap { padding-inline: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .meter i { transition: none; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>AirChoir</h1>
+      <span>Phase 0 · 화음 엔진 비교 테스트</span>
+    </div>
+    <div class="row" role="group" aria-label="소리 입력">
+      <button id="src-demo" type="button" aria-pressed="false">▶ 데모 멜로디</button>
+      <button id="src-mic" type="button" aria-pressed="false">🎤 마이크</button>
+      <label class="file-btn" id="src-file-label">📂 녹음 파일 열기<input id="src-file" type="file" accept="audio/*,video/*"></label>
+      <button id="stop" type="button">■ 정지</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice">이어폰을 끼고 위에서 입력을 고르세요. 데모 멜로디는 마이크 없이 바로 들어 볼 수 있어요. 마이크로 직접 노래하면 실제 지연 시간까지 확인할 수 있어요.</div>
+
+  <section class="stage">
+    <div class="panel readout" aria-live="polite">
+      <div>
+        <p class="label">지금 부르는 음</p>
+        <div id="note" class="note-big off">—</div>
+        <div id="hz" class="data">음 대기 중</div>
+      </div>
+      <div>
+        <p class="label">검출 신뢰도</p>
+        <div class="meter"><i id="conf"></i></div>
+      </div>
+      <div>
+        <p class="label">만들어진 화음</p>
+        <div id="chips" class="chips"><span class="chip idle">없음</span></div>
+      </div>
+      <p class="muted">키보드 <kbd>0</kbd>~<kbd>4</kbd>는 손가락 개수, <kbd>Q</kbd> <kbd>W</kbd> <kbd>E</kbd>는 엔진 전환입니다.</p>
+    </div>
+    <div class="panel trace">
+      <div class="legend" aria-hidden="true">
+        <span><b style="background: var(--voice)"></b>내 목소리</span>
+        <span><b style="background: var(--v1)"></b>성부 1</span>
+        <span><b style="background: var(--v2)"></b>성부 2</span>
+        <span><b style="background: var(--v3)"></b>성부 3</span>
+        <span><b style="background: var(--v4)"></b>성부 4</span>
+      </div>
+      <canvas id="trace" aria-label="최근 6초 음정 궤적. 흰 선은 부른 음, 색 선은 화음"></canvas>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="panel stack" role="group" aria-labelledby="engine-label">
+      <p class="label" id="engine-label">화음 엔진</p>
+      <button class="engine-btn" type="button" data-engine="granular" aria-pressed="false">
+        <span>A · 그레인 <kbd>Q</kbd></span>
+        <small>Tone.js PitchShift와 같은 지연선 방식</small>
+      </button>
+      <button class="engine-btn" type="button" data-engine="psola" aria-pressed="true">
+        <span>B · PSOLA <kbd>W</kbd></span>
+        <small>목소리 한 주기씩 잘라 붙임. 음색 보존</small>
+      </button>
+      <button class="engine-btn" type="button" data-engine="synth" aria-pressed="false">
+        <span>C · 합성 보이스 <kbd>E</kbd></span>
+        <small>대체 경로. 부른 음을 따라 "아~" 소리를 만듦</small>
+      </button>
+    </div>
+
+    <div class="panel stack">
+      <p class="label" id="finger-label">손가락 개수 (화음 구성)</p>
+      <div class="fingers" role="group" aria-labelledby="finger-label">
+        <button type="button" data-preset="0" aria-pressed="false">0</button>
+        <button type="button" data-preset="1" aria-pressed="false">1</button>
+        <button type="button" data-preset="2" aria-pressed="true">2</button>
+        <button type="button" data-preset="3" aria-pressed="false">3</button>
+        <button type="button" data-preset="4" aria-pressed="false">4</button>
+      </div>
+      <div id="preset-name" class="preset-name">3도 + 5도 위</div>
+      <div class="row">
+        <label class="sr-only" for="key">키</label>
+        <select id="key" aria-label="키"></select>
+        <select id="scale" aria-label="장조 또는 단조">
+          <option value="major">장조</option>
+          <option value="minor">단조</option>
+        </select>
+      </div>
+      <label class="check"><input id="lock" type="checkbox" checked> 화음을 정확한 음에 고정</label>
+      <p class="muted">끄면 내 음정이 조금 틀려도 화음이 같이 따라가요.</p>
+    </div>
+
+    <div class="panel stack">
+      <p class="label">음량 · 세부 설정</p>
+      <div class="slider">
+        <label for="dry">내 목소리</label>
+        <input id="dry" type="range" min="0" max="1" step="0.05" value="0.9">
+        <output id="dry-v" for="dry">0.90</output>
+      </div>
+      <div class="slider">
+        <label for="harm">화음</label>
+        <input id="harm" type="range" min="0" max="1.5" step="0.05" value="0.8">
+        <output id="harm-v" for="harm">0.80</output>
+      </div>
+      <div class="slider">
+        <label for="win">그레인 창</label>
+        <input id="win" type="range" min="15" max="100" step="5" value="40">
+        <output id="win-v" for="win">40ms</output>
+      </div>
+      <p class="muted">그레인 창은 A 엔진에만 적용돼요. 짧을수록 지연이 줄고 소리는 거칠어져요.</p>
+    </div>
+  </section>
+
+  <section class="bottom">
+    <div class="panel">
+      <p class="label">귀에 들리기까지 걸리는 시간 (예상)</p>
+      <div class="lat-bar" id="lat-bar" aria-hidden="true"></div>
+      <div class="lat-total">
+        <strong id="lat-total">— ms</strong>
+        <span id="lat-pill" class="pill">측정 전</span>
+        <span class="muted">흰 선이 목표 100ms</span>
+      </div>
+      <div class="lat-list" id="lat-list"></div>
+      <p class="muted" style="margin-top: 10px">음정 추적 지연 <span id="track" class="data">—</span> · 음이 바뀐 직후 화음이 따라오기까지 걸리는 시간</p>
+    </div>
+    <div class="panel stack">
+      <p class="label">녹음해서 비교하기</p>
+      <p class="muted">엔진을 바꿔 가며 같은 소절을 녹음해 두고 들어 보세요.</p>
+      <div class="row">
+        <button id="rec" type="button" disabled>● 녹음 시작 <kbd>R</kbd></button>
+        <button id="save" type="button" hidden>파일로 저장</button>
+      </div>
+      <div id="rec-info" class="data"></div>
+      <audio id="playback" controls hidden></audio>
+    </div>
+  </section>
+</div>
+
+<script type="module" src="app.js"></script>

@@ -8,3 +8,5 @@ output/
 *.wav
 *.mp3
 *.mid
+node_modules/
+screenshot-*.png
