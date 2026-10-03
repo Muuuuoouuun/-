@@ -82,6 +82,17 @@ main { padding: 1.4rem 1.8rem; min-width: 0; }
 .drop.over, .drop:hover { border-color: var(--accent); background: var(--accent-weak); }
 .drop-icon { font-size: 2rem; }
 .file-name { font-weight: 600; color: var(--accent); }
+.drop.dim { opacity: .55; }
+
+.url-card { margin: 1rem 0 0; }
+.url-card input[type=url] { font-size: 1rem; padding: .6rem .7rem; }
+.or { display: flex; align-items: center; gap: .8rem; color: var(--muted); font-size: .85rem; margin: 1rem 0 0; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.source-video { width: 100%; max-height: 60vh; background: #000; border-radius: var(--radius); margin: 1rem 0; }
+#s-audio { width: 100%; }
+#view-source .card { margin-bottom: 1rem; }
+#view-source .muted button { padding: .2rem .5rem; font-size: .8rem; }
+.job-list .s.ready { color: var(--ok); }
 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; }

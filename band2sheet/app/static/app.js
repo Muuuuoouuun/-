@@ -37,7 +37,8 @@ async function api(path, opts = {}) {
 }
 
 function show(view) {
-  for (const v of ["new", "progress", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["new", "source", "progress", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  if (view !== "source") { $("#s-video").pause(); $("#s-audio").pause(); }
 }
 
 function fmtTime(s) {
@@ -86,11 +87,23 @@ async function loadInfo() {
     `<tr><td class="${state.info.musescore ? "ok" : "no"}">${state.info.musescore ? "✓ 설치됨" : "· 없음"}</td><td><b>MuseScore</b></td><td>PDF 악보 만들기</td></tr>`;
 }
 
+function urlValue() {
+  return $("#url").value.trim();
+}
+
+function updateStartButton() {
+  const url = urlValue();
+  $("#btn-start").disabled = !(url || state.file);
+  $("#btn-start").textContent = url && $("#fetch-only").checked ? "영상 받기 · 음성 추출 시작" : "악보 만들기 시작";
+  $("#title").placeholder = url ? "영상 제목 사용" : state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
+  $("#drop").classList.toggle("dim", !!url);
+}
+
 function setFile(f) {
   state.file = f;
   $("#file-name").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
-  $("#btn-start").disabled = !f;
-  if (f && !$("#title").value) $("#title").placeholder = f.name.replace(/\.[^.]+$/, "");
+  if (f) $("#url").value = "";  // 파일을 고르면 링크 대신 파일 사용
+  updateStartButton();
 }
 
 function initNewView() {
@@ -107,6 +120,9 @@ function initNewView() {
     $$("#quality button").forEach((x) => x.classList.toggle("on", x === b));
     state.quality = b.dataset.v;
   }));
+  $("#url").addEventListener("input", updateStartButton);
+  $("#url").addEventListener("keydown", (e) => { if (e.key === "Enter" && urlValue()) startJob(); });
+  $("#fetch-only").addEventListener("change", updateStartButton);
   $("#btn-start").addEventListener("click", startJob);
 }
 
@@ -128,23 +144,114 @@ async function startJob() {
     pdf: $("#pdf").checked,
     language: $("#language").value,
   };
-  const fd = new FormData();
-  fd.append("file", state.file);
-  fd.append("options", JSON.stringify(options));
+  const url = urlValue();
   $("#btn-start").disabled = true;
-  $("#btn-start").textContent = "올리는 중…";
+  $("#btn-start").textContent = url ? "시작하는 중…" : "올리는 중…";
   try {
-    const job = await api("/api/jobs", { method: "POST", body: fd });
-    setFile(null);
-    $("#file").value = "";
+    let job;
+    if (url) {
+      Object.assign(options, {
+        fetch_only: $("#fetch-only").checked,
+        max_height: Number($("#max-height").value),
+        audio_format: $("#audio-format").value,
+      });
+      job = await api("/api/jobs/url", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, options }),
+      });
+      $("#url").value = "";
+    } else {
+      const fd = new FormData();
+      fd.append("file", state.file);
+      fd.append("options", JSON.stringify(options));
+      job = await api("/api/jobs", { method: "POST", body: fd });
+      setFile(null);
+      $("#file").value = "";
+    }
     await loadJobs();
     openJob(job.id);
   } catch (e) {
     $("#start-error").textContent = e.message;
   } finally {
-    $("#btn-start").textContent = "악보 만들기 시작";
-    $("#btn-start").disabled = !state.file;
+    updateStartButton();
   }
+}
+
+// ------------------------------------------------------------------ 받은 영상·음성
+function showSource() {
+  const job = state.job;
+  const src = job.source || {};
+  show("source");
+  $("#player").classList.add("hidden");
+  $("#s-title").textContent = job.title;
+  const meta = [];
+  if (src.uploader) meta.push(src.uploader);
+  if (src.duration) meta.push(`길이 ${fmtTime(src.duration)}`);
+  if (src.height) meta.push(`${src.height}p`);
+  $("#s-meta").innerHTML = "";
+  for (const m of meta) {
+    const span = document.createElement("span");
+    span.textContent = m;
+    $("#s-meta").appendChild(span);
+  }
+  if (src.url) {
+    const a = document.createElement("a");
+    a.href = src.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "원본 링크 ↗";
+    a.className = "small";
+    $("#s-meta").appendChild(a);
+  }
+  const base = `/api/jobs/${job.id}/source`;
+  if (state.sourceJob !== job.id) {  // 같은 작업이면 재생 위치 유지
+    state.sourceJob = job.id;
+    $("#s-video").src = src.video ? `${base}/video` : "";
+    $("#s-audio").src = src.audio ? `${base}/audio` : "";
+    $("#s-start").value = job.options.start || "";
+    $("#s-duration").value = job.options.duration || "";
+  }
+  $("#s-video").classList.toggle("hidden", !src.video);
+  $("#s-video-dl").classList.toggle("hidden", !src.video);
+  $("#s-audio-dl").classList.toggle("hidden", !src.audio);
+  $("#s-video-dl").href = `${base}/video`;
+  $("#s-audio-dl").href = `${base}/audio`;
+  $("#s-error").textContent = "";
+}
+
+async function startAnalysis(options, errorEl) {
+  errorEl.textContent = "";
+  try {
+    await api(`/api/jobs/${state.job.id}/analyze`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ options }),
+    });
+    await loadJobs();
+    refreshJob();
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+}
+
+function initSourceView() {
+  $("#s-mark-start").addEventListener("click", () => {
+    $("#s-start").value = $("#s-video").currentTime.toFixed(1);
+  });
+  $("#s-mark-end").addEventListener("click", () => {
+    const start = Number($("#s-start").value) || 0;
+    const len = $("#s-video").currentTime - start;
+    if (len > 0) $("#s-duration").value = len.toFixed(1);
+  });
+  $("#s-analyze").addEventListener("click", () => startAnalysis({
+    start: Number($("#s-start").value) || null,
+    duration: Number($("#s-duration").value) || null,
+  }, $("#s-error")));
+  $("#p-retry").addEventListener("click", () => startAnalysis({}, $("#p-error")));
+  $("#s-delete").addEventListener("click", async () => {
+    if (!confirm("받은 영상과 음성을 지울까요?")) return;
+    await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
+    state.jobId = null;
+    state.sourceJob = null;
+    await loadJobs();
+    show("new");
+  });
 }
 
 // ------------------------------------------------------------------ 작업 목록
@@ -157,6 +264,7 @@ async function loadJobs() {
     const li = document.createElement("li");
     li.classList.toggle("active", j.id === state.jobId);
     const st = j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
+      j.status === "ready" ? "영상·음성 준비됨 · 악보 만들기 전" :
       j.status === "queued" ? "대기 중" : `${Math.round(j.progress * 100)}% · ${j.stage}`;
     li.innerHTML = `<span class="t"></span><span class="s ${j.status}">${st}</span>`;
     li.querySelector(".t").textContent = j.title;
@@ -183,6 +291,11 @@ async function refreshJob() {
     loadJobs();
     return;
   }
+  if (job.status === "ready") {
+    showSource();
+    loadJobs();
+    return;
+  }
   show("progress");
   $("#player").classList.add("hidden");
   $("#p-title").textContent = job.title;
@@ -191,6 +304,7 @@ async function refreshJob() {
   $("#p-log").textContent = job.log.join("\n");
   $("#p-log").scrollTop = 1e9;
   $("#p-error").textContent = job.error || "";
+  $("#p-retry").classList.toggle("hidden", job.status !== "error");
   if (job.status === "running" || job.status === "queued") {
     state.pollTimer = setTimeout(() => { refreshJob(); loadJobs(); }, 1200);
   } else {
@@ -339,6 +453,17 @@ function renderFiles() {
   const job = state.job;
   $("#r-zip").href = `/api/jobs/${job.id}/zip/${r.sheet_dir}`;
   $("#files").innerHTML = "";
+  for (const [kind, label] of [["video", "원본 영상"], ["audio", "추출한 음성"]]) {
+    const name = job.source && job.source[kind];
+    if (!name) continue;
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = `/api/jobs/${job.id}/source/${kind}`;
+    a.textContent = `${label} (${name.split(".").pop()})`;
+    a.download = "";
+    li.appendChild(a);
+    $("#files").appendChild(li);
+  }
   for (const f of r.files) {
     const li = document.createElement("li");
     const a = document.createElement("a");
@@ -653,6 +778,7 @@ function followMeasure(t) {
 // ------------------------------------------------------------------ 시작
 window.addEventListener("DOMContentLoaded", async () => {
   initNewView();
+  initSourceView();
   initResultView();
   $("#btn-new").addEventListener("click", () => {
     stopAudio();

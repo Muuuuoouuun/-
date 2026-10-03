@@ -1,5 +1,6 @@
 """명령줄 인터페이스.
 
+  band2sheet fetch "https://youtu.be/..."                   # 유튜브 -> 영상(mp4) + 음성(wav)
   band2sheet run "https://youtu.be/..." -o out/song         # 유튜브 -> 악보
   band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
   band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
@@ -72,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
     _add_render_args(r)
 
+    f = sub.add_parser("fetch", help="유튜브 영상 다운로드 + 음성 추출 (악보는 만들지 않음)")
+    f.add_argument("source", help="유튜브 URL (또는 소리만 뽑을 영상 파일)")
+    f.add_argument("-o", "--out", type=Path, default=None, help="저장 폴더 (기본: output/<제목>)")
+    f.add_argument("-a", "--audio-format", choices=["wav", "mp3", "m4a", "flac"], default="wav",
+                   help="음성 파일 형식 (기본 wav: 악보 만들기에 가장 좋음)")
+    f.add_argument("--audio-only", action="store_true", help="영상은 저장하지 않고 음성만 (더 빠름)")
+    f.add_argument("--max-height", type=int, default=1080, help="영상 최대 화질 (기본 1080p)")
+    f.add_argument("--start", type=float, help="이 시각(초)부터만 음성 추출")
+    f.add_argument("--duration", type=float, help="이 길이(초)만 음성 추출")
+    f.add_argument("--cookies", help="쿠키 파일 (로그인·연령 확인이 필요한 영상)")
+    f.add_argument("--cookies-from-browser", help="이 브라우저의 쿠키 사용 (예: chrome, firefox, edge)")
+
     t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
     t.add_argument("input", type=Path, help="project.json 또는 .musicxml/.mxl/.xml 파일")
     t.add_argument("-o", "--out", type=Path, help="결과 폴더 (기본: 입력 파일 옆)")
@@ -123,6 +136,37 @@ def cmd_run(args) -> int:
     ro = _render_opts(args)
     res = run(args.source, out, a, ro)
     _report(res, out)
+    return 0
+
+
+def cmd_fetch(args) -> int:
+    from .audio_io import fetch, is_url, safe_name
+
+    out = args.out
+    if out is None:
+        base = Path("output")
+        if is_url(args.source):
+            out = base / ("youtube_" + safe_name(args.source.rsplit("=", 1)[-1].rsplit("/", 1)[-1], 20))
+        else:
+            out = base / safe_name(Path(args.source).stem)
+
+    last = [""]
+
+    def progress(frac: float, msg: str) -> None:
+        if msg != last[0]:
+            last[0] = msg
+            print(f"\r  {msg:<50}", end="", flush=True)
+
+    res = fetch(args.source, out, audio_format=args.audio_format, keep_video=not args.audio_only,
+                max_height=args.max_height, start=args.start, duration=args.duration,
+                progress=progress, cookies=args.cookies, cookies_from_browser=args.cookies_from_browser)
+    print()
+    print(f"완료! {res.title}")
+    if res.video:
+        print(f"  영상: {res.video}")
+    print(f"  음성: {res.audio}")
+    print()
+    print(f"악보 만들기: band2sheet run \"{res.audio}\" -o \"{out}\"")
     return 0
 
 
@@ -201,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return {
-            "run": cmd_run, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
+            "run": cmd_run, "fetch": cmd_fetch, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
             "engines": cmd_engines,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:

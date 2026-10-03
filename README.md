@@ -18,8 +18,9 @@
 ## 무엇을 해 주나요
 
 ```
-영상/음원 파일 (mp4, mov, mp3, wav, m4a …) 또는 멀티트랙 ZIP
+유튜브 링크 · 영상/음원 파일 (mp4, mov, mp3, wav, m4a …) · 멀티트랙 ZIP
    │
+   ├─ ⓪ 받기     (링크) yt-dlp 로 영상(mp4) 다운로드 → ffmpeg 로 음성 추출 (wav/mp3/m4a/flac)
    ├─ ① 분리     BS-RoFormer(보컬) → Demucs 6스템 → 메인/코러스 분리 → 드럼 6조각 분리
    ├─ ② 채보     보컬·베이스: CREPE │ 피아노: ByteDance HR(+페달) │ 기타·건반·코러스: Basic Pitch
    │             드럼: 조각별 타격 검출 (킥·스네어·하이햇 열림/닫힘·탐 3종·라이드·크래시)
@@ -102,7 +103,10 @@ pip install -e ".[pdf]"       # MuseScore 없이 PDF 악보
 band2sheet app            # 브라우저에서 http://127.0.0.1:8765 이 열립니다
 ```
 
-1. 영상/음원 파일을 끌어다 놓습니다. 멀티트랙 녹음이 있으면 스템 파일들을 ZIP 으로 묶어서 올립니다.
+1. **유튜브 링크를 붙여 넣거나**, 영상/음원 파일을 끌어다 놓습니다. 멀티트랙 녹음이 있으면 스템 파일들을 ZIP 으로 묶어서 올립니다.
+   - 링크는 기본으로 **영상 받기 · 음성 추출까지만** 합니다. 받은 영상을 앱에서 보면서 `지금 위치 = 시작/끝` 버튼으로
+     한 곡 구간을 고른 뒤 **악보 만들기 시작** 을 누르면 이어서 분리·채보합니다. 체크를 끄면 바로 악보까지 만듭니다.
+   - 영상 화질(480p/720p/1080p)과 음성 형식(MP3/WAV/M4A/FLAC)을 고를 수 있고, 받은 영상·음성은 **⬇ 영상 받기 / ⬇ 음성 받기** 로 내려받습니다.
 2. 품질(빠름/표준/고품질)과 세부 분리(메인·코러스, 드럼 조각)를 고릅니다. 만들 악기와 시작·길이 구간도 고를 수 있는데, 긴 예배 영상에서 한 곡만 뽑을 때 씁니다.
 3. **악보 만들기 시작** 을 누르면 진행률이 보입니다. 작업은 데이터 폴더(`~/band2sheet-data`)에 저장돼 나중에 다시 열 수 있습니다.
 4. 결과 화면 (앱이 직접 그리는 화면 4가지 + 하단 재생 바):
@@ -128,12 +132,13 @@ band2sheet app            # 브라우저에서 http://127.0.0.1:8765 이 열립�
 ## 명령줄 사용법
 
 ```bash
+band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 영상(mp4) + 음성(wav) 만 받기
 band2sheet run 예배실황.mp4 --key A --lyrics               # 파일 → 악보 (+A키 악보, 가사)
 band2sheet run 곡.mp3 -q high                              # 고품질 분리
 band2sheet run --stems-dir 멀티트랙폴더/                    # 멀티트랙 (분리 없이)
 band2sheet transpose output/곡/project.json --key Bb       # 분석 결과로 빠르게 조옮김
 band2sheet transpose 내악보.musicxml --key G               # 기존 MusicXML 조옮김
-band2sheet run "https://youtu.be/..."                      # (명령줄 전용) 유튜브 링크
+band2sheet run "https://youtu.be/..."                      # 유튜브 링크 → 바로 악보 (오디오만 받아서 빠름)
 band2sheet engines                                         # 엔진 설치 상태
 ```
 
@@ -147,6 +152,31 @@ band2sheet engines                                         # 엔진 설치 상�
 | `--grid 2` | 리듬을 8분음표 단위로 단순화 (기본 4 = 16분음표, 3 = 셋잇단) |
 | `--vocal-engine crepe/pyin/basic_pitch` | 보컬 채보 방식 |
 | `--pdf` | MuseScore 가 있으면 PDF 도 생성 |
+
+### 유튜브 영상 받기 · 음성 추출 (`fetch`)
+
+악보 없이 **영상 다운로드 → 음성 추출** 까지만 합니다. 결과는 `output/<영상ID>/` 에 저장됩니다.
+
+```bash
+band2sheet fetch "https://www.youtube.com/watch?v=..."               # 제목.mp4 + 제목.wav + info.json
+band2sheet fetch "https://youtu.be/..." -a mp3 -o 받은곡/              # 음성을 MP3 로
+band2sheet fetch "https://youtu.be/..." --audio-only -a m4a           # 영상 없이 음성만 (더 빠름)
+band2sheet fetch "https://youtu.be/..." --start 754 --duration 300    # 12:34 부터 5분만 음성 추출
+band2sheet fetch 예배실황.mp4 -a wav                                   # 가지고 있는 영상에서 소리만 뽑기
+band2sheet run 받은곡/제목.wav --key A                                 # 그다음 악보 만들기
+```
+
+| 옵션 | 설명 |
+|---|---|
+| `-a wav/mp3/m4a/flac` | 음성 형식 (기본 wav — 악보 만들기에 가장 좋은 무손실) |
+| `--audio-only` | 영상은 저장하지 않음 |
+| `--max-height 720` | 영상 최대 화질 (기본 1080p, MP4(H.264+AAC) 우선) |
+| `--start`, `--duration` | 음성 추출 구간(초). 영상은 전체를 저장합니다 |
+| `--cookies 파일`, `--cookies-from-browser chrome` | 로그인·연령 확인·"봇이 아님을 확인" 이 필요한 영상 |
+
+- 유튜브가 자주 바뀌므로 받기가 실패하면 먼저 `pip install -U yt-dlp` 로 최신 버전을 쓰세요.
+  yt-dlp 가 JavaScript 런타임(deno 등)을 요구하는 경고를 내면 [yt-dlp 안내](https://github.com/yt-dlp/yt-dlp#dependencies)대로 설치합니다.
+- 유튜브 외에도 yt-dlp 가 지원하는 사이트(비메오, 인스타그램 등)의 링크와 mp4 직접 링크도 됩니다.
 
 ### 멀티트랙 폴더/ZIP 파일 이름 규칙
 
@@ -208,5 +238,6 @@ pytest -m "not slow"      # 빠른 테스트만
 | `pipeline.py` | 전체 흐름, MIDI·코드표 |
 | `engines.py` | 엔진 설치 확인, 장치 선택 |
 | `view.py` | 앱 자체 화면용 데이터(마디·코드·가사·구간·음표)와 코드/가사/음표 수정 |
-| `app/` | 앱 서버(FastAPI, 작업 큐) + 화면: 코드 악보·라이브 코드(`views.js`, 운지 그림 `chords.js`), 피아노롤 편집, 믹서, 오선 악보(OSMD) |
+| `audio_io.py` | 입력 처리: 유튜브 영상/오디오 다운로드(yt-dlp), 음성 추출, WAV 변환 |
+| `app/` | 앱 서버(FastAPI, 작업 큐 — 링크 작업은 영상 받기·음성 추출 후 '준비됨') + 화면: 코드 악보·라이브 코드(`views.js`, 운지 그림 `chords.js`), 피아노롤 편집, 믹서, 오선 악보(OSMD) |
 | `cli.py` | 명령줄 |

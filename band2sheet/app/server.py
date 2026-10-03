@@ -50,6 +50,15 @@ class NotesEdit(BaseModel):
     semitones: int = 0
 
 
+class UrlJob(BaseModel):
+    url: str
+    options: dict = {}
+
+
+class AnalyzeRequest(BaseModel):
+    options: dict = {}
+
+
 class RenderRequest(BaseModel):
     target_key: str | None = None
     semitones: int | None = None
@@ -112,6 +121,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e))
         return asdict(job)
+
+    @app.post("/api/jobs/url")
+    def create_url_job(req: UrlJob):
+        try:
+            job = manager.create_from_url(req.url, req.options)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return asdict(job)
+
+    @app.post("/api/jobs/{job_id}/analyze")
+    def analyze_job(job_id: str, req: AnalyzeRequest):
+        job_or_404(job_id)
+        try:
+            return asdict(manager.start_analysis(job_id, req.options))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/jobs/{job_id}/source/{kind}")
+    def source_file(job_id: str, kind: str):
+        job = job_or_404(job_id)
+        try:
+            f = manager.source_file(job_id, kind)
+        except KeyError:
+            raise HTTPException(404, "받은 영상/음성이 없습니다.")
+        f = safe_path(manager.job_dir(job_id), f.name)
+        media = {".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+                 ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+                 ".flac": "audio/flac"}.get(f.suffix.lower())
+        return FileResponse(f, media_type=media, filename=f"{_file_title(job.title)}{f.suffix.lower()}")
 
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: str):
@@ -219,6 +257,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     return app
 
 
+def _file_title(title: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", title).strip(" ._")[:80] or "band2sheet"
+
+
 def _quote(text: str) -> str:
     from urllib.parse import quote
 
@@ -230,6 +272,7 @@ def _brief(job) -> dict:
         "id": job.id, "title": job.title, "filename": job.filename, "created": job.created,
         "status": job.status, "progress": job.progress, "stage": job.stage,
         "key": job.result["key_short"] if job.result else None,
+        "url": job.url,
     }
 
 
