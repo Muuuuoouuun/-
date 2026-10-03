@@ -160,3 +160,21 @@ def test_pdf_text_glyphs():
         '<tspan font-size="405px">♯</tspan>'
     keep = '<tspan font-family="Leipzig" font-size="720px"></tspan>'
     assert sub(keep) == keep
+
+
+def test_triplets_follow_repeated_position():
+    """후렴마다 같은 자리(3박)에 셋잇단이 나오면, 조금 어긋나게 부른 마디도 셋잇단으로."""
+    from band2sheet.project import Note
+    from band2sheet.score import Grid
+
+    beat = 0.6
+    tm = TimeMap([i * beat for i in range(70)])
+    grid = Grid(timemap=tm, downbeat=0, beat_ql=1.0, beats_per_bar=4, subdiv=4)
+    notes = []
+    for bar, fr in [(0, (0, 1 / 3, 2 / 3)), (4, (0, 1 / 3, 2 / 3)), (8, (0, 0.33, 0.56))]:  # 마지막은 애매
+        for f in fr:
+            t = (bar * 4 + 2 + f) * beat
+            notes.append(Note(t, t + 0.15, 72))
+    assert sorted(grid.with_triplets(notes).triplets) == [2, 18, 34]
+    # 셋잇단이 한 번뿐이면 애매한 박은 그대로 16분음표
+    assert sorted(grid.with_triplets(notes[3:]).triplets) == [18]

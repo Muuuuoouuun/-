@@ -63,16 +63,21 @@ class Grid:
             b = self.raw_beat(n.start)
             k = math.floor(b + 1 / 24)  # 박 직전에 살짝 이르게 친 음은 다음 박으로
             by_beat.setdefault(k, []).append(b - k)
-        trip = set()
+        errs = {}
         for k, fr in by_beat.items():
-            inner = [f for f in fr if 0.1 < f < 0.9]  # 박 안쪽(정박이 아닌) 음
-            if not inner:
+            if not any(0.1 < f < 0.9 for f in fr):  # 박 안쪽(정박이 아닌) 음이 없으면 상관없음
                 continue
             e4 = sum(abs(f - round(f * self.subdiv) / self.subdiv) for f in fr)
             e3 = sum(abs(f - round(f * 3) / 3) for f in fr)
-            # 셋잇단 위치(1/3, 2/3)에 분명히 가깝고 16분 격자로는 많이 어긋날 때만
-            if e3 < 0.5 * e4 and e4 / len(fr) > 0.035:
-                trip.add(k)
+            errs[k] = (e3, e4, len(fr))
+        # 1차: 셋잇단 위치(1/3, 2/3)에 분명히 가깝고 16분 격자로는 많이 어긋날 때만
+        trip = {k for k, (e3, e4, n) in errs.items() if e3 < 0.5 * e4 and e4 / n > 0.035}
+        # 2차: 곡에서 셋잇단이 여러 번 나온 '마디 안 박 위치'(예: 후렴마다 3박)는 반복되는 리듬이므로
+        #      애매한 박도 셋잇단 쪽이 더 맞으면 셋잇단으로 (같은 후렴이 마디마다 다르게 적히지 않게)
+        bpb = self.beats_per_bar
+        common = {pos for pos in {k % bpb for k in trip} if sum(1 for k in trip if k % bpb == pos) >= 2}
+        trip |= {k for k, (e3, e4, n) in errs.items()
+                 if k % bpb in common and e3 < 0.8 * e4 and e4 / n > 0.03}
         return replace(self, triplets=frozenset(trip)) if trip else self
 
     def ql(self, t: float) -> float:
