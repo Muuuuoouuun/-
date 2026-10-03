@@ -16,7 +16,7 @@ import {
   midiToHz,
   renderDemo,
   ENGINES,
-} from '../dsp.js';
+} from '../core/dsp.js';
 
 const SR = 48000;
 

@@ -8,9 +8,9 @@
 마이크를 쓰려면 내 컴퓨터에서 실행해야 합니다. (`localhost`는 마이크 권한이 허용됩니다)
 
 ```bash
-cd air-choir/phase0
+cd air-choir
 python3 -m http.server 8000
-# 브라우저(Chrome 권장)에서 http://localhost:8000 열기
+# 브라우저(Chrome 권장)에서 http://localhost:8000/phase0/ 열기
 ```
 
 설치할 패키지는 없습니다. 외부 라이브러리 없이 Web Audio + AudioWorklet만 씁니다.
@@ -54,9 +54,9 @@ python3 -m http.server 8000
 ## 개발자용 확인
 
 ```bash
-cd air-choir/phase0
-npm test                       # DSP 단위 테스트 (Node 22)
-node test/browser.check.mjs    # 헤드리스 Chromium으로 화면 동작 확인 (playwright 필요)
+cd air-choir
+npm test                        # 단위 테스트 (Node 22)
+node test/phase0.check.mjs      # 헤드리스 Chromium으로 화면 동작 확인 (playwright 필요)
 ```
 
 자동 테스트로 확인한 것 (합성 음원 기준):
@@ -72,8 +72,8 @@ node test/browser.check.mjs    # 헤드리스 Chromium으로 화면 동작 확�
 
 | 파일 | 내용 |
 |---|---|
-| `dsp.js` | 음정 검출(YIN), 스케일·화음 계산, 엔진 3종, 하모나이저, 데모 음원 |
-| `worklet.js` | 오디오 스레드에서 하모나이저 실행 |
+| `../core/dsp.js` | 음정 검출(YIN), 스케일·화음 계산, 엔진 3종, 하모나이저, 데모 음원 (본 앱과 공유) |
+| `../core/worklet.js` | 오디오 스레드에서 하모나이저 실행 (본 앱과 공유) |
 | `app.js` | 화면, 입력 전환, 그래프, 지연 계산, 녹음 |
 | `index.html` | 화면 구성과 스타일 |
-| `test/` | DSP 단위 테스트, 브라우저 동작 확인 |
+| `../test/` | 단위 테스트(`dsp.test.mjs`), 브라우저 동작 확인(`phase0.check.mjs`) |

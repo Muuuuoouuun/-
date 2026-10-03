@@ -1,21 +1,21 @@
 // 헤드리스 Chromium으로 실제 페이지를 띄워 확인한다.
-// 실행: node test/browser.check.mjs  (phase0 폴더에서, 8123 포트 사용)
+// 실행: node test/phase0.check.mjs  (air-choir 폴더에서, 8123 포트 사용)
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 
-const server = spawn('python3', ['-m', 'http.server', '8123'], { stdio: 'ignore' });
+const ROOT = new URL('..', import.meta.url).pathname;
+const server = spawn('python3', ['-m', 'http.server', '8123'], { cwd: ROOT, stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 800));
 const browser = await chromium.launch({
-  executablePath: process.env.CHROMIUM_PATH,
-  args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
 });
 const errors = [];
 let failed = false;
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
-  page.on('console', (m) => m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|fonts\.g/.test(m.text()) && errors.push(m.text()));
+  page.on('console', (m) => m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|fonts\.g|^INFO:/.test(m.text()) && errors.push(m.text()));
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.goto('http://localhost:8123/index.html');
+  await page.goto('http://localhost:8123/phase0/index.html');
   await page.click('#src-demo');
   const seen = { notes: new Set(), chips: new Set() };
   for (const engine of ['granular', 'psola', 'synth']) {

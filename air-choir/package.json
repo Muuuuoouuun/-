@@ -1,9 +1,10 @@
 {
-  "name": "airchoir-phase0",
+  "name": "airchoir",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "check": "node test/app.check.mjs && node test/phase0.check.mjs",
     "start": "python3 -m http.server 8000"
   }
 }

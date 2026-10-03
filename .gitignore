@@ -10,3 +10,4 @@ output/
 *.mid
 node_modules/
 screenshot-*.png
+air-choir/test/.cache/

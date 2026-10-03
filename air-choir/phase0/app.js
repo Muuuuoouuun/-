@@ -1,4 +1,4 @@
-import { renderDemo, PRESETS, NOTE_NAMES, SCALES, midiName } from './dsp.js';
+import { renderDemo, PRESETS, NOTE_NAMES, SCALES, midiName } from '../core/dsp.js';
 
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
@@ -37,7 +37,7 @@ async function ensureAudio() {
     return;
   }
   ctx = new AudioContext({ latencyHint: 'interactive' });
-  await ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
+  await ctx.audioWorklet.addModule(new URL('../core/worklet.js', import.meta.url));
   node = new AudioWorkletNode(ctx, 'airchoir', {
     numberOfInputs: 1,
     numberOfOutputs: 1,
