@@ -196,6 +196,16 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     return project
 
 
+def project_chords(project: Project) -> list[ChordEvent]:
+    """코드 진행 (원래 키 기준): 사용자가 고친 코드가 있으면 그것, 없으면 자동 인식."""
+    if project.chords is not None:
+        return [ChordEvent(float(a), float(b), None if r is None else int(r), q or "",
+                           None if bs is None else int(bs)) for a, b, r, q, bs in project.chords]
+    return detect_chords({k: t.notes for k, t in project.tracks.items()}, TimeMap(project.beat_times),
+                         project.key, project.beats_per_bar, project.downbeat,
+                         key_at=project.key_at_beat)
+
+
 def clean_notes(analyzer, name: str, notes: list[Note], engine: str) -> tuple[list[Note], int]:
     """채보 결과에서 블리딩(다른 악기 소리)과 옥타브 유령음을 지운다."""
     from .cleanup import remove_ghosts
@@ -342,12 +352,7 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
     # 코드 진행 (원래 키에서 인식 후 조옮김 — 결과는 같고 철자만 새 키 기준)
     chord_events: list[ChordEvent] = []
     if opts.chords:
-        chord_events = [
-            c.transposed(shift)
-            for c in detect_chords({k: project.tracks[k].notes for k in project.tracks},
-                                   grid.timemap, project.key, project.beats_per_bar,
-                                   project.downbeat, key_at=project.key_at_beat)
-        ]
+        chord_events = [c.transposed(shift) for c in project_chords(project)]
     chord_marks = sc.chord_offsets(chord_events, key_map, grid)
 
     # 1차: 트랙별 악보 이벤트 계산
@@ -628,6 +633,11 @@ def chord_chart(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Pro
         b = int(grid.beat(w.start) // bpb)
         if 0 <= b < n_bars:
             bar_words[b].append(w.text)
+    # 앱에서 직접 입력한 마디 가사가 있으면 그것을 쓴다
+    for k, text in project.bar_lyrics.items():
+        b = int(k) + shift // bpb
+        if 0 <= b < n_bars:
+            bar_words[b] = [text] if text else []
 
     first = km.first
     head = f"Key: {first.short_name}   Tempo: {project.tempo_bpm:.0f} BPM   Time: {project.time_signature}"

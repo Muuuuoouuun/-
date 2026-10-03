@@ -74,6 +74,23 @@ def test_full_job_flow(client, tmp_path):
     t = client.post(f"/api/jobs/{job_id}/render", json={"semitones": -1}).json()
     assert t["key_short"] == "F#" and t["semitones"] == -1
 
+    # 자체 화면 데이터 + 수정
+    v = client.get(f"/api/jobs/{job_id}/view", params={"semitones": 2}).json()
+    assert v["key_short"] == "A" and v["bars"] and "vocals" in v["tracks"] and "vocals" in v["stems"]
+    r = client.put(f"/api/jobs/{job_id}/chord", json={"bar": 1, "beat": 2, "name": "Bm", "semitones": 2})
+    assert r.status_code == 200, r.text
+    v = client.get(f"/api/jobs/{job_id}/view", params={"semitones": 2}).json()
+    assert any(c["name"] == "Bm" and c["beat"] == 2 for c in v["bars"][1]["chords"]) and v["stale"]
+    assert client.put(f"/api/jobs/{job_id}/chord", json={"bar": 1, "name": "Q#zz"}).status_code == 400
+    assert client.put(f"/api/jobs/{job_id}/lyrics", json={"bar": 2, "text": "할렐루야"}).status_code == 200
+    notes = v["tracks"]["bass"]["notes"][:3]
+    assert client.put(f"/api/jobs/{job_id}/notes/bass", json={"notes": notes, "semitones": 2}).status_code == 200
+    assert client.put(f"/api/jobs/{job_id}/notes/nope", json={"notes": []}).status_code == 404
+    v = client.get(f"/api/jobs/{job_id}/view").json()
+    assert v["bars"][2]["lyrics"] == "할렐루야" and len(v["tracks"]["bass"]["notes"]) == 3
+    t = client.post(f"/api/jobs/{job_id}/render", json={"semitones": 2}).json()
+    assert not t.get("stale") and "할렐루야" in t["chord_chart"]
+
     z = client.get(f"/api/jobs/{job_id}/zip/sheets_A")
     names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
     assert "lead_sheet.musicxml" in names and "chords.txt" in names

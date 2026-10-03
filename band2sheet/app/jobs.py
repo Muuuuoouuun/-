@@ -15,7 +15,8 @@ from pathlib import Path
 
 from ..audio_io import require_ffmpeg
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
-from ..project import Project, TimeMap
+from ..project import Project
+from ..view import measure_times
 
 ALLOWED_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".aif", ".aiff",
                ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v",
@@ -38,7 +39,62 @@ class Job:
     renders: dict[str, dict] = field(default_factory=dict)  # 키 -> 렌더링 결과
 
 
-class JobManager:
+class EditMixin:
+    """앱 화면에서의 보기·수정 (JobManager 에 섞어 쓴다)."""
+
+    def _project(self, job_id: str) -> Project:
+        job = self.get(job_id)
+        if job.status != "done":
+            raise RuntimeError("분석이 끝난 뒤에 볼 수 있습니다.")
+        return Project.load(self.job_dir(job_id) / "project.json")
+
+    def view(self, job_id: str, semitones: int | None = None, target_key: str | None = None) -> dict:
+        from ..view import build_view
+
+        data = build_view(self._project(job_id), semitones, target_key)
+        data["stems"] = sorted({p.stem for p in (self.job_dir(job_id) / "preview").glob("*.*")
+                                if p.suffix in (".mp3", ".m4a")})
+        data["stale"] = bool((self.get(job_id).result or {}).get("stale"))
+        return data
+
+    def _save_edit(self, job_id: str, project: Project) -> None:
+        with self.lock:
+            project.save(self.job_dir(job_id) / "project.json")
+            job = self.get(job_id)
+            if job.result:
+                job.result["stale"] = True  # 악보 파일(MusicXML 등)을 다시 만들어야 함
+            job.renders = {}
+        self._save(job)
+
+    def edit_chord(self, job_id: str, bar_index: int, beat: float, name: str, semitones: int = 0,
+                   length: float | None = None) -> None:
+        from ..score import Grid
+        from ..view import set_chord
+
+        project = self._project(job_id)
+        grid = Grid.for_project(project)
+        pos = bar_index * project.beats_per_bar + beat - grid.shift_beats
+        set_chord(project, pos, name, semitones, length)
+        self._save_edit(job_id, project)
+
+    def edit_lyrics(self, job_id: str, bar_index: int, text: str) -> None:
+        from ..score import Grid
+        from ..view import set_bar_lyrics
+
+        project = self._project(job_id)
+        offset = Grid.for_project(project).shift_beats // project.beats_per_bar
+        set_bar_lyrics(project, bar_index - offset, text)
+        self._save_edit(job_id, project)
+
+    def edit_notes(self, job_id: str, track: str, notes: list, semitones: int = 0) -> None:
+        from ..view import set_track_notes
+
+        project = self._project(job_id)
+        set_track_notes(project, track, notes, semitones)
+        self._save_edit(job_id, project)
+
+
+class JobManager(EditMixin):
     def __init__(self, data_dir: Path, workers: int = 1):
         self.data_dir = data_dir
         self.jobs_dir = data_dir / "jobs"
@@ -245,20 +301,6 @@ def render_summary(res: RenderResult, project: Project, job_dir: Path) -> dict:
         "separation": project.separation,
         "duration": round(max((n.end for t in project.tracks.values() for n in t.notes), default=0.0), 2),
     }
-
-
-def measure_times(project: Project) -> list[float]:
-    """악보 마디마다 시작 시각(초). 재생 위치에 맞춰 현재 마디를 표시하는 데 쓴다."""
-    from ..score import Grid
-
-    grid = Grid.for_project(project)
-    tm: TimeMap = grid.timemap
-    bpb = project.beats_per_bar
-    last_beat = float(tm.to_beats(max((n.end for t in project.tracks.values() for n in t.notes),
-                                      default=project.beat_times[-1])))
-    n_bars = int((last_beat - project.downbeat + grid.shift_beats) // bpb) + 2
-    return [round(float(tm.to_seconds(m * bpb + project.downbeat - grid.shift_beats)), 3)
-            for m in range(max(n_bars, 1))]
 
 
 def make_previews(project: Project, job_dir: Path) -> None:

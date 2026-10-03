@@ -60,6 +60,9 @@ class Project:
     engines: dict[str, str] = field(default_factory=dict)  # 단계 -> 사용한 엔진
     separation: dict[str, dict] = field(default_factory=dict)  # 스템별 분리 리포트 (활동 구간 등)
     key_changes: list[tuple[float, Key]] = field(default_factory=list)  # (마디 첫 박 기준 박 위치, 새 키)
+    # 사용자가 앱에서 고친 내용 (원래 키 기준). chords 가 있으면 자동 코드 인식 대신 쓴다.
+    chords: list[list] | None = None  # [[시작 박, 끝 박, 근음 pc | None, 종류, 베이스 pc | None]]
+    bar_lyrics: dict[str, str] = field(default_factory=dict)  # 마디(첫 박 기준 0부터) -> 가사
 
     @property
     def tempo_bpm(self) -> float:
@@ -108,6 +111,8 @@ class Project:
             "engines": self.engines,
             "separation": self.separation,
             "key_changes": [{"beat": b, "key": k.to_dict()} for b, k in self.key_changes],
+            "chords": self.chords,
+            "bar_lyrics": self.bar_lyrics,
             "tracks": {
                 name: {
                     "notes": [
@@ -149,6 +154,8 @@ class Project:
             engines=data.get("engines", {}),
             separation=data.get("separation", {}),
             key_changes=[(float(c["beat"]), Key.from_dict(c["key"])) for c in data.get("key_changes", [])],
+            chords=data.get("chords"),
+            bar_lyrics=data.get("bar_lyrics", {}),
         )
 
 

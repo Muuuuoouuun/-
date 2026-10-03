@@ -119,9 +119,6 @@
           <button id="t-reset" class="ghost">원래 키</button>
           <span id="t-info" class="muted small"></span>
         </div>
-        <div class="zoom">
-          <button id="z-out">−</button><span id="z-val">100%</span><button id="z-in">＋</button>
-        </div>
       </div>
 
       <div id="structure" class="structure hidden">
@@ -129,27 +126,82 @@
         <div id="sections" class="sections"></div>
       </div>
 
-      <nav id="tabs" class="tabs"></nav>
-      <div id="part-info" class="part-info"></div>
-      <div class="sheet-wrap card"><div id="sheet"></div><div id="sheet-loading" class="loading hidden">악보 그리는 중…</div></div>
+      <nav id="viewtabs" class="viewtabs">
+        <button data-view="chart" class="on">🎸 코드 악보</button>
+        <button data-view="live">▶ 라이브 코드</button>
+        <button data-view="roll">🎹 악기별 보기</button>
+        <button data-view="score">🎼 오선 악보</button>
+      </nav>
+
+      <!-- 1) 코드 악보 -->
+      <div id="v-chart" class="vpane card">
+        <div class="pane-tools">
+          <div class="seg small-seg" id="cs-mode"><button data-v="letters" class="on">코드</button><button data-v="numbers">넘버(1·4·5)</button></div>
+          <span class="tool-group"><button id="cs-font-down" title="글자 작게">가−</button><button id="cs-font-up" title="글자 크게">가＋</button></span>
+          <button id="cs-edit" title="코드·가사 고치기">✎ 고치기</button>
+          <button id="cs-print">🖨 인쇄</button>
+        </div>
+        <p id="cs-edit-hint" class="hint hidden">고치기 모드: 마디의 <b>코드 줄</b>을 누르면 그 박부터 코드를 바꾸고, <b>가사 줄</b>을 누르면 가사를 입력해요. 저장은 자동입니다.</p>
+        <div id="chordsheet" class="chordsheet"></div>
+      </div>
+
+      <!-- 2) 라이브 코드 -->
+      <div id="v-live" class="vpane card hidden">
+        <div class="live-top">
+          <span id="live-sec" class="live-sec"></span>
+          <span id="live-bar" class="muted"></span>
+          <span id="live-beats" class="live-beats"></span>
+          <label class="check small live-capo"><input type="checkbox" id="live-capo"> 카포 모양으로 보기</label>
+        </div>
+        <div class="live-main">
+          <div id="live-now"></div>
+          <div class="live-side">
+            <div class="muted small">다음 코드</div>
+            <div id="live-next" class="live-next"></div>
+            <div class="muted small" style="margin-top:.6rem">건반 (노란색 = 베이스음)</div>
+            <div id="live-piano"></div>
+          </div>
+        </div>
+        <div id="live-strip" class="live-strip"></div>
+      </div>
+
+      <!-- 3) 악기별 보기 -->
+      <div id="v-roll" class="vpane card hidden">
+        <div id="roll-tracks" class="roll-tracks"></div>
+        <div class="pane-tools">
+          <span class="tool-group"><button id="roll-zoom-out">－</button><button id="roll-zoom-in">＋</button></span>
+          <label class="check small"><input type="checkbox" id="roll-follow" checked> 재생 따라가기</label>
+          <label class="check small"><input type="checkbox" id="roll-sound" checked> 누를 때 소리</label>
+          <button id="roll-undo" disabled>↶ 되돌리기</button>
+          <button id="roll-delete" disabled>선택 음 지우기</button>
+          <button id="roll-save" class="primary" disabled>저장</button>
+          <span id="roll-status" class="muted small"></span>
+        </div>
+        <div class="roll-wrap"><canvas id="roll"></canvas></div>
+        <input id="roll-scroll" type="range" min="0" max="100" step="0.01" value="0">
+        <p class="hint">음표 누르기 = 선택 · 끌기 = 옮기기(끝을 끌면 길이) · ↑↓ = 반음(Shift = 옥타브) · Delete = 지우기 · 빈 곳 더블클릭 = 추가 · Ctrl+Z = 되돌리기 · 맨 위 줄 누르기 = 그 위치로 이동</p>
+      </div>
+
+      <!-- 4) 오선 악보 -->
+      <div id="v-score" class="vpane hidden">
+        <div id="score-stale" class="stale hidden">키를 바꾸었거나 수정한 내용이 있어요. <button id="score-refresh" class="primary">오선 악보 다시 만들기</button></div>
+        <div class="score-tools">
+          <nav id="tabs" class="tabs"></nav>
+          <div class="zoom"><button id="z-out">−</button><span id="z-val">100%</span><button id="z-in">＋</button></div>
+        </div>
+        <div id="part-info" class="part-info"></div>
+        <div class="sheet-wrap card"><div id="sheet"></div><div id="sheet-loading" class="loading hidden">악보 그리는 중…</div></div>
+      </div>
 
       <div class="grid2 bottom">
         <div class="card">
           <h3>악기별 듣기 (믹서)</h3>
-          <div class="transport">
-            <button id="m-play" class="primary">▶ 재생</button>
-            <input id="m-seek" type="range" min="0" max="1000" value="0">
-            <span id="m-time" class="mono">0:00</span>
-          </div>
-          <label class="check small"><input type="checkbox" id="m-follow" checked> 재생 위치 따라 악보 마디 표시</label>
+          <label class="check small"><input type="checkbox" id="m-follow" checked> 재생 위치 따라 오선 악보 마디 표시</label>
           <div id="mixer"></div>
         </div>
         <div class="card">
-          <div class="chart-head"><h3>코드표</h3>
-            <div class="seg small-seg" id="chart-mode"><button data-v="letters" class="on">코드</button><button data-v="numbers">넘버(1·4·5)</button></div>
-          </div>
-          <pre id="chart" class="chart"></pre>
-          <h3>파일</h3>
+          <h3>파일 받기</h3>
+          <p id="files-stale" class="hint hidden">수정한 내용/현재 키로 파일을 받으려면 <button id="files-refresh">파일 다시 만들기</button></p>
           <ul id="files" class="files"></ul>
         </div>
       </div>
@@ -162,6 +214,15 @@
   </main>
 </div>
 
+<div id="player" class="player hidden">
+  <button id="m-play" class="primary">▶ 재생</button>
+  <input id="m-seek" type="range" min="0" max="1000" value="0">
+  <span id="m-time" class="mono">0:00</span>
+  <span id="player-chord" class="player-chord"></span>
+</div>
+<div id="chord-pop" class="chord-pop hidden"></div>
+<div id="toast" class="toast hidden"></div>
+
 <dialog id="engines-dialog">
   <h2>엔진 상태</h2>
   <p class="muted small">설치된 오픈소스 엔진이 많을수록 더 정확하고 자세하게 채보합니다. 설치되지 않은 엔진은 자동으로 대체 엔진을 씁니다.</p>
@@ -170,6 +231,8 @@
 </dialog>
 
 <script src="/static/vendor/opensheetmusicdisplay.min.js"></script>
+<script src="/static/chords.js"></script>
+<script src="/static/views.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

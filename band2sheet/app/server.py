@@ -32,6 +32,24 @@ def default_data_dir() -> Path:
     return Path(os.environ.get("BAND2SHEET_DATA", Path.home() / "band2sheet-data"))
 
 
+class ChordEdit(BaseModel):
+    bar: int  # 화면 마디 인덱스 (measures 목록 기준)
+    beat: float = 0.0  # 마디 안 박 위치
+    name: str = ""  # 비우면 지우기
+    semitones: int = 0  # 화면의 조옮김 양
+    length: float | None = None  # 박 수 (없으면 다음 코드까지)
+
+
+class LyricsEdit(BaseModel):
+    bar: int
+    text: str = ""
+
+
+class NotesEdit(BaseModel):
+    notes: list[list[float]]
+    semitones: int = 0
+
+
 class RenderRequest(BaseModel):
     target_key: str | None = None
     semitones: int | None = None
@@ -116,6 +134,43 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                     req.grid)
         except (RuntimeError, ValueError) as e:
             raise HTTPException(400, str(e))
+
+    @app.get("/api/jobs/{job_id}/view")
+    def view(job_id: str, semitones: int | None = None, key: str | None = None):
+        job_or_404(job_id)
+        try:
+            return manager.view(job_id, semitones, key or None)
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+
+    @app.put("/api/jobs/{job_id}/chord")
+    def edit_chord(job_id: str, req: ChordEdit):
+        job_or_404(job_id)
+        try:
+            manager.edit_chord(job_id, req.bar, req.beat, req.name, req.semitones, req.length)
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.put("/api/jobs/{job_id}/lyrics")
+    def edit_lyrics(job_id: str, req: LyricsEdit):
+        job_or_404(job_id)
+        try:
+            manager.edit_lyrics(job_id, req.bar, req.text)
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    @app.put("/api/jobs/{job_id}/notes/{track}")
+    def edit_notes(job_id: str, track: str, req: NotesEdit):
+        job_or_404(job_id)
+        try:
+            manager.edit_notes(job_id, track, req.notes, req.semitones)
+        except KeyError:
+            raise HTTPException(404, "악기를 찾을 수 없습니다.")
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
 
     @app.get("/api/jobs/{job_id}/files/{sheet_dir}/{path:path}")
     def sheet_file(job_id: str, sheet_dir: str, path: str):

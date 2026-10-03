@@ -16,7 +16,6 @@ const state = {
   job: null,
   result: null,
   tab: "full_score",
-  chartMode: "letters",
   zoom: 1.0,
   osmd: null,
   pollTimer: null,
@@ -180,13 +179,12 @@ async function refreshJob() {
   const job = await api(`/api/jobs/${state.jobId}`);
   state.job = job;
   if (job.status === "done") {
-    show("result");
-    state.result = job.result;
-    renderResult();
+    await showResult();
     loadJobs();
     return;
   }
   show("progress");
+  $("#player").classList.add("hidden");
   $("#p-title").textContent = job.title;
   $("#p-bar").style.width = `${Math.round(job.progress * 100)}%`;
   $("#p-stage").textContent = job.status === "queued" ? "다른 작업이 끝나기를 기다리는 중…" : job.stage;
@@ -201,35 +199,117 @@ async function refreshJob() {
 }
 
 // ------------------------------------------------------------------ 결과 화면
-function renderResult() {
-  const r = state.result;
+async function showResult() {
   const job = state.job;
+  state.result = job.result;
+  show("result");
+  $("#player").classList.remove("hidden");
   $("#r-title").textContent = job.title;
-  const eng = r.engines || {};
+  buildMixer();
+  renderActivity();
+  renderFiles();
+  const keep = state.viewJob === job.id && state.view;
+  await loadView({ semitones: keep ? state.view.semitones : (job.result.semitones || 0) });
+  switchView(state.pane || "chart");
+}
+
+async function loadView(params) {
+  const q = new URLSearchParams();
+  if (params.target_key) q.set("key", params.target_key);
+  else q.set("semitones", String(params.semitones || 0));
+  $("#t-info").textContent = "불러오는 중…";
+  try {
+    const v = await api(`/api/jobs/${state.job.id}/view?${q}`);
+    state.view = v;
+    state.viewJob = state.job.id;
+    renderHeader();
+    renderStructure();
+    Views.setData(v, state.job.id);
+    updateStale();
+    if (state.pane === "score" && scoreStale()) refreshScore();
+  } catch (e) {
+    $("#t-info").textContent = e.message;
+  }
+}
+
+function renderHeader() {
+  const v = state.view;
+  const eng = (state.result && state.result.engines) || {};
   const meta = [
-    `키 ${r.key}`,
-    ...(r.key_changes || []).map((k) => `${k.bar}마디부터 ${k.key_short} (전조)`),
-    `템포 ${Math.round(r.tempo)} BPM`, `${r.time_signature}`,
-    ...(r.pickup ? ["못갖춘마디로 시작"] : []),
-    ...(eng.separation ? [eng.separation] : []), ...(eng.beats ? [`박자: ${eng.beats}`] : []),
+    `키 ${v.key}`,
+    ...v.key_changes.map((k) => `${k.number}마디부터 ${k.key_short} (전조)`),
+    `템포 ${Math.round(v.tempo)} BPM`, `${v.time_signature}`,
+    ...(v.pickup ? ["못갖춘마디로 시작"] : []),
+    ...(v.capo ? [`기타 카포 ${v.capo.fret}`] : []),
+    ...(eng.separation ? [eng.separation] : []),
   ];
   $("#r-meta").innerHTML = meta.map(() => `<span></span>`).join("");
-  $$("#r-meta span").forEach((s, i) => {
-    s.textContent = meta[i];
-    if (meta[i].includes("전조")) s.classList.add("keychip");
+  $$("#r-meta span").forEach((el, i) => {
+    el.textContent = meta[i];
+    if (meta[i].includes("전조")) el.classList.add("keychip");
   });
-  $("#r-zip").href = `/api/jobs/${job.id}/zip/${r.sheet_dir}`;
-
-  // 키 선택
-  const minor = r.original_key_short.endsWith("m");
+  const minor = v.original_key_short.endsWith("m");
   const sel = $("#t-key");
   sel.innerHTML = "";
-  for (const k of minor ? MINOR_KEYS : MAJOR_KEYS) sel.add(new Option(keyName(k) + (k === r.original_key_short ? " (원래)" : ""), k));
-  const cur = (minor ? MINOR_KEYS : MAJOR_KEYS).find((k) => PC[k.replace("m", "")] === PC[r.key_short.replace("m", "")]);
-  sel.value = cur || r.key_short;
-  $("#t-info").textContent = r.semitones ? `원래 ${r.original_key} → ${r.key} (${r.semitones > 0 ? "+" : ""}${r.semitones} 반음)` : `원래 키 ${r.original_key}`;
+  for (const k of minor ? MINOR_KEYS : MAJOR_KEYS) sel.add(new Option(keyName(k) + (k === v.original_key_short ? " (원래)" : ""), k));
+  const cur = (minor ? MINOR_KEYS : MAJOR_KEYS).find((k) => PC[k.replace(/m$/, "")] === PC[v.key_short.replace(/m$/, "")]);
+  sel.value = cur || v.key_short;
+  $("#t-info").textContent = v.semitones ? `원래 ${v.original_key} → ${v.key} (${v.semitones > 0 ? "+" : ""}${v.semitones} 반음)` : `원래 키 ${v.original_key}`;
+}
 
-  // 탭
+function scoreStale() {
+  const r = state.result, v = state.view;
+  return !r || !v || r.semitones !== v.semitones || !!r.stale;
+}
+
+function updateStale() {
+  const stale = scoreStale();
+  $("#score-stale").classList.toggle("hidden", !stale);
+  $("#files-stale").classList.toggle("hidden", !stale);
+}
+
+function markStale() {
+  if (state.result) state.result.stale = true;
+  updateStale();
+}
+
+async function refreshScore() {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  $("#sheet-loading").classList.remove("hidden");
+  $("#sheet-loading").textContent = "오선 악보·파일 만드는 중…";
+  try {
+    state.result = await api(`/api/jobs/${state.job.id}/render`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ semitones: state.view.semitones }),
+    });
+    renderFiles();
+    updateStale();
+    renderActivity();
+    if (state.pane === "score") renderScorePane();
+    loadJobs();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    state.refreshing = false;
+    $("#sheet-loading").textContent = "악보 그리는 중…";
+    $("#sheet-loading").classList.add("hidden");
+  }
+}
+
+function switchView(name) {
+  state.pane = name;
+  $$("#viewtabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
+  for (const p of ["chart", "live", "roll", "score"]) $(`#v-${p}`).classList.toggle("hidden", p !== name);
+  if (name === "score") {
+    if (scoreStale()) refreshScore();
+    else renderScorePane();
+  }
+  Views.shown(name);
+}
+
+function renderScorePane() {
+  const r = state.result;
   const tabs = $("#tabs");
   tabs.innerHTML = "";
   const items = [{ id: "full_score", label: "총보" }];
@@ -247,15 +327,17 @@ function renderResult() {
     b.innerHTML = `<span></span>${it.badge ? ` <span class="badge">${it.badge}</span>` : ""}`;
     b.firstChild.textContent = it.label;
     b.classList.toggle("on", it.id === state.tab);
-    b.addEventListener("click", () => { state.tab = it.id; renderResult(); });
+    b.addEventListener("click", () => { state.tab = it.id; renderScorePane(); });
     tabs.appendChild(b);
   }
   showPartInfo();
   loadSheet();
+}
 
-  showChart();
-  renderStructure();
-  renderActivity();
+function renderFiles() {
+  const r = state.result;
+  const job = state.job;
+  $("#r-zip").href = `/api/jobs/${job.id}/zip/${r.sheet_dir}`;
   $("#files").innerHTML = "";
   for (const f of r.files) {
     const li = document.createElement("li");
@@ -266,7 +348,14 @@ function renderResult() {
     li.appendChild(a);
     $("#files").appendChild(li);
   }
-  buildMixer();
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
 }
 
 function showPartInfo() {
@@ -294,7 +383,7 @@ async function loadSheet() {
     const xml = await api(`/api/jobs/${state.job.id}/files/${r.sheet_dir}/${file}`);
     if (!state.osmd) {
       state.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("sheet", {
-        autoResize: true, backend: "svg", drawTitle: true, drawComposer: false,
+        autoResize: false, backend: "svg", drawTitle: true, drawComposer: false,
         drawingParameters: "default", followCursor: true,
       });
     }
@@ -311,43 +400,53 @@ async function loadSheet() {
 }
 
 async function transpose(body) {
-  $("#t-info").textContent = "조옮김 중…";
-  try {
-    state.result = await api(`/api/jobs/${state.job.id}/render`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    renderResult();
-    loadJobs();
-  } catch (e) {
-    $("#t-info").textContent = e.message;
-  }
+  if (Views.hasUnsaved() && !confirm("악기별 보기에서 저장하지 않은 수정이 있어요. 버릴까요?")) return;
+  await loadView(body);
+  loadJobs();
 }
 
 function initResultView() {
   $("#t-key").addEventListener("change", (e) => transpose({ target_key: e.target.value }));
-  $("#t-up").addEventListener("click", () => transpose({ semitones: (state.result.semitones || 0) + 1 }));
-  $("#t-down").addEventListener("click", () => transpose({ semitones: (state.result.semitones || 0) - 1 }));
+  $("#t-up").addEventListener("click", () => transpose({ semitones: (state.view.semitones || 0) + 1 }));
+  $("#t-down").addEventListener("click", () => transpose({ semitones: (state.view.semitones || 0) - 1 }));
   $("#t-reset").addEventListener("click", () => transpose({ semitones: 0 }));
   $("#z-in").addEventListener("click", () => setZoom(state.zoom + 0.1));
   $("#z-out").addEventListener("click", () => setZoom(state.zoom - 0.1));
+  $$("#viewtabs button").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
+  $("#score-refresh").addEventListener("click", refreshScore);
+  $("#files-refresh").addEventListener("click", refreshScore);
   $("#r-delete").addEventListener("click", async () => {
     if (!confirm("이 작업과 만든 악보를 모두 지울까요?")) return;
     await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
     stopAudio();
     state.jobId = null;
+    $("#player").classList.add("hidden");
     await loadJobs();
     show("new");
   });
   $("#m-play").addEventListener("click", togglePlay);
-  $$("#chart-mode button").forEach((b) => b.addEventListener("click", () => {
-    state.chartMode = b.dataset.v;
-    showChart();
-  }));
   $("#m-seek").addEventListener("input", (e) => {
     const a = masterAudio();
     if (a && isFinite(a.duration)) seekAll((e.target.value / 1000) * a.duration);
   });
+  Views.init({
+    api,
+    toast,
+    markStale,
+    seek: (t, play) => { seekAll(t); const m = masterAudio(); if (play && m && m.paused) togglePlay(); },
+    time: () => { const m = masterAudio(); return m ? m.currentTime : 0; },
+    playing: () => { const m = masterAudio(); return !!m && !m.paused; },
+    reload: () => loadView({ semitones: state.view ? state.view.semitones : 0 }).then(markStale),
+  });
 }
+
+// 창 크기가 바뀌면 오선 악보가 보일 때만 다시 그린다 (숨겨진 상태에서 그리면 폭이 0)
+window.addEventListener("resize", () => {
+  clearTimeout(state.resizeTimer);
+  state.resizeTimer = setTimeout(() => {
+    if (state.osmd && state.pane === "score" && !$("#v-score").classList.contains("hidden")) state.osmd.render();
+  }, 250);
+});
 
 function setZoom(z) {
   state.zoom = Math.min(2, Math.max(0.4, Math.round(z * 10) / 10));
@@ -355,34 +454,27 @@ function setZoom(z) {
   if (state.osmd) { state.osmd.zoom = state.zoom; state.osmd.render(); }
 }
 
-function showChart() {
-  const r = state.result;
-  const text = state.chartMode === "numbers" ? r.nashville_chart : r.chord_chart;
-  $("#chart").textContent = text || "(코드 없음)";
-  $$("#chart-mode button").forEach((b) => b.classList.toggle("on", b.dataset.v === state.chartMode));
-}
-
 function renderStructure() {
-  const secs = state.result.sections || [];
+  const secs = state.view.sections || [];
   $("#structure").classList.toggle("hidden", secs.length < 2);
   const box = $("#sections");
   box.innerHTML = "";
   for (const sec of secs) {
     const b = document.createElement("button");
     b.className = `sec-${sec.kind}`;
-    b.style.flex = `${sec.end_bar - sec.start_bar} 1 0`;
-    b.title = `${sec.name_ko} — ${sec.start_measure}~${sec.end_measure}마디`;
+    b.style.flex = `${sec.end_index - sec.start_index} 1 0`;
+    b.title = `${sec.name_ko} — ${sec.start_number}~${sec.end_number}마디`;
     b.innerHTML = `<span></span><small></small>`;
     b.firstChild.textContent = sec.name_ko;
-    b.lastChild.textContent = `${sec.start_measure}마디`;
-    b.dataset.index = sec.index;
-    b.addEventListener("click", () => playFrom(sec.index));
+    b.lastChild.textContent = `${sec.start_number}마디`;
+    b.dataset.index = sec.start_index;
+    b.addEventListener("click", () => playFrom(sec.start_index));
     box.appendChild(b);
   }
 }
 
 function playFrom(measureIndex) {
-  const ms = state.result.measures || [];
+  const ms = state.view.measures || [];
   const t = Math.max(0, ms[Math.min(measureIndex, ms.length - 1)] || 0);
   seekAll(t);
   const master = masterAudio();
@@ -513,6 +605,8 @@ function togglePlay() {
 
 function seekAll(t) {
   for (const a of Object.values(state.audios)) a.currentTime = t;
+  const m = masterAudio();
+  if (!m || m.paused) setTimeout(onTime, 30);
 }
 
 function onTime() {
@@ -525,12 +619,15 @@ function onTime() {
   for (const a of all.slice(1)) {
     if (!master.paused && Math.abs(a.currentTime - t) > 0.08) a.currentTime = t;
   }
-  if ($("#m-follow").checked) followMeasure(t);
+  if ($("#m-follow").checked && state.pane === "score") followMeasure(t);
   highlightSection(measureAt(t));
+  Views.tick(t);
+  const c = Views.chordAt(t);
+  $("#player-chord").textContent = c ? (Views.ctx.numbers ? c.number : c.name) : "";
 }
 
 function measureAt(t) {
-  const ms = state.result.measures || [];
+  const ms = (state.view && state.view.measures) || [];
   let lo = 0, hi = ms.length - 1, ans = 0;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
