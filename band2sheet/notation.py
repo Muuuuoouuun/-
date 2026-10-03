@@ -266,6 +266,34 @@ def add_pedals(staff: stream.Stream, ranges_ql: list[tuple[float, float]]) -> in
 LEVELS = ["pp", "p", "mp", "mf", "f", "ff"]
 
 
+def _level(z: float) -> str:
+    return ("pp" if z < -1.6 else "p" if z < -0.9 else "mp" if z < -0.4 else
+            "mf" if z < 0.4 else "f" if z < 1.1 else "ff")
+
+
+def section_dynamics(events, segments: list[float]) -> list[tuple[float, str]]:
+    """구간(절·후렴 …)마다 셈여림 하나 — 악보가 마디마다 흔들리지 않고 음악적인 단위로 바뀐다."""
+    if not events:
+        return []
+    bounds = sorted({0.0, *segments})
+    vals = []
+    for i, a in enumerate(bounds):
+        b = bounds[i + 1] if i + 1 < len(bounds) else float("inf")
+        vs = [e.velocity for e in events if a <= e.offset < b]
+        if len(vs) >= 4:
+            vals.append((a, float(np.median(vs))))
+    if not vals:
+        return []
+    arr = np.array([v for _, v in vals])
+    mu, sd = float(np.median(arr)), max(float(np.std(arr)), 10.0)
+    out: list[tuple[float, str]] = []
+    for (a, v) in vals:
+        lv = _level((v - mu) / sd)
+        if not out or out[-1][1] != lv:
+            out.append((a, lv))
+    return out
+
+
 def dynamic_marks(events, bar_ql: float, min_run: int = 2) -> list[tuple[float, str]]:
     """마디별 세기를 파트 전체 기준으로 비교해 셈여림 기호 위치를 정한다.
 
@@ -415,3 +443,72 @@ def add_tab_details(xml_path) -> int:
     if fixed:
         path.write_text(text, encoding="utf-8")
     return fixed
+
+
+def add_multi_rests(xml_path, min_bars: int = 2) -> int:
+    """모든 보표가 쉬는 마디가 이어지면 '여러 마디 쉼표'(<multiple-rest>)로 묶는다.
+
+    구간 표시·코드·조표 변경·줄바꿈이 있는 마디에서는 끊는다. PDF(Verovio)·MuseScore 에서도
+    긴 쉼 구간이 짧게 보이도록. 반환: 묶은 구간 수.
+    """
+    import xml.etree.ElementTree as ET
+    from pathlib import Path as _Path
+
+    path = _Path(xml_path)
+    text = path.read_text(encoding="utf-8")
+    head_end = text.index("<score-partwise")
+    header = text[:head_end]
+    root = ET.fromstring(text[head_end:])
+    parts = root.findall("part")
+    if not parts:
+        return 0
+    measures = [p.findall("measure") for p in parts]
+    n = min(len(m) for m in measures)
+
+    def resting(m) -> bool:
+        notes = m.findall("note")
+        if not notes or any(x.find("rest") is None for x in notes):
+            return False
+        if m.find("harmony") is not None:
+            return False
+        # 구간 표시가 있는 마디는 묶지 않는다 (Verovio 가 여러 마디 쉼표 위의 구간 표시를 지움)
+        return not any(d.find(".//words") is not None or d.find(".//rehearsal") is not None
+                       for d in m.findall("direction"))
+
+    def starts_new(i) -> bool:
+        """구간 표시·줄바꿈·조표/박자 변경이 있는 마디 — 여러 마디 쉼표는 여기서 새로 시작한다."""
+        for ms in measures:
+            m = ms[i]
+            if m.find("print[@new-system='yes']") is not None:
+                return True
+            if any(d.find(".//rehearsal") is not None for d in m.findall("direction")):
+                return True
+            attrs = m.find("attributes")
+            if attrs is not None and (attrs.find("key") is not None or attrs.find("time") is not None):
+                return True
+        return False
+
+    flags = [all(resting(ms[i]) for ms in measures) for i in range(n)]
+    runs, i = [], 0
+    while i < n:
+        if not flags[i]:
+            i += 1
+            continue
+        j = i + 1
+        while j < n and flags[j] and not starts_new(j):
+            j += 1
+        if j - i >= min_bars:
+            runs.append((i, j - i))
+        i = j
+    for start, length in runs:
+        for ms in measures:
+            m = ms[start]
+            attrs = m.find("attributes")
+            if attrs is None:
+                attrs = ET.Element("attributes")
+                m.insert(0 if m.find("print") is None else 1, attrs)
+            style = ET.SubElement(attrs, "measure-style")
+            ET.SubElement(style, "multiple-rest").text = str(length)
+    if runs:
+        path.write_text(header + ET.tostring(root, encoding="unicode"), encoding="utf-8")
+    return len(runs)

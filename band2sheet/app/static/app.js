@@ -383,13 +383,27 @@ async function loadSheet() {
     const xml = await api(`/api/jobs/${state.job.id}/files/${r.sheet_dir}/${file}`);
     if (!state.osmd) {
       state.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("sheet", {
-        autoResize: false, backend: "svg", drawTitle: true, drawComposer: false,
-        drawingParameters: "default", followCursor: true,
+        autoResize: false, backend: "svg", drawTitle: true, drawSubtitle: true, drawComposer: false,
+        drawLyricist: false, drawCredits: false, drawingParameters: "default", followCursor: true,
+        newSystemFromXML: true, // 악보 파일에 넣은 줄바꿈(구간 시작·4마디) 그대로
+        newPageFromXML: false,
+        autoGenerateMultipleRestMeasuresFromRestMeasures: true, // 쉬는 마디는 여러 마디 쉼표로
+        drawPartAbbreviations: true, stretchLastSystemLine: false,
       });
+      const R = state.osmd.EngravingRules;
+      R.ChordSymbolTextHeight = 2.3; // 코드 이름 크게
+      R.RehearsalMarkFontSize = 11;
+      // 템포 표시와 첫 구간 상자가 겹치지 않게: 템포는 위로, 줄 첫 마디의 구간 상자는 오른쪽으로
+      R.MetronomeMarkYShift = -4.5;
+      R.RehearsalMarkXOffsetSystemStartMeasure = 0;
+      R.LyricsHeight = 2.2;
+      R.SheetSubtitleHeight = 1.8;
+      R.MinimumDistanceBetweenSystems = 6;
+      R.VoiceSpacingMultiplierVexflow = 0.75; // 조금 촘촘하게 (기본 0.85 / 3)
+      R.VoiceSpacingAddendVexflow = 2.5;
     }
     await state.osmd.load(xml);
-    state.osmd.zoom = state.zoom;
-    state.osmd.render();
+    drawSheet();
     state.lastMeasure = -1;
   } catch (e) {
     $("#sheet").textContent = `악보를 불러오지 못했습니다: ${e.message}`;
@@ -440,18 +454,53 @@ function initResultView() {
   });
 }
 
+// 4마디씩 끊은 줄이 화면 폭에 안 들어가면 OSMD 가 마지막 마디만 다음 줄로 넘긴다.
+// 그런 외톨이 마디가 생기면 배율을 조금씩 줄여(최대 70%까지) 다시 그린다.
+function lonelyBars(osmd) {
+  let n = 0;
+  for (const page of osmd.GraphicSheet.MusicPages) {
+    const systems = page.MusicSystems;
+    systems.forEach((sys, i) => {
+      const bars = sys.GraphicalMeasures;
+      if (bars.length !== 1 || i === systems.length - 1) return;
+      const m = (bars[0] || []).find((x) => x);
+      if (m && m.parentSourceMeasure && m.parentSourceMeasure.multipleRestMeasures > 0) return;
+      const prev = systems[i - 1];
+      if (prev && prev.GraphicalMeasures.length >= 3) n++;
+    });
+  }
+  return n;
+}
+
+function drawSheet() {
+  const osmd = state.osmd;
+  let fit = 1;
+  osmd.zoom = state.zoom;
+  osmd.render();
+  try {
+    while (fit > 0.75 && lonelyBars(osmd) > 0) {
+      fit = Math.round((fit - 0.1) * 10) / 10;
+      osmd.zoom = state.zoom * fit;
+      osmd.render();
+    }
+  } catch (e) {
+    console.warn("auto-fit", e);
+  }
+  $("#z-val").textContent = `${Math.round(state.zoom * 100)}%` + (fit < 1 ? ` (맞춤 ${Math.round(state.zoom * fit * 100)}%)` : "");
+}
+
 // 창 크기가 바뀌면 오선 악보가 보일 때만 다시 그린다 (숨겨진 상태에서 그리면 폭이 0)
 window.addEventListener("resize", () => {
   clearTimeout(state.resizeTimer);
   state.resizeTimer = setTimeout(() => {
-    if (state.osmd && state.pane === "score" && !$("#v-score").classList.contains("hidden")) state.osmd.render();
+    if (state.osmd && state.pane === "score" && !$("#v-score").classList.contains("hidden")) drawSheet();
   }, 250);
 });
 
 function setZoom(z) {
   state.zoom = Math.min(2, Math.max(0.4, Math.round(z * 10) / 10));
   $("#z-val").textContent = `${Math.round(state.zoom * 100)}%`;
-  if (state.osmd) { state.osmd.zoom = state.zoom; state.osmd.render(); }
+  if (state.osmd) drawSheet();
 }
 
 function renderStructure() {

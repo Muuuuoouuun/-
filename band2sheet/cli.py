@@ -31,7 +31,9 @@ def _add_render_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--grid", type=int, default=None,
                    help="한 박을 몇 칸으로 맞출지 (4=16분음표, 2=8분음표; 기본 4, 겹박자 6)")
     g.add_argument("--no-chords", action="store_true", help="코드 인식/표기 끄기")
-    g.add_argument("--pdf", action="store_true", help="MuseScore 가 설치돼 있으면 PDF 도 만들기")
+    g.add_argument("--pdf", action="store_true", help="PDF 도 만들기 (MuseScore, 없으면 Verovio)")
+    g.add_argument("--bars-per-line", type=int, default=4, help="한 줄에 넣을 마디 수 (0: 구간 시작에서만 줄바꿈)")
+    g.add_argument("--no-simplify", action="store_true", help="반주(기타·피아노·코러스) 리듬을 8분 격자로 단순화하지 않기")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,7 +134,7 @@ def _render_opts(args):
     return RenderOptions(
         semitones=args.semitones, target_key=args.target_key, direction=args.direction,
         subdiv=args.grid, stems=_stems(getattr(args, "stems", None)), pdf=args.pdf,
-        chords=not args.no_chords,
+        chords=not args.no_chords, simplify=not args.no_simplify, bars_per_line=args.bars_per_line,
     )
 
 

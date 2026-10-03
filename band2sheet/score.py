@@ -263,7 +263,8 @@ def _metronome(project: Project) -> tempo.MetronomeMark:
 def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key | KeyMap, project: Project,
                   total_ql: float, chords_: list[tuple[float, str]] | None = None,
                   with_tempo: bool = True, pedals_ql: list[tuple[float, float]] | None = None,
-                  with_dynamics: bool = True, with_tab: bool = True) -> list[stream.Part]:
+                  with_dynamics: bool = True, with_tab: bool = True,
+                  segments: list[float] | None = None, slash_empty: bool = False) -> list[stream.Part]:
     """음높이 악기 파트.
 
     - grand 보표(피아노/건반): 양손 자동 분리한 PartStaff 2개 (+ 페달)
@@ -280,7 +281,9 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key | KeyMap, 
         for off, k in key_map.changes():
             if off < total_ql:
                 st.insert(off, m21key.KeySignature(k.fifths))
-    dyn = nt.dynamic_marks(events, bar_ql) if with_dynamics else []
+    dyn = []
+    if with_dynamics:
+        dyn = nt.section_dynamics(events, segments) if segments else nt.dynamic_marks(events, bar_ql)
 
     if spec.staff == "grand":
         upper, lower = nt.split_hands(events)
@@ -318,6 +321,8 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key | KeyMap, 
     add_key_changes(part)
     for e in events:
         part.insert(e.offset, _make_element(e, key_map.at(e.offset)))
+    if slash_empty and chords_:
+        _insert_slashes(part, events, chords_, total_ql, bar_ql, project.beat_ql)
     if chords_:
         _insert_chords(part, chords_)
     nt.insert_dynamics(part, dyn)
@@ -326,6 +331,66 @@ def build_pitched(spec: InstrumentSpec, events: list[Event], key: Key | KeyMap, 
         staves.append(nt.build_tab_staff(events, fingerings, spec.tab, project.time_signature,
                                          total_ql, _finish))
     return staves
+
+
+def _insert_slashes(part: stream.Stream, events: list[Event], chords_: list[tuple[float, str]],
+                    total_ql: float, bar_ql: float, beat_ql: float) -> None:
+    """리드시트: 멜로디가 쉬는 마디(전주·간주 등)에 코드가 있으면 박마다 사선(/)으로 표시."""
+    busy = set()
+    for e in events:
+        b0 = int(e.offset // bar_ql)
+        b1 = int((e.offset + e.dur - 1e-6) // bar_ql)
+        busy.update(range(b0, b1 + 1))
+    first_chord = min((off for off, _ in chords_), default=total_ql)
+    last_chord = max((off for off, _ in chords_), default=0.0)
+    n_bars = int(round(total_ql / bar_ql))
+    for b in range(n_bars):
+        start = b * bar_ql
+        if b in busy or start + bar_ql <= first_chord + 1e-6 or start > last_chord + bar_ql:
+            continue
+        k = 0.0
+        while k < bar_ql - 1e-6:
+            n = note.Note("B4")
+            n.notehead = "slash"
+            n.stemDirection = "noStem"
+            n.duration = duration.Duration(beat_ql)
+            part.insert(start + k, n)
+            k += beat_ql
+
+
+def add_system_breaks(score: stream.Score, section_starts: list[int], every: int = 4) -> None:
+    """줄바꿈: 구간이 시작하는 마디에서, 그리고 구간 안에서는 4마디마다.
+
+    모든 파트가 쉬는 구간 안에서는 나누지 않아 '여러 마디 쉼표'로 짧게 묶이게 한다.
+    """
+    parts = list(score.parts)
+    if not parts:
+        return
+    numbers = [m.number for m in parts[0].getElementsByClass(stream.Measure)]
+    if not numbers:
+        return
+    first, last = min(numbers), max(numbers)
+    busy: set[int] = set()
+    for p in parts:
+        for m in p.getElementsByClass(stream.Measure):
+            if any(not n.isRest and not n.style.hideObjectOnPrint for n in m.recurse().notesAndRests):
+                busy.add(m.number)
+    starts = sorted({s for s in section_starts if max(first, 1) < s <= last})
+    anchors = [max(first, 1)] + starts
+    breaks = set(starts)
+    for i, a in enumerate(anchors):
+        if every <= 0:
+            break
+        end = anchors[i + 1] if i + 1 < len(anchors) else last + 1
+        for n in range(a + every, end, every):
+            before = any(x in busy for x in range(n - every, n))
+            after = any(x in busy for x in range(n, min(n + every, end)))
+            if before and after:
+                breaks.add(n)
+    for p in parts:
+        for m in p.getElementsByClass(stream.Measure):
+            if m.number in breaks:
+                m.insert(0, layout.SystemLayout(isNew=True))
 
 
 def build_drums(events: list[Event], project: Project, total_ql: float,
@@ -384,7 +449,8 @@ def assemble(parts: list[stream.Part], title: str, subtitle: str | None = None,
     sc = stream.Score()
     md = metadata.Metadata()
     md.title = title
-    md.movementName = f"{title} — {subtitle}" if subtitle else title
+    # 부제(어떤 악보·키)만 따로 — 뷰어가 제목과 부제를 나눠 그린다
+    md.movementName = subtitle or title
     md.composer = "band2sheet 자동 채보"
     sc.metadata = md
     for p in parts:

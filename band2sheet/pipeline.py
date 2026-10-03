@@ -196,6 +196,9 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     return project
 
 
+ACCOMPANIMENT = {"guitar", "piano", "other", "backing_vocals"}
+
+
 def project_chords(project: Project) -> list[ChordEvent]:
     """코드 진행 (원래 키 기준): 사용자가 고친 코드가 있으면 그것, 없으면 자동 인식."""
     if project.chords is not None:
@@ -296,6 +299,9 @@ class RenderOptions:
     chords: bool = True
     sections: bool = True  # 곡 구조 인식 + 리허설 마크
     pickup: bool = True  # 못갖춘마디 자동 처리
+    simplify: bool = True  # 반주 악기 리듬을 8분음표 단위로 정리
+    layout: bool = True  # 줄바꿈(구간 시작, 4마디마다)
+    bars_per_line: int = 4
 
 
 @dataclass
@@ -355,6 +361,12 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         chord_events = [c.transposed(shift) for c in project_chords(project)]
     chord_marks = sc.chord_offsets(chord_events, key_map, grid)
 
+    # 반주 악기(기타·건반·코러스)는 읽기 쉽게 8분음표 단위로 리듬을 정리한다
+    def track_grid(name: str):
+        if opts.subdiv or not opts.simplify or name not in ACCOMPANIMENT:
+            return grid
+        return replace(grid, subdiv=3 if project.compound else 2)
+
     # 1차: 트랙별 악보 이벤트 계산
     events_by: dict[str, list[sc.Event]] = {}
     for name in names:
@@ -362,10 +374,11 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         if not notes:
             continue
         spec = spec_for(name)
+        g = track_grid(name)
         if name == "drums":
-            events = sc.drum_events(notes, grid)
+            events = sc.drum_events(notes, g)
         else:
-            events = sc.mono_events(notes, grid) if spec.mono else sc.poly_events(notes, grid)
+            events = sc.mono_events(notes, g) if spec.mono else sc.poly_events(notes, g)
         if name == "vocals" and project.tracks[name].lyrics:
             lyric_map = align_lyrics(notes, project.tracks[name].lyrics)
             for e in events:
@@ -402,12 +415,25 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
     rehearsal = [(s.start_bar + bar_offset + 1 + number_shift, s.name)
                  for s in sections] if len(sections) > 1 else []
 
+    section_measures = [s.start_bar + bar_offset + 1 + number_shift for s in sections]
+    segments = [(s.start_bar + bar_offset) * grid.bar_ql for s in sections]
+
     def finish_score(score) -> None:
-        """못갖춘마디 적용 + 구간 표시 (못갖춘마디를 못 만들면 마디 번호를 원래대로)."""
-        marks = rehearsal
+        """못갖춘마디 적용 + 구간 표시 + 줄바꿈 (못갖춘마디를 못 만들면 마디 번호를 원래대로)."""
+        marks, starts = rehearsal, section_measures
         if pickup_ql and not sc.make_pickup(score, pickup_ql):
             marks = [(n - number_shift, name) for n, name in rehearsal]
+            starts = [n - number_shift for n in section_measures]
         sc.add_section_marks(score, marks)
+        if opts.layout:
+            sc.add_system_breaks(score, starts, opts.bars_per_line)
+
+    def played_marks(events) -> list[tuple[float, str]]:
+        """파트보에는 그 악기가 연주하는 마디의 코드만 (쉬는 구간은 여러 마디 쉼표로 묶이게)."""
+        busy = set()
+        for e in events:
+            busy.update(range(int(e.offset // grid.bar_ql), int((e.offset + e.dur - 1e-6) // grid.bar_ql) + 1))
+        return [(off, f) for off, f in chord_marks if int(off // grid.bar_ql) in busy]
     result.sections = [dict(s.to_dict(), start_measure=s.start_bar + bar_offset + 1 + number_shift,
                             end_measure=s.end_bar + bar_offset + number_shift) for s in sections]
 
@@ -428,22 +454,23 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
                 marks, chords_on = chord_marks, name
             pedals = [(grid.ql(a), grid.ql(b)) for a, b in track.pedals]
             # 파트보: TAB 포함 / 총보: 오선보만 (총보를 간결하게)
-            parts = sc.build_pitched(spec, events, key_map, project, total_ql, marks or chord_marks,
-                                     with_tempo=True, pedals_ql=pedals)
+            parts = sc.build_pitched(spec, events, key_map, project, total_ql,
+                                     played_marks(events) or None,
+                                     with_tempo=True, pedals_ql=pedals, segments=segments)
             full_view = sc.build_pitched(spec, events, key_map, project, total_ql, marks,
                                          with_tempo=not full_parts, pedals_ql=pedals,
-                                         with_tab=False)
+                                         with_tab=False, segments=segments)
             if name == "vocals":
                 lead_parts = sc.build_pitched(spec, events, key_map, project, total_ql,
                                               chord_marks or None, with_tempo=True,
-                                              with_dynamics=False)
+                                              with_dynamics=False, slash_empty=True)
         full_parts.extend(full_view)
         if len(full_view) > 1:
             groups.append((full_view, "brace"))
 
         # 파트보 (악기별 악보)
         symbol = "bracket" if spec.tab else "brace"
-        single = sc.assemble(parts, project.title, f"{spec.label} — {key.name}",
+        single = sc.assemble(parts, project.title, f"{spec.label_ko} ({spec.label}) · {key.name}",
                              [(parts, symbol)] if len(parts) > 1 else None)
         finish_score(single)
         files = _write(single, out_dir / f"{name}", opts.pdf)
@@ -459,12 +486,12 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         log(f"   ✓ {spec.label_ko} 악보" + (" (+TAB)" if spec.tab else ""))
 
     if full_parts:
-        full = sc.assemble(full_parts, project.title, f"Full Score — {key.name}", groups)
+        full = sc.assemble(full_parts, project.title, f"총보 (Full Score) · {key.name}", groups)
         finish_score(full)
         result.files += _write(full, out_dir / "full_score", opts.pdf)
         log("   ✓ 총보 (full score)")
     if lead_parts:
-        lead = sc.assemble(lead_parts, project.title, f"Lead Sheet — {key.name}")
+        lead = sc.assemble(lead_parts, project.title, f"리드시트 (Lead Sheet) · {key.name}")
         finish_score(lead)
         result.files += _write(lead, out_dir / "lead_sheet", opts.pdf)
         log("   ✓ 리드시트 (멜로디 + 코드 + 가사)")
@@ -491,9 +518,10 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
 def _write(score, base: Path, pdf: bool) -> list[Path]:
     xml = base.with_suffix(".musicxml")
     score.write("musicxml", fp=str(xml))
-    from .notation import add_tab_details
+    from .notation import add_multi_rests, add_tab_details
 
     add_tab_details(xml)
+    add_multi_rests(xml)
     files = [xml]
     if pdf:
         out = export_pdf(xml)
@@ -531,6 +559,39 @@ def export_pdf(xml: Path) -> Path | None:
     return export_pdf_verovio(xml, pdf)
 
 
+# 코드 이름·템포 표시 안의 SMuFL 기호 -> 일반 유니코드 (악보 글꼴이 PDF 변환기에 없어서)
+_SMUFL_TEXT = {"\uea64": "♭", "\uea65": "♮", "\uea66": "♯", "\ueca5": "♩", "\ueca6": "♩",
+               "\ueca7": "♪", "\ueca8": "♪", "\uecb7": "."}
+
+
+def _smufl_text(m) -> str:
+    size, text = int(m.group(1)), m.group(2)
+    if text and all(c in _SMUFL_TEXT for c in text):
+        # 악보 글꼴 크기 -> 같은 줄 글자 크기 (Verovio: 글자 405 = 기호 720)
+        return f'<tspan font-size="{round(size * 0.5625)}px">' + "".join(_SMUFL_TEXT[c] for c in text) + "</tspan>"
+    return m.group(0)
+
+
+def korean_font() -> str | None:
+    """한글·♯/♭ 이 들어 있는 시스템 글꼴 이름 (PDF 제목·가사·코드용)."""
+    import sys
+
+    if sys.platform == "darwin":
+        return "Apple SD Gothic Neo"
+    if sys.platform.startswith("win"):
+        return "Malgun Gothic"
+    try:
+        out = subprocess.run(["fc-list", ":lang=ko", "family"], capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fams = [line.split(",")[0].strip() for line in out.splitlines() if line.strip()]
+    for pref in ("Noto Serif CJK KR", "Noto Sans CJK KR", "NanumMyeongjo", "NanumGothic", "UnBatang"):
+        if pref in fams:
+            return pref
+    return fams[0] if fams else None
+
+
 def export_pdf_verovio(xml: Path, pdf: Path) -> Path | None:
     """Verovio(악보 조판) -> SVG -> PDF. 필요: pip install verovio cairosvg pypdf"""
     try:
@@ -547,11 +608,31 @@ def export_pdf_verovio(xml: Path, pdf: Path) -> Path | None:
         tk.setOptions({"pageWidth": 2100, "pageHeight": 2970, "pageMarginLeft": 80,
                        "pageMarginRight": 80, "pageMarginTop": 60, "pageMarginBottom": 60,
                        "scale": 42, "footer": "none", "breaks": "auto"})
-        if not tk.loadFile(str(xml)):
+        # Verovio 는 부제(movement-title)만 그리므로 PDF 에서는 제목을 앞에 붙인다
+        import re as _re
+
+        text = xml.read_text(encoding="utf-8")
+        title = _re.search(r"<work-title>(.*?)</work-title>", text)
+        if title:
+            text = _re.sub(r"<movement-title>(.*?)</movement-title>",
+                           lambda m: f"<movement-title>{title.group(1)} — {m.group(1)}</movement-title>",
+                           text, count=1)
+        # 4마디 줄바꿈이 들어 있는 악보는 그대로(encoded), 총보처럼 구간에서만 바꾸면 자동(smart)
+        n_meas = max(1, len(_re.findall(r"<measure ", text)) // max(1, text.count("<part id=")))
+        n_breaks = text.count('new-system="yes"') // max(1, text.count("<part id="))
+        tk.setOptions({"breaks": "encoded" if n_breaks >= n_meas / 6 else "smart", "breaksSmartSb": 0.6})
+        if not tk.loadData(text):
             return None
+        # PDF 변환기(cairo)는 글자별 대체 글꼴을 찾지 않으므로 한글·♯ 이 있는 글꼴을 직접 지정
+        font = korean_font()
         writer = PdfWriter()
         for page in range(1, tk.getPageCount() + 1):
-            data = cairosvg.svg2pdf(bytestring=tk.renderToSVG(page).encode("utf-8"))
+            svg = tk.renderToSVG(page)
+            if font:
+                svg = svg.replace('font-family="Times, serif"', f'font-family="{font}"')
+                svg = _re.sub(r'<tspan font-family="Leipzig" font-size="(\d+)px">([^<]*)</tspan>',
+                              _smufl_text, svg)
+            data = cairosvg.svg2pdf(bytestring=svg.encode("utf-8"))
             for p in PdfReader(io.BytesIO(data)).pages:
                 writer.add_page(p)
         with open(pdf, "wb") as f:

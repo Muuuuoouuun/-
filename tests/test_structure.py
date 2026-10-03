@@ -125,3 +125,38 @@ def test_activity_mask_cleanup():
     m = np.array([0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0], dtype=bool)
     out = _clean_mask(m, fill=1, min_len=3)
     assert out.tolist() == [False, True, True, True, True, True, True] + [False] * 6
+
+
+def test_render_layout(project, tmp_path):
+    """보기 좋은 악보: 4마디 줄바꿈, 리드시트 사선, 여러 마디 쉼표, 구간별 셈여림."""
+    import re
+
+    res = render(project, tmp_path, RenderOptions(stems=["vocals", "guitar"]), log=lambda m: None)
+    lead = (res.out_dir / "lead_sheet.musicxml").read_text(encoding="utf-8")
+    # 줄바꿈은 구간 시작(5, 13, 21 …)과 구간 안 4마디마다
+    first_part = lead.split("</part>")[0]
+    breaks = [int(n) for n in re.findall(r'<measure[^>]*number="(\d+)"[^>]*>\s*<print new-system="yes"', first_part)]
+    assert breaks[:4] == [5, 9, 13, 17]
+    # 멜로디가 쉬는 전주는 코드 사선으로
+    intro = first_part.split('number="5"')[0]
+    assert intro.count(">slash</notehead>") >= 12
+    # 기타는 후렴에서만 연주 -> 절(8마디)은 여러 마디 쉼표로 묶임
+    guitar = (res.out_dir / "guitar.musicxml").read_text(encoding="utf-8")
+    rests = [int(n) for n in re.findall(r"<multiple-rest>(\d+)</multiple-rest>", guitar)]
+    assert rests and max(rests) >= 4
+    # 셈여림은 마디마다가 아니라 구간 단위 (6구간 이하)
+    vocals = (res.out_dir / "vocals.musicxml").read_text(encoding="utf-8")
+    assert 1 <= vocals.count("<dynamics") <= 6
+
+
+def test_pdf_text_glyphs():
+    import re
+
+    from band2sheet.pipeline import _smufl_text
+
+    sub = lambda s: re.sub(r'<tspan font-family="Leipzig" font-size="(\d+)px">([^<]*)</tspan>',  # noqa: E731
+                           _smufl_text, s)
+    assert sub('<tspan font-family="Leipzig" font-size="720px"></tspan>') == \
+        '<tspan font-size="405px">♯</tspan>'
+    keep = '<tspan font-family="Leipzig" font-size="720px"></tspan>'
+    assert sub(keep) == keep
