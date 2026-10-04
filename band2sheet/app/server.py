@@ -22,6 +22,8 @@ from .. import __version__
 from ..engines import has, status as engine_status, torch_device
 from ..instruments import INSTRUMENTS
 from ..pipeline import find_musescore
+from ..playback import has_rubberband
+from ..synth import available as synth_available
 from .jobs import ALLOWED_EXT, JobManager
 
 STATIC = Path(__file__).parent / "static"
@@ -47,6 +49,10 @@ class LyricsEdit(BaseModel):
 
 class NotesEdit(BaseModel):
     notes: list[list[float]]
+    semitones: int = 0
+
+
+class PlaybackRequest(BaseModel):
     semitones: int = 0
 
 
@@ -90,6 +96,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "engines": engine_status(),
             "musescore": bool(find_musescore()),
             "pdf": bool(find_musescore()) or all(has(m) for m in ("verovio", "cairosvg", "pypdf")),
+            "synth": synth_available(),  # 악보 소리 (FluidSynth + 사운드폰트)
+            "pitch_shift": "rubberband" if has_rubberband() else "librosa",
             "instruments": [{"name": k, "label": v.label, "label_ko": v.label_ko}
                             for k, v in INSTRUMENTS.items()],
             "extensions": sorted(ALLOWED_EXT),
@@ -201,14 +209,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "Content-Disposition": f'attachment; filename="{name}_{sheet_dir}.zip"; '
                                    f"filename*=UTF-8''{_quote(job.title)}_{sheet_dir}.zip"})
 
-    @app.get("/api/jobs/{job_id}/audio/{name}")
-    def audio(job_id: str, name: str):
+    def audio_file(job_id: str, name: str, semitones: int) -> tuple[Path, str]:
         job_or_404(job_id)
-        d = manager.job_dir(job_id)
+        semitones = max(-12, min(12, semitones))
+        d = manager.playback_dir(job_id, semitones)
+        if name == "score":  # 악보 소리: 필요할 때 만든다 (몇 초)
+            try:
+                path = manager.score_audio(job_id, semitones)
+            except Exception as e:
+                raise HTTPException(500, f"악보 소리를 만들지 못했습니다: {e}") from e
+            if path is None:
+                raise HTTPException(404, "FluidSynth 와 사운드폰트가 필요합니다.")
+            return path, "audio/mpeg" if path.suffix == ".mp3" else "audio/mp4"
         for ext, media in ((".mp3", "audio/mpeg"), (".m4a", "audio/mp4")):
-            if (d / "preview" / f"{name}{ext}").is_file():
-                return FileResponse(safe_path(d, "preview", f"{name}{ext}"), media_type=media)
+            if (d / f"{name}{ext}").is_file():
+                return safe_path(d, f"{name}{ext}"), media
         raise HTTPException(404, "음원이 없습니다.")
+
+    @app.get("/api/jobs/{job_id}/audio/{name}")
+    def audio(job_id: str, name: str, semitones: int = 0):
+        path, media = audio_file(job_id, name, semitones)
+        return FileResponse(path, media_type=media)
+
+    @app.get("/api/jobs/{job_id}/playback")
+    def playback_status(job_id: str, semitones: int = 0):
+        job_or_404(job_id)
+        return manager.playback(job_id, semitones, start=False)
+
+    @app.post("/api/jobs/{job_id}/playback")
+    def playback_make(job_id: str, req: PlaybackRequest):
+        job_or_404(job_id)
+        return manager.playback(job_id, req.semitones, start=True)
+
+    @app.get("/api/jobs/{job_id}/mr")
+    def download_mr(job_id: str, semitones: int = 0, kind: str = "mr"):
+        """반주(MR) 내려받기 — mr: 메인 보컬만 뺌, inst: 코러스까지 모두 뺌."""
+        if kind not in ("mr", "inst", "mix"):
+            raise HTTPException(400, "kind 는 mr, inst, mix 중 하나입니다.")
+        path, media = audio_file(job_id, kind, semitones)
+        job = manager.get(job_id)
+        key = manager.view(job_id, semitones)["key_short"] if semitones else (job.result or {}).get(
+            "original_key_short", "")
+        label = {"mr": "MR", "inst": "Inst", "mix": "Full"}[kind]
+        title = f"{job.title}_{label}_{key}".strip("_")
+        ascii_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", title).strip("_")[:60] or "band2sheet"
+        return FileResponse(path, media_type=media, headers={
+            "Content-Disposition": f'attachment; filename="{ascii_name}{path.suffix}"; '
+                                   f"filename*=UTF-8''{_quote(title)}{path.suffix}"})
 
     @app.get("/api/jobs/{job_id}/project")
     def project_json(job_id: str):

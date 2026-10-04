@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import threading
 import time
 import traceback
@@ -13,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..audio_io import require_ffmpeg
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
 from ..project import Project
 from ..view import measure_times
@@ -94,12 +92,82 @@ class EditMixin:
         self._save_edit(job_id, project)
 
 
-class JobManager(EditMixin):
+class PlaybackMixin:
+    """듣기용 음원(스템·원곡·반주 MR)을 키마다 만들어 둔다 (JobManager 에 섞어 쓴다)."""
+
+    def playback_dir(self, job_id: str, semitones: int = 0) -> Path:
+        d = self.job_dir(job_id) / "preview"
+        return d if not semitones else d / f"k{semitones:+d}"
+
+    def playback_tracks(self, job_id: str, semitones: int = 0) -> list[str]:
+        d = self.playback_dir(job_id, semitones)
+        if not d.is_dir():
+            return []
+        return sorted({p.stem for p in d.glob("*.*") if p.suffix in (".mp3", ".m4a")})
+
+    def playback_ready(self, job_id: str, semitones: int = 0) -> bool:
+        return (self.playback_dir(job_id, semitones) / "done.json").exists()
+
+    def playback(self, job_id: str, semitones: int = 0, start: bool = True) -> dict:
+        """상태: ready(다 만듦) | working(만드는 중) | missing(아직 안 만듦) | error."""
+        semitones = max(-12, min(12, int(semitones)))
+        key = (job_id, semitones)
+        with self.lock:
+            st = self._playback.get(key)
+            if self.playback_ready(job_id, semitones):
+                st = {"status": "ready", "progress": 1.0}
+            elif st is None or st["status"] == "error" and start:
+                if start and self.get(job_id).status == "done":
+                    st = {"status": "working", "progress": 0.0}
+                    self._playback[key] = st
+                    self.audio_pool.submit(self._make_playback, job_id, semitones, st)
+                else:
+                    st = st or {"status": "missing", "progress": 0.0}
+        return {"semitones": semitones, **st, "tracks": self.playback_tracks(job_id, semitones)
+                if st["status"] == "ready" else []}
+
+    def score_audio(self, job_id: str, semitones: int = 0) -> Path | None:
+        """'악보 소리'(채보한 음표를 사운드폰트로 연주) — 음표를 고치면 다시 만든다."""
+        from ..synth import render_score_audio
+
+        d = self.job_dir(job_id)
+        out = self.playback_dir(job_id, semitones) / "score.mp3"
+        project_file = d / "project.json"
+        with self._score_lock:
+            if out.exists() and out.stat().st_mtime >= project_file.stat().st_mtime:
+                return out
+            out.parent.mkdir(parents=True, exist_ok=True)
+            return render_score_audio(Project.load(project_file), out, semitones)
+
+    def _make_playback(self, job_id: str, semitones: int, st: dict) -> None:
+        from ..playback import make_playback
+
+        try:
+            d = self.job_dir(job_id)
+            project = Project.load(d / "project.json")
+            out = self.playback_dir(job_id, semitones)
+            mix = d / "work" / "mix.wav"
+
+            def progress(f, _msg):
+                st["progress"] = round(f, 3)
+
+            names = make_playback(project.stems, mix if mix.exists() else None, out, semitones, progress)
+            (out / "done.json").write_text(json.dumps({"tracks": names, "semitones": semitones}),
+                                           encoding="utf-8")
+            st.update(status="ready", progress=1.0)
+        except Exception as e:  # 화면에 알림
+            st.update(status="error", error=str(e))
+
+
+class JobManager(EditMixin, PlaybackMixin):
     def __init__(self, data_dir: Path, workers: int = 1):
         self.data_dir = data_dir
         self.jobs_dir = data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.pool = ThreadPoolExecutor(max_workers=workers)  # 모델이 무거워 기본 한 번에 하나
+        self.audio_pool = ThreadPoolExecutor(max_workers=1)  # 키별 듣기용 음원 만들기
+        self._playback: dict[tuple[str, int], dict] = {}
+        self._score_lock = threading.Lock()
         self.lock = threading.Lock()
         self.jobs: dict[str, Job] = {}
         self._load()
@@ -304,20 +372,10 @@ def render_summary(res: RenderResult, project: Project, job_dir: Path) -> dict:
 
 
 def make_previews(project: Project, job_dir: Path) -> None:
-    """스템을 가벼운 MP3 로 변환해 브라우저 믹서에서 바로 재생할 수 있게 한다."""
-    ffmpeg = require_ffmpeg()
+    """원래 키의 듣기용 음원(스템·원곡·반주 MR)을 고음질 MP3 로 만든다."""
+    from ..playback import make_playback
+
     out = job_dir / "preview"
-    out.mkdir(exist_ok=True)
-    sources = dict(project.stems)
     mix = job_dir / "work" / "mix.wav"
-    if mix.exists():
-        sources["mix"] = str(mix)
-    for name, path in sources.items():
-        if not Path(path).exists() or not name.replace("_", "").isalnum():
-            continue
-        # MP3 는 모든 브라우저에서 재생된다. ffmpeg 에 MP3 인코더가 없으면 AAC(m4a)로.
-        base = [ffmpeg, "-y", "-loglevel", "error", "-i", str(path), "-vn", "-ac", "2", "-ar", "44100"]
-        done = subprocess.run(base + ["-c:a", "libmp3lame", "-b:a", "160k", str(out / f"{name}.mp3")],
-                              check=False).returncode == 0
-        if not done:
-            subprocess.run(base + ["-c:a", "aac", "-b:a", "128k", str(out / f"{name}.m4a")], check=False)
+    names = make_playback(project.stems, mix if mix.exists() else None, out, 0)
+    (out / "done.json").write_text(json.dumps({"tracks": names, "semitones": 0}), encoding="utf-8")

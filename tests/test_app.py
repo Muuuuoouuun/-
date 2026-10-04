@@ -68,6 +68,19 @@ def test_full_job_flow(client, tmp_path):
     xml = client.get(f"/api/jobs/{job_id}/files/{res['sheet_dir']}/bass.musicxml")
     assert xml.status_code == 200 and "<staff-lines>4</staff-lines>" in xml.text
     assert client.get(f"/api/jobs/{job_id}/audio/vocals").status_code == 200
+    assert "mr" in res["stems"]  # 반주(MR): 원곡 - 메인 보컬
+    mr = client.get(f"/api/jobs/{job_id}/mr", params={"kind": "mr"})
+    assert mr.status_code == 200 and "attachment" in mr.headers["content-disposition"]
+
+    # 조옮김한 키로 듣기: 백그라운드에서 만들고 다 되면 ready
+    st = client.post(f"/api/jobs/{job_id}/playback", json={"semitones": 2}).json()
+    for _ in range(300):
+        if st["status"] != "working":
+            break
+        time.sleep(0.5)
+        st = client.get(f"/api/jobs/{job_id}/playback", params={"semitones": 2}).json()
+    assert st["status"] == "ready" and {"vocals", "mix", "mr"} <= set(st["tracks"])
+    assert client.get(f"/api/jobs/{job_id}/audio/bass", params={"semitones": 2}).status_code == 200
 
     t = client.post(f"/api/jobs/{job_id}/render", json={"target_key": "A"}).json()
     assert t["key_short"] == "A" and t["semitones"] == 2 and t["sheet_dir"] == "sheets_A"

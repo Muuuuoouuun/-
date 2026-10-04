@@ -640,18 +640,90 @@ const Views = (() => {
     } catch (err) { ctx.hooks.toast(err.message); }
   }
 
-  let audioCtx = null;
+  // 음표 미리듣기: 악기마다 비슷한 음색으로 (현을 튕기는 소리는 Karplus-Strong 합성)
+  let audioCtx = null, previewOut = null;
+  const pluckCache = new Map();
+  const TIMBRE = {  // 감쇠(0~1, 클수록 오래 울림), 밝기(0~1), 길이(초), 음량
+    piano: { damp: 0.996, bright: 0.55, len: 1.2, gain: 0.5, strings: 2 },
+    guitar: { damp: 0.994, bright: 0.8, len: 1.0, gain: 0.45, strings: 1 },
+    bass: { damp: 0.997, bright: 0.3, len: 1.0, gain: 0.7, strings: 1 },
+    other: { damp: 0.998, bright: 0.4, len: 1.2, gain: 0.4, strings: 2 },
+  };
+
+  function audio() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = audioCtx.createDynamicsCompressor();
+      comp.threshold.value = -6; comp.ratio.value = 8;
+      previewOut = audioCtx.createGain(); previewOut.gain.value = 0.8;
+      previewOut.connect(comp).connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    return audioCtx;
+  }
+
+  function pluckBuffer(pitch, t) {
+    const key = `${pitch}:${t.damp}:${t.bright}:${t.strings}`;
+    if (pluckCache.has(key)) return pluckCache.get(key);
+    const sr = audioCtx.sampleRate, n = Math.floor(sr * t.len);
+    const buf = audioCtx.createBuffer(1, n, sr), data = buf.getChannelData(0);
+    for (let s = 0; s < t.strings; s++) {
+      const hz = 440 * Math.pow(2, (pitch - 69) / 12) * (s ? 1.0015 : 1);  // 두 줄은 살짝 어긋나게 (피아노 현)
+      const period = Math.max(2, Math.round(sr / hz));
+      const line = new Float32Array(period);
+      let last = 0;
+      for (let i = 0; i < period; i++) {  // 처음 튕김: 밝기만큼 고역을 남긴 잡음
+        const w = Math.random() * 2 - 1;
+        last = t.bright * w + (1 - t.bright) * last;
+        line[i] = last;
+      }
+      // 낮은 음일수록 덜 감쇠되도록 (실제 현처럼)
+      const damp = Math.min(0.9995, t.damp + (60 - pitch) * 0.00008);
+      for (let i = 0, j = 0; i < n; i++) {
+        const nxt = (j + 1) % period;
+        const v = line[j];
+        line[j] = damp * 0.5 * (line[j] + line[nxt]);
+        data[i] += v / t.strings;
+        j = nxt;
+      }
+    }
+    const fade = Math.floor(sr * 0.03);
+    for (let i = 0; i < fade; i++) data[n - 1 - i] *= i / fade;
+    pluckCache.set(key, buf);
+    return buf;
+  }
+
   function preview(pitch) {
     if (isDrums() || !$("#roll-sound").checked) return;
     try {
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
-      o.type = "triangle";
-      o.frequency.value = 440 * Math.pow(2, (pitch - 69) / 12);
-      gn.gain.setValueAtTime(0.18, audioCtx.currentTime);
-      gn.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.35);
-      o.connect(gn).connect(audioCtx.destination);
-      o.start(); o.stop(audioCtx.currentTime + 0.36);
+      const ac = audio(), now = ac.currentTime;
+      const name = R.track || "";
+      const gn = ac.createGain();
+      gn.connect(previewOut);
+      if (name === "vocals" || name === "backing_vocals") {
+        // 목소리: 부드럽게 시작하는 따뜻한 음 + 살짝 떨림(비브라토)
+        const hz = 440 * Math.pow(2, (pitch - 69) / 12);
+        const o = ac.createOscillator(), o2 = ac.createOscillator(), lp = ac.createBiquadFilter();
+        const lfo = ac.createOscillator(), depth = ac.createGain();
+        o.type = "sawtooth"; o2.type = "sine";
+        o.frequency.value = hz; o2.frequency.value = hz;
+        lp.type = "lowpass"; lp.frequency.value = Math.min(4000, hz * 4); lp.Q.value = 0.7;
+        lfo.frequency.value = 5.2; depth.gain.value = hz * 0.006;
+        lfo.connect(depth); depth.connect(o.frequency); depth.connect(o2.frequency);
+        const mixSaw = ac.createGain(); mixSaw.gain.value = 0.25;
+        o.connect(mixSaw).connect(lp); o2.connect(lp); lp.connect(gn);
+        gn.gain.setValueAtTime(0.0001, now);
+        gn.gain.linearRampToValueAtTime(0.3, now + 0.06);
+        gn.gain.setTargetAtTime(0.0001, now + 0.45, 0.08);
+        for (const x of [o, o2, lfo]) { x.start(now); x.stop(now + 0.9); }
+        return;
+      }
+      const t = TIMBRE[name] || TIMBRE.piano;
+      const src = ac.createBufferSource();
+      src.buffer = pluckBuffer(pitch, t);
+      gn.gain.value = t.gain;
+      src.connect(gn);
+      src.start(now);
     } catch (_) { /* 소리 미리듣기 실패는 무시 */ }
   }
 

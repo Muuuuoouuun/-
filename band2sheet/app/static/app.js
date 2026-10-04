@@ -20,6 +20,9 @@ const state = {
   osmd: null,
   pollTimer: null,
   audios: {},
+  gains: {},
+  ctx: null,
+  playKey: 0,
   mute: new Set(),
   solo: new Set(),
   lastMeasure: -1,
@@ -226,6 +229,7 @@ async function loadView(params) {
     renderStructure();
     Views.setData(v, state.job.id);
     updateStale();
+    syncPlaybackKey();
     if (state.pane === "score" && scoreStale()) refreshScore();
   } catch (e) {
     $("#t-info").textContent = e.message;
@@ -439,6 +443,10 @@ function initResultView() {
     show("new");
   });
   $("#m-play").addEventListener("click", togglePlay);
+  $$("#mix-preset button").forEach((b) => b.addEventListener("click", () => setPreset(b.dataset.p)));
+  $("#m-keyfollow").addEventListener("change", syncPlaybackKey);
+  $("#dl-mr").addEventListener("click", downloadMr);
+  $("#dl-inst").addEventListener("click", downloadMr);
   $("#m-seek").addEventListener("input", (e) => {
     const a = masterAudio();
     if (a && isFinite(a.duration)) seekAll((e.target.value / 1000) * a.duration);
@@ -450,7 +458,7 @@ function initResultView() {
     seek: (t, play) => { seekAll(t); const m = masterAudio(); if (play && m && m.paused) togglePlay(); },
     time: () => { const m = masterAudio(); return m ? m.currentTime : 0; },
     playing: () => { const m = masterAudio(); return !!m && !m.paused; },
-    reload: () => loadView({ semitones: state.view ? state.view.semitones : 0 }).then(markStale),
+    reload: () => loadView({ semitones: state.view ? state.view.semitones : 0 }).then(markStale).then(refreshScoreAudio),
   });
 }
 
@@ -581,14 +589,16 @@ function renderActivity() {
 }
 
 // ------------------------------------------------------------------ 믹서
-const STEM_LABELS = { mix: "원곡(전체)", vocals: "보컬(메인)", backing_vocals: "코러스", drums: "드럼", bass: "베이스", guitar: "기타", piano: "피아노", other: "건반·신스 등" };
+const STEM_LABELS = { score: "악보 소리 (채보 음표)", mix: "원곡(전체)", vocals: "보컬(메인)", backing_vocals: "코러스", drums: "드럼", bass: "베이스", guitar: "기타", piano: "피아노", other: "건반·신스 등" };
 
 function stopAudio() {
   state.mixerJob = null;
-  for (const a of Object.values(state.audios)) { a.pause(); a.src = ""; }
+  for (const a of Object.values(state.audios)) { a.pause(); a.removeAttribute("src"); a.load(); }
   state.audios = {};
+  state.gains = {};
   state.mute.clear();
   state.solo.clear();
+  state.playKey = 0;
   $("#m-play").textContent = "▶ 재생";
 }
 
@@ -596,8 +606,42 @@ function masterAudio() {
   return Object.values(state.audios)[0];
 }
 
+// 소리는 Web Audio 로 모아서 낸다: 악기마다 볼륨(부드럽게 바뀌어 '틱' 소리가 없음) → 전체 → 리미터(찌그러짐 방지)
+function ensureGraph() {
+  if (state.ctx) return state.ctx;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try {
+    const ctx = new AC({ latencyHint: "playback" });
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -1.5; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.002; limiter.release.value = 0.12;
+    const master = ctx.createGain();
+    master.connect(limiter).connect(ctx.destination);
+    state.ctx = ctx; state.master = master;
+  } catch (e) { return null; }
+  return state.ctx;
+}
+
+function connectAudio(name, a) {
+  const ctx = state.ctx;
+  if (!ctx || state.gains[name]) return;
+  try {
+    const g = ctx.createGain();
+    ctx.createMediaElementSource(a).connect(g).connect(state.master);
+    state.gains[name] = g;
+    a.volume = 1;
+  } catch (e) { /* 연결 실패하면 audio.volume 으로 */ }
+}
+
+function audioUrl(name, semis) {
+  return `/api/jobs/${state.job.id}/audio/${name}` + (semis ? `?semitones=${semis}` : "");
+}
+
+const MIX_HIDE = new Set(["mr", "inst"]);  // 반주 파일은 믹서 줄 대신 프리셋·내려받기로
+
 function buildMixer() {
-  const stems = state.result.stems || [];
+  const stems = (state.result.stems || []).filter((s) => !MIX_HIDE.has(s));
   const box = $("#mixer");
   if (state.mixerJob === state.job.id && Object.keys(state.audios).length) return;  // 조옮김 후에도 재생 유지
   stopAudio();
@@ -605,16 +649,20 @@ function buildMixer() {
   box.innerHTML = "";
   if (!stems.length) { box.innerHTML = '<p class="muted small">미리듣기 음원이 없습니다.</p>'; return; }
   const order = stems.filter((s) => s !== "mix").concat(stems.includes("mix") ? ["mix"] : []);
+  // 악보 소리: 채보한 음표를 실제 악기 음색으로 연주 (원곡과 같은 시간축 — 같이 들으며 채보 확인)
+  if (state.info && state.info.synth) order.push("score");
   for (const name of order) {
-    const a = new Audio(`/api/jobs/${state.job.id}/audio/${name}`);
+    const a = new Audio(audioUrl(name, 0));
     a.preload = "auto";
+    a.preservesPitch = false; a.webkitPreservesPitch = false;  // 싱크 맞출 때 아주 조금 빠르게/느리게 — 늘이기 잡음 없이
     state.audios[name] = a;
     const row = document.createElement("div");
     row.className = "mix-row";
-    row.innerHTML = `<span></span><button class="m" title="음소거">M</button><button class="s" title="이 악기만">S</button><input type="range" min="0" max="100" value="${name === "mix" ? 0 : 90}">`;
+    const off = name === "mix" || name === "score";
+    row.innerHTML = `<span></span><button class="m" title="음소거">M</button><button class="s" title="이 악기만">S</button><input type="range" min="0" max="100" value="${off ? 0 : 90}">`;
     row.firstChild.textContent = STEM_LABELS[name] || name;
-    row.querySelector(".m").addEventListener("click", (e) => { toggleSet(state.mute, name); e.target.classList.toggle("on-m", state.mute.has(name)); applyMix(); });
-    row.querySelector(".s").addEventListener("click", (e) => { toggleSet(state.solo, name); e.target.classList.toggle("on-s", state.solo.has(name)); applyMix(); });
+    row.querySelector(".m").addEventListener("click", () => { toggleSet(state.mute, name); setPreset(null); applyMix(); });
+    row.querySelector(".s").addEventListener("click", () => { toggleSet(state.solo, name); setPreset(null); applyMix(); });
     row.querySelector("input").addEventListener("input", applyMix);
     row.dataset.name = name;
     box.appendChild(row);
@@ -622,29 +670,58 @@ function buildMixer() {
   const master = masterAudio();
   master.addEventListener("timeupdate", onTime);
   master.addEventListener("ended", () => { $("#m-play").textContent = "▶ 재생"; });
+  $("#preset-score").classList.toggle("hidden", !state.audios.score);
+  setPreset("all");
   applyMix();
+  updateDownloads();
 }
 
 function toggleSet(set, v) { if (set.has(v)) set.delete(v); else set.add(v); }
 
+// 프리셋: 전체 / 반주(MR: 메인 보컬 음소거) / 보컬만
+function setPreset(p) {
+  $$("#mix-preset button").forEach((b) => b.classList.toggle("on", b.dataset.p === p));
+  if (!p) return;
+  state.mute.clear(); state.solo.clear();
+  if (p === "mr") state.mute.add("vocals");
+  if (p === "vocal") { state.solo.add("vocals"); if (state.audios.backing_vocals) state.solo.add("backing_vocals"); }
+  if (p === "score") {
+    state.solo.add("score");
+    const row = $('#mixer .mix-row[data-name="score"] input');
+    if (row && row.value === "0") row.value = 90;
+  }
+  applyMix();
+}
+
 function applyMix() {
+  const now = state.ctx ? state.ctx.currentTime : 0;
   for (const row of $$("#mixer .mix-row")) {
     const name = row.dataset.name;
     const a = state.audios[name];
     if (!a) continue;
+    row.querySelector(".m").classList.toggle("on-m", state.mute.has(name));
+    row.querySelector(".s").classList.toggle("on-s", state.solo.has(name));
     const vol = row.querySelector("input").value / 100;
     const audible = state.solo.size ? state.solo.has(name) : !state.mute.has(name);
-    a.volume = audible ? vol : 0;
+    const v = audible ? vol * vol : 0;  // 귀에 고르게 들리도록 제곱 곡선
+    const g = state.gains[name];
+    if (g) g.gain.setTargetAtTime(v, now, 0.03);
+    else a.volume = v;
   }
 }
 
 function togglePlay() {
   const all = Object.values(state.audios);
   if (!all.length) return;
+  if (ensureGraph()) {
+    for (const [name, a] of Object.entries(state.audios)) connectAudio(name, a);
+    if (state.ctx.state === "suspended") state.ctx.resume();
+    applyMix();
+  }
   const master = all[0];
   if (master.paused) {
     const t = master.currentTime;
-    for (const a of all) { a.currentTime = t; a.play().catch(() => {}); }
+    for (const a of all) { a.currentTime = t; a.playbackRate = 1; a.play().catch(() => {}); }
     $("#m-play").textContent = "⏸ 일시정지";
   } else {
     for (const a of all) a.pause();
@@ -653,9 +730,117 @@ function togglePlay() {
 }
 
 function seekAll(t) {
-  for (const a of Object.values(state.audios)) a.currentTime = t;
+  for (const a of Object.values(state.audios)) { a.currentTime = t; a.playbackRate = 1; }
   const m = masterAudio();
   if (!m || m.paused) setTimeout(onTime, 30);
+}
+
+// 여러 스템이 어긋나지 않게: 조금 어긋나면 속도를 아주 살짝(±0.4% 이하) 바꿔 따라잡고, 많이 어긋날 때만 위치를 옮긴다
+function syncStems(master) {
+  const t = master.currentTime;
+  for (const a of Object.values(state.audios)) {
+    if (a === master || a.paused) continue;
+    const drift = a.currentTime - t;
+    if (Math.abs(drift) > 0.25) { a.currentTime = t; a.playbackRate = 1; }
+    else if (Math.abs(drift) > 0.012) a.playbackRate = 1 - Math.max(-0.004, Math.min(0.004, drift * 0.1));
+    else if (a.playbackRate !== 1) a.playbackRate = 1;
+  }
+}
+
+// ------------------------------------------------------------------ 조옮김한 키로 듣기
+async function syncPlaybackKey() {
+  if (!state.view || !Object.keys(state.audios).length) return;
+  const want = $("#m-keyfollow").checked ? (state.view.semitones || 0) : 0;
+  updateDownloads();
+  if (want === (state.playKey || 0)) { $("#pb-status").classList.add("hidden"); return; }
+  const token = (state.pbToken = (state.pbToken || 0) + 1);
+  const box = $("#pb-status");
+  try {
+    let st = await api(`/api/jobs/${state.job.id}/playback`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ semitones: want }) });
+    while (st.status === "working") {
+      if (token !== state.pbToken) return;
+      box.textContent = `${keyLabel(want)} 키로 반주를 옮기는 중… ${Math.round(st.progress * 100)}% (원래 키로 계속 들을 수 있어요)`;
+      box.classList.remove("hidden");
+      await new Promise((r) => setTimeout(r, 1200));
+      st = await api(`/api/jobs/${state.job.id}/playback?semitones=${want}`);
+    }
+    if (token !== state.pbToken) return;
+    if (st.status !== "ready") throw new Error(st.error || "음원을 만들지 못했습니다");
+    swapSources(want);
+    box.classList.add("hidden");
+  } catch (e) {
+    box.textContent = `키를 옮긴 음원을 만들지 못했습니다: ${e.message}`;
+    box.classList.remove("hidden");
+  }
+}
+
+function keyLabel(semis) {
+  const v = state.view;
+  return semis === v.semitones ? v.key_short : (semis ? `${semis > 0 ? "+" : ""}${semis}` : v.original_key_short);
+}
+
+function swapSources(semis) {
+  const all = Object.entries(state.audios);
+  if (!all.length) return;
+  const master = all[0][1];
+  const t = master.currentTime, playing = !master.paused;
+  for (const [name, a] of all) {
+    a.pause();
+    a.src = audioUrl(name, semis);
+    a.load();
+  }
+  state.playKey = semis;
+  // 모두 준비되면 같은 위치에서 다시 재생
+  let left = all.length;
+  const go = () => {
+    if (--left > 0) return;
+    for (const [, a] of all) { a.currentTime = t; a.playbackRate = 1; if (playing) a.play().catch(() => {}); }
+  };
+  for (const [, a] of all) {
+    a.addEventListener("canplay", go, { once: true });
+    a.addEventListener("error", go, { once: true });
+  }
+  toast(semis ? `이제 ${keyLabel(semis)} 키로 들려요` : "원래 키로 들려요");
+}
+
+// 반주 내려받기: 그 키의 음원이 아직 없으면(예전 작업, 아직 안 옮긴 키) 먼저 만든다
+async function downloadMr(e) {
+  e.preventDefault();
+  const kind = e.currentTarget.id === "dl-inst" ? "inst" : "mr";
+  const semis = $("#m-keyfollow").checked && state.view ? (state.view.semitones || 0) : 0;
+  try {
+    let st = await api(`/api/jobs/${state.job.id}/playback?semitones=${semis}`);
+    if (st.status !== "ready" || !st.tracks.includes(kind)) {
+      st = await api(`/api/jobs/${state.job.id}/playback`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ semitones: semis }) });
+    }
+    if (st.status !== "ready") { toast("반주 음원을 만드는 중이에요 (1분 안팎). 다 되면 다시 눌러 주세요"); return; }
+    location.href = `/api/jobs/${state.job.id}/mr?semitones=${semis}&kind=${kind}`;
+  } catch (err) {
+    toast(`반주를 받지 못했습니다: ${err.message}`);
+  }
+}
+
+// 음표를 고치면 악보 소리를 다시 받는다 (서버가 새로 만든다)
+function refreshScoreAudio() {
+  const a = state.audios.score;
+  if (!a) return;
+  const master = masterAudio();
+  a.src = audioUrl("score", state.playKey || 0) + (state.playKey ? "&" : "?") + `v=${Date.now()}`;
+  a.load();
+  a.addEventListener("canplay", () => { a.currentTime = master.currentTime; if (!master.paused) a.play().catch(() => {}); }, { once: true });
+}
+
+function updateDownloads() {
+  const semis = $("#m-keyfollow").checked && state.view ? (state.view.semitones || 0) : 0;
+  const stems = (state.result && state.result.stems) || [];
+  const base = `/api/jobs/${state.job.id}/mr?semitones=${semis}`;
+  $("#dl-mr").href = `${base}&kind=mr`;
+  $("#dl-inst").href = `${base}&kind=inst`;
+  $("#dl-mr").classList.toggle("hidden", !stems.includes("vocals"));
+  $("#dl-inst").classList.toggle("hidden", !stems.includes("backing_vocals"));
+  $(".mr-dl").classList.toggle("hidden", !stems.includes("vocals"));
 }
 
 function onTime() {
@@ -664,10 +849,7 @@ function onTime() {
   const t = master.currentTime;
   if (isFinite(master.duration)) $("#m-seek").value = Math.round((t / master.duration) * 1000);
   $("#m-time").textContent = `${fmtTime(t)} / ${fmtTime(master.duration)}`;
-  // 여러 스템이 어긋나지 않게 맞추기
-  for (const a of all.slice(1)) {
-    if (!master.paused && Math.abs(a.currentTime - t) > 0.08) a.currentTime = t;
-  }
+  if (!master.paused) syncStems(master);
   if ($("#m-follow").checked && state.pane === "score") followMeasure(t);
   highlightSection(measureAt(t));
   Views.tick(t);

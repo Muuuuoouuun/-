@@ -197,7 +197,14 @@
         <div class="card">
           <h3>악기별 듣기 (믹서)</h3>
           <label class="check small"><input type="checkbox" id="m-follow" checked> 재생 위치 따라 오선 악보 마디 표시</label>
+          <div class="seg small-seg" id="mix-preset">
+            <button data-p="all" class="on">전체</button><button data-p="mr">반주(MR)</button><button data-p="vocal">보컬만</button><button data-p="score" id="preset-score" class="hidden">악보 소리</button>
+          </div>
+          <label class="check small"><input type="checkbox" id="m-keyfollow" checked> 조옮김한 키로 듣기 (고음질 음정 이동, 드럼은 그대로)</label>
+          <div id="pb-status" class="hint hidden"></div>
           <div id="mixer"></div>
+          <p class="small mr-dl">반주 받기 (MP3, 현재 키):
+            <a id="dl-mr" href="#">MR — 메인 보컬 뺌</a> · <a id="dl-inst" href="#">코러스까지 뺌</a></p>
         </div>
         <div class="card">
           <h3>파일 받기</h3>
