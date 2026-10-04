@@ -1,5 +1,19 @@
 # 로컬 검증 기록 · 2026-10-04
 
+분리·수정 구현은 로컬 커밋 `4663db79b1f457638ce9de48a92425a695c8f8af`로 보존했습니다. 뒤이은 문서 커밋은 검증 방식과 의존성 조사 결과만 추가합니다. 원격 push는 하지 않았습니다.
+
+## VM과 실제 브라우저 검증의 구분
+
+| 검증 | 실제 실행 환경 | 모의 입력·대체한 범위 | 확인하지 않은 것 |
+|---|---|---|---|
+| band2sheet 화면 회귀 15개 | **Node VM**에서 실제 app.js 실행 | DOM·fetch·타이머를 테스트 객체로 대체 | 실제 브라우저 레이아웃/오디오/API 서버 |
+| band2sheet 브라우저 확인 | **실제 설치된 Chrome**, Playwright 1.58.2, 임시 프로필 | 실제 정적 HTML/JS/CSS + 합성 `/api/info`, 작업 목록·상태·분석 응답; 외부 HTTP 대체 | FastAPI·분석 함수·OSMD 악보 출력·실음원 |
+| AirChoir 단위 45개 | Node 실행 | 신규 수명주기는 WebAudio·카메라·모델 로더 대체, 기존 DSP는 합성 배열 | 브라우저/실제 장치 품질 |
+| AirChoir pointer 브라우저 확인 | **실제 설치된 Chromium** + 실제 Web Audio/AudioWorklet | 합성 데모 음성; getUserMedia는 오류를 내도록 차단; 외부 HTTP 차단 | 실제 마이크·카메라·MediaPipe |
+| AirChoir Phase 0 브라우저 확인 | **실제 설치된 Chromium** | 합성 데모와 Chromium fake-device 마이크, 외부 HTTP 차단 | 하드웨어 마이크·실제 지연/음질 |
+
+즉, 77개 단위/회귀 통과와 실제 브라우저 두 앱 확인을 별개로 수행했습니다. 실제 브라우저를 사용했다는 사실이 실제 백엔드 또는 실제 마이크를 사용했다는 뜻은 아닙니다. 추가 전체 실행을 막는 의존성과 용량은 [DEPENDENCIES.md](DEPENDENCIES.md)에 있습니다.
+
 ## band2sheet
 
 수정 전 controlled fetch 테스트 8개가 실패했습니다. 동시 분석 요청은 두 요청 모두 등록됐고, 대기 중 작업 삭제가 허용되며 실행기 제출 실패 후 저장 상태가 `queued`로 남았습니다. 이후 재시도·작업 재방문·입력 보존 사례를 추가해 검증했습니다.
