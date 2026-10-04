@@ -132,6 +132,38 @@ band2sheet app            # 브라우저에서 http://127.0.0.1:8765 이 열립�
 
 같은 와이파이의 휴대폰·태블릿에서 보려면 `band2sheet app --host 0.0.0.0` 으로 실행하고 `http://<컴퓨터 IP>:8765` 로 접속하세요.
 
+## 🎤 내 노래 영상 후보정 (화음 · 오케스트라 · 오토튠)
+
+직접 녹화한 노래 영상(또는 음원)을 넣으면 **화면은 그대로 두고 소리만** 다듬어 다시 영상으로 만들어 줍니다.
+앱에서는 새 작업 화면의 **🎤 내 영상 후보정** 탭을 쓰고, 결과 화면에서 **후보정 / 원본** 을 같은 위치에서 바꿔 들으며 비교할 수 있습니다.
+
+| 스타일 | 내용 |
+|---|---|
+| **화음 넣기** (기본) | 내 목소리로 3도 위 + 아래 화음(3성부)을 만듭니다. 그 시각의 **코드 구성음**에 맞춰 음을 고르고(코드를 모르면 음계 3도), 화음 성부는 항상 음계에 맞춥니다. 좌우로 펼치고 미세한 시차·음높이 흔들림을 줘서 여러 사람이 부르는 느낌을 냅니다 |
+| **오케스트라** | 키·박·코드를 분석해 현악(4성부, 성부 진행 최소화)·첼로/콘트라베이스·호른·하프 분산화음·팀파니로 편곡하고 연주합니다. 곡이 진행될수록 커지는 빌드업, 홀 잔향 포함. 편곡은 `orchestra.mid` 로도 저장됩니다 |
+| **오케스트라 + 화음** | 둘 다 |
+| **오토튠** (부가 기능) | 음계에서 벗어난 음을 가장 가까운 음으로 당깁니다. 강도 0~100%, 기본은 비브라토를 살리는 자연스러운 보정이고 **하드 튠**은 로봇 보이스 효과 |
+
+```bash
+band2sheet remix 내노래.mp4                                  # 화음 넣기 (기본)
+band2sheet remix 내노래.mp4 --autotune                       # + 오토튠 (강도 0.7)
+band2sheet remix 내노래.mp4 --autotune 1 --hard-tune         # 로봇 보이스
+band2sheet remix 내노래.mp4 --style orchestra --key G        # 오케스트라 반주 (키 직접 지정)
+band2sheet remix 내노래.mov --style full --harmony up        # 오케스트라 + 위 화음만
+```
+
+결과 (`output/<이름>_remix/`): `<이름>_<스타일>.mp4`(후보정 영상), `remix.wav`, `stems/`(오토튠 보컬·위/아래 화음·오케스트라),
+`orchestra.mid`, `remix.json`(키·코드·설정).
+
+- 목소리 음높이를 바꿀 때는 **PSOLA**(주기 단위로 잘라 붙이기)를 써서 음색(포먼트)이 유지됩니다. 화음이 다람쥐 소리처럼 되지 않습니다.
+- 반주와 함께 녹화한 영상이면 `pip install demucs` 를 설치해 두세요. 목소리만 골라서 화음·오토튠을 겁니다.
+  화음 스타일은 원래 반주를 유지하고, 오케스트라 스타일은 원래 반주를 빼고 오케스트라로 바꿉니다(`--keep-backing` 으로 둘 다).
+  Demucs 가 없으면 **목소리만 녹음된 영상**으로 보고 처리합니다.
+- 오케스트라 음색은 내장 합성기입니다. [fluidsynth](https://www.fluidsynth.org) 와 오케스트라 사운드폰트(.sf2)가 있으면
+  `--soundfont 파일.sf2` (또는 환경 변수 `BAND2SHEET_SOUNDFONT`) 로 훨씬 실감 나는 소리를 냅니다.
+- 박이 어긋나면 `--bpm`, 키가 틀리면 `--key` 로 직접 지정하세요. 화음·오케스트라 음량은 `--harmony-level`, `--orchestra-level`.
+- 화면(영상)은 다시 인코딩하지 않아 화질 그대로이고 빠릅니다.
+
 ## 명령줄 사용법
 
 ```bash
@@ -139,6 +171,7 @@ band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 음�
 band2sheet run 예배실황.mp4 --key A --lyrics               # 파일 → 악보 (+A키 악보, 가사)
 band2sheet run 곡.mp3 -q high                              # 고품질 분리
 band2sheet run --stems-dir 멀티트랙폴더/                    # 멀티트랙 (분리 없이)
+band2sheet remix 내노래.mp4 --autotune                     # 내 영상 후보정 (화음 + 오토튠)
 band2sheet transpose output/곡/project.json --key Bb       # 분석 결과로 빠르게 조옮김
 band2sheet transpose 내악보.musicxml --key G               # 기존 MusicXML 조옮김
 band2sheet run "https://youtu.be/..."                      # 유튜브 링크 → 바로 악보 (오디오만 받아서 빠름)
@@ -244,6 +277,9 @@ pytest -m "not slow"      # 빠른 테스트만
 | `pipeline.py` | 전체 흐름, MIDI·코드표 |
 | `engines.py` | 엔진 설치 확인, 장치 선택 |
 | `view.py` | 앱 자체 화면용 데이터(마디·코드·가사·구간·음표)와 코드/가사/음표 수정 |
+| `remix.py` | 내 영상 후보정 흐름: 분리 → 분석 → 오토튠/화음/오케스트라 → 믹스 → 영상에 입히기 |
+| `vocalfx.py` | 보컬 DSP: 음높이 추적, PSOLA 피치 변환, 오토튠, 코드 맞춤 화음, 잔향 |
+| `orchestra.py` | 코드 진행 → 오케스트라 편곡(MIDI) → 내장 합성기 / 사운드폰트 연주 |
 | `audio_io.py` | 입력 처리: 유튜브 영상/오디오 다운로드(yt-dlp), 음성 추출, WAV 변환 |
 | `app/` | 앱 서버(FastAPI, 작업 큐 — 링크 작업은 음성(선택: 영상) 받기 → 분석, 또는 '준비됨' 에서 멈춤) + 화면: 코드 악보·라이브 코드(`views.js`, 운지 그림 `chords.js`), 피아노롤 편집, 믹서, 오선 악보(OSMD) |
 | `cli.py` | 명령줄 |

@@ -5,6 +5,7 @@
   band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
   band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
   band2sheet transpose score.musicxml -s -2                 # 기존 MusicXML 조옮김
+  band2sheet remix 내노래.mp4 --autotune                    # 내 영상 후보정 (화음 + 오토튠)
   band2sheet app                                            # 악보 스튜디오 앱 실행
 """
 
@@ -85,6 +86,29 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--duration", type=float, help="이 길이(초)만")
     f.add_argument("--cookies", help="쿠키 파일 (로그인·연령 확인이 필요한 영상)")
     f.add_argument("--cookies-from-browser", help="이 브라우저의 쿠키 사용 (예: chrome, firefox, edge)")
+
+    m = sub.add_parser("remix", help="내 노래 영상 후보정: 화음 넣기(기본) / 오케스트라 반주 / 오토튠")
+    m.add_argument("source", type=Path, help="녹화한 영상 또는 음원 파일")
+    m.add_argument("-o", "--out", type=Path, default=None, help="결과 폴더 (기본: output/<이름>_remix)")
+    m.add_argument("--style", choices=["harmony", "orchestra", "full"], default="harmony",
+                   help="harmony: 화음 넣기(기본) | orchestra: 오케스트라 반주 | full: 둘 다")
+    m.add_argument("--harmony", choices=["both", "up", "down"], default="both",
+                   help="화음 성부: 3도 위+아래(기본) | 위만 | 아래만")
+    m.add_argument("--autotune", nargs="?", type=float, const=0.7, default=None, metavar="강도",
+                   help="오토튠 켜기 (강도 0~1, 기본 0.7 — 1 에 가까울수록 정확히 맞춤)")
+    m.add_argument("--hard-tune", action="store_true", help="비브라토까지 펴는 '로봇 보이스' 오토튠")
+    m.add_argument("--key", help="키 직접 지정 (예: G, Em; 기본 자동)")
+    m.add_argument("--bpm", type=float, help="템포 직접 지정 (오케스트라 박자가 어긋날 때)")
+    m.add_argument("--no-separate", action="store_true", help="보컬/반주 분리 안 함 (보컬만 녹음된 영상)")
+    g = m.add_mutually_exclusive_group()
+    g.add_argument("--keep-backing", dest="keep_backing", action="store_true", default=None,
+                   help="원래 반주 유지 (오케스트라 스타일 기본은 원래 반주를 빼고 오케스트라로 바꿈)")
+    g.add_argument("--drop-backing", dest="keep_backing", action="store_false",
+                   help="원래 반주 빼기 (보컬만 남기고 새로 입힘)")
+    m.add_argument("--harmony-level", type=float, default=0.5, help="화음 음량 (리드 대비, 기본 0.5)")
+    m.add_argument("--orchestra-level", type=float, default=0.55, help="오케스트라 음량 (리드 대비, 기본 0.55)")
+    m.add_argument("--soundfont", help="오케스트라 음색 .sf2 (fluidsynth 필요, 없으면 내장 합성기)")
+    m.add_argument("--device", help="cpu | cuda | mps (분리용, 기본 자동)")
 
     t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
     t.add_argument("input", type=Path, help="project.json 또는 .musicxml/.mxl/.xml 파일")
@@ -171,6 +195,29 @@ def cmd_fetch(args) -> int:
     return 0
 
 
+def cmd_remix(args) -> int:
+    from .audio_io import safe_name
+    from .remix import STYLES, RemixOptions, remix
+
+    out = args.out or Path("output") / f"{safe_name(args.source.stem)}_remix"
+    opts = RemixOptions(
+        style=args.style, harmony=args.harmony, autotune=args.autotune is not None,
+        autotune_strength=float(min(max(args.autotune if args.autotune is not None else 0.7, 0.0), 1.0)),
+        hard_tune=args.hard_tune, key=args.key, separate=not args.no_separate,
+        keep_backing=args.keep_backing, harmony_level=args.harmony_level,
+        orchestra_level=args.orchestra_level, bpm=args.bpm, soundfont=args.soundfont,
+        device=args.device,
+    )
+    if args.hard_tune and args.autotune is None:
+        opts.autotune, opts.autotune_strength = True, 1.0
+    res = remix(args.source, out, opts)
+    print()
+    print(f"완료! {STYLES[opts.style]}" + (" + 오토튠" if opts.autotune else "") + f" · 키 {res.key}")
+    for f in res.files:
+        print("  -", f)
+    return 0
+
+
 def _render_opts(args):
     from .pipeline import RenderOptions
 
@@ -246,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return {
-            "run": cmd_run, "fetch": cmd_fetch, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
+            "run": cmd_run, "fetch": cmd_fetch, "remix": cmd_remix, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
             "engines": cmd_engines,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:

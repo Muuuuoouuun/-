@@ -37,8 +37,9 @@ async function api(path, opts = {}) {
 }
 
 function show(view) {
-  for (const v of ["new", "source", "progress", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["new", "source", "progress", "result", "remix"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
   if (view !== "source") { $("#s-video").pause(); $("#s-audio").pause(); }
+  if (view !== "remix") { $("#x-video").pause(); $("#x-audio").pause(); }
 }
 
 function fmtTime(s) {
@@ -69,7 +70,10 @@ async function loadInfo() {
     box.appendChild(l);
   }
   const tk = $("#target-key");
-  for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) tk.add(new Option(keyName(k), k));
+  for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) {
+    tk.add(new Option(keyName(k), k));
+    $("#rm-key").add(new Option(keyName(k), k));
+  }
   const eng = Object.fromEntries(state.info.engines.map((e) => [e.key, e]));
   const whisper = (eng.whisper && eng.whisper.installed) || (eng.whisperx && eng.whisperx.installed);
   $("#lyrics-hint").textContent = whisper ? "Whisper 로 가사를 인식합니다." :
@@ -182,6 +186,145 @@ async function startJob() {
   }
 }
 
+// ------------------------------------------------------------------ 내 영상 후보정
+function setMode(mode) {
+  $$("#mode-tabs button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  $("#mode-score").classList.toggle("hidden", mode !== "score");
+  $("#mode-remix").classList.toggle("hidden", mode !== "remix");
+}
+
+function setRemixFile(f) {
+  state.rmFile = f;
+  $("#rm-file-name").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
+  $("#rm-start").disabled = !f;
+}
+
+function setRemixStyle(style) {
+  state.rmStyle = style;
+  $$("#rm-style button").forEach((b) => b.classList.toggle("on", b.dataset.v === style));
+  $("#rm-harmony-row").classList.toggle("hidden", style === "orchestra");
+  // 화음만 넣을 때는 원래 반주를 살리고, 오케스트라를 입힐 때는 원래 반주를 빼고 바꾸는 게 기본
+  $("#rm-keep-backing").checked = style === "harmony";
+  $("#rm-keep-label").textContent = style === "harmony" ? "원래 반주 유지" : "원래 반주도 남기기 (끄면 오케스트라로 바꿈)";
+}
+
+function initRemix() {
+  state.rmStyle = "harmony";
+  $$("#mode-tabs button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  const drop = $("#rm-drop");
+  $("#rm-file").addEventListener("change", (e) => setRemixFile(e.target.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    if (e.dataTransfer.files.length) setRemixFile(e.dataTransfer.files[0]);
+  });
+  $$("#rm-style button").forEach((b) => b.addEventListener("click", () => setRemixStyle(b.dataset.v)));
+  $("#rm-autotune").addEventListener("change", () => {
+    $("#rm-strength").disabled = $("#rm-hard").disabled = !$("#rm-autotune").checked;
+  });
+  $("#rm-strength").addEventListener("input", () => { $("#rm-strength-v").textContent = `${$("#rm-strength").value}%`; });
+  $("#rm-start").addEventListener("click", startRemix);
+  $$("#x-compare button").forEach((b) => b.addEventListener("click", () => compareRemix(b.dataset.v)));
+  $("#x-delete").addEventListener("click", async () => {
+    if (!confirm("후보정 결과를 지울까요? (원본 파일은 내 컴퓨터에 그대로 있어요)")) return;
+    await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
+    state.jobId = null;
+    await loadJobs();
+    show("new");
+  });
+}
+
+async function startRemix() {
+  $("#rm-error").textContent = "";
+  const options = {
+    style: state.rmStyle,
+    harmony: $("#rm-harmony").value,
+    keep_backing: $("#rm-keep-backing").checked,
+    autotune: $("#rm-autotune").checked,
+    autotune_strength: Number($("#rm-strength").value) / 100,
+    hard_tune: $("#rm-autotune").checked && $("#rm-hard").checked,
+    key: $("#rm-key").value || null,
+    bpm: $("#rm-bpm").value || null,
+  };
+  const fd = new FormData();
+  fd.append("file", state.rmFile);
+  fd.append("options", JSON.stringify(options));
+  $("#rm-start").disabled = true;
+  $("#rm-start").textContent = "올리는 중…";
+  try {
+    const job = await api("/api/remix", { method: "POST", body: fd });
+    setRemixFile(null);
+    $("#rm-file").value = "";
+    await loadJobs();
+    openJob(job.id);
+  } catch (e) {
+    $("#rm-error").textContent = e.message;
+  } finally {
+    $("#rm-start").textContent = "후보정 시작";
+    $("#rm-start").disabled = !state.rmFile;
+  }
+}
+
+function remixUrl(path) {
+  return `/api/jobs/${state.job.id}/remix/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function compareRemix(which) {
+  const r = state.job.result;
+  $$("#x-compare button").forEach((b) => b.classList.toggle("on", b.dataset.v === which));
+  const player = r.video ? $("#x-video") : $("#x-audio");
+  const t = player.currentTime || 0;
+  const playing = !player.paused;
+  player.src = remixUrl(which === "original" ? "original" : (r.video || r.audio));
+  player.addEventListener("loadedmetadata", () => {  // 같은 위치에서 이어서 비교
+    player.currentTime = t;
+    if (playing) player.play();
+  }, { once: true });
+}
+
+function showRemix() {
+  const job = state.job;
+  const r = job.result;
+  show("remix");
+  $("#player").classList.add("hidden");
+  $("#x-title").textContent = job.title;
+  $("#x-meta").innerHTML = "";
+  for (const m of [r.style_label, r.autotune ? "오토튠" : null, `키 ${r.key_short}`].filter(Boolean)) {
+    const span = document.createElement("span");
+    span.textContent = m;
+    $("#x-meta").appendChild(span);
+  }
+  $("#x-notes").innerHTML = "";
+  for (const n of r.notes) {
+    const li = document.createElement("li");
+    li.textContent = n;
+    $("#x-notes").appendChild(li);
+  }
+  $("#x-video").classList.toggle("hidden", !r.video);
+  $("#x-audio").classList.toggle("hidden", !!r.video);
+  $("#x-dl").href = remixUrl(r.video || r.audio);
+  $("#x-dl").textContent = r.video ? "⬇ 후보정 영상 받기" : "⬇ 후보정 음원 받기";
+  if (state.remixJob !== job.id) {
+    state.remixJob = job.id;
+    compareRemix("remix");
+  }
+  $("#x-files").innerHTML = "";
+  for (const f of [...r.files, "original"]) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = remixUrl(f);
+    a.textContent = f === "original" ? "원본 파일" : f === r.video ? "🎬 후보정 영상" :
+      f === r.audio ? "🎵 후보정 음원 (WAV)" : f === "orchestra.mid" ? "🎻 오케스트라 편곡 (MIDI)" :
+      { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음", "stems/harmony_down.wav": "아래 화음",
+        "stems/orchestra.wav": "오케스트라 반주" }[f] || f;
+    a.download = "";
+    li.appendChild(a);
+    $("#x-files").appendChild(li);
+  }
+}
+
 // ------------------------------------------------------------------ 받은 영상·음성
 function showSource() {
   const job = state.job;
@@ -272,7 +415,8 @@ async function loadJobs() {
   for (const j of jobs) {
     const li = document.createElement("li");
     li.classList.toggle("active", j.id === state.jobId);
-    const st = j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
+    const st = j.status === "done" && j.kind === "remix" ? `후보정 완료 · ${j.key || ""}` :
+      j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
       j.status === "ready" ? "영상·음성 준비됨 · 악보 만들기 전" :
       j.status === "queued" ? "대기 중" : `${Math.round(j.progress * 100)}% · ${j.stage}`;
     li.innerHTML = `<span class="t"></span><span class="s ${j.status}">${st}</span>`;
@@ -295,6 +439,11 @@ async function openJob(id) {
 async function refreshJob() {
   const job = await api(`/api/jobs/${state.jobId}`);
   state.job = job;
+  if (job.status === "done" && job.kind === "remix") {
+    showRemix();
+    loadJobs();
+    return;
+  }
   if (job.status === "done") {
     await showResult();
     loadJobs();
@@ -788,6 +937,7 @@ function followMeasure(t) {
 window.addEventListener("DOMContentLoaded", async () => {
   initNewView();
   initSourceView();
+  initRemix();
   initResultView();
   $("#btn-new").addEventListener("click", () => {
     stopAudio();

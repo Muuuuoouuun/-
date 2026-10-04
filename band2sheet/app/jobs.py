@@ -39,6 +39,7 @@ class Job:
     result: dict | None = None  # 최근 렌더링 결과
     renders: dict[str, dict] = field(default_factory=dict)  # 키 -> 렌더링 결과
     url: str | None = None  # 링크로 만든 작업 (유튜브 등)
+    kind: str = "score"  # score(악보) | remix(내 영상 후보정)
     source: dict | None = None  # 받은 영상·추출한 음성 정보 (파일 이름, 길이, 올린 사람 …)
 
 
@@ -169,6 +170,63 @@ class JobManager(EditMixin):
         self.pool.submit(self._run, job_id)
         return job
 
+    def create_remix(self, filename: str, data_stream, options: dict) -> Job:
+        """내 영상 후보정 작업: 화음(기본) / 오케스트라 / 오토튠."""
+        from ..remix import STYLES
+
+        ext = Path(filename).suffix.lower()
+        if ext not in ALLOWED_EXT or ext == ".zip":
+            raise ValueError(f"영상 또는 음원 파일을 올려 주세요: {ext or '(확장자 없음)'}")
+        if options.get("style", "harmony") not in STYLES:
+            raise ValueError("스타일은 harmony / orchestra / full 중 하나입니다.")
+        job_id = uuid.uuid4().hex[:12]
+        d = self.job_dir(job_id)
+        d.mkdir(parents=True)
+        with open(d / f"input{ext}", "wb") as f:
+            shutil.copyfileobj(data_stream, f)
+        title = (options.get("title") or Path(filename).stem).strip()[:120] or "제목 없음"
+        job = Job(id=job_id, title=title, filename=Path(filename).name, created=time.time(),
+                  options=options, kind="remix")
+        with self.lock:
+            self.jobs[job_id] = job
+        self._save(job)
+        self.pool.submit(self._run, job_id)
+        return job
+
+    def _run_remix(self, job: Job, d: Path, log, progress) -> None:
+        from ..remix import STYLES, RemixOptions, remix
+
+        o = job.options
+        opts = RemixOptions(
+            style=o.get("style") or "harmony", harmony=o.get("harmony") or "both",
+            autotune=bool(o.get("autotune")),
+            autotune_strength=float(min(max(float(o.get("autotune_strength") or 0.7), 0.0), 1.0)),
+            hard_tune=bool(o.get("hard_tune")), key=o.get("key") or None,
+            keep_backing=o.get("keep_backing") if o.get("keep_backing") in (True, False) else None,
+            bpm=float(o["bpm"]) if o.get("bpm") else None,
+        )
+        src = next(d.glob("input.*"))
+        out = d / "remix"
+        res = remix(src, out, opts, log, progress)
+        job.result = {
+            "kind": "remix", "style": opts.style, "style_label": STYLES[opts.style],
+            "autotune": opts.autotune, "key": res.key, "key_short": res.key_short, "notes": res.notes,
+            "video": res.video.relative_to(out).as_posix() if res.video else None,
+            "audio": res.audio.relative_to(out).as_posix(),
+            "files": [f.relative_to(out).as_posix() for f in res.files],
+            "original": src.name,
+        }
+
+    def remix_file(self, job_id: str, path: str) -> Path:
+        job = self.get(job_id)
+        if job.kind != "remix" or job.status != "done":
+            raise KeyError(path)
+        d = self.job_dir(job_id)
+        f = (d / job.result["original"] if path == "original" else d / "remix" / path).resolve()
+        if not str(f).startswith(str(d.resolve())) or not f.is_file():
+            raise KeyError(path)
+        return f
+
     def create_from_url(self, url: str, options: dict) -> Job:
         """유튜브 등 영상 링크로 작업 만들기: 음성만 받아 바로 악보 (기본).
 
@@ -194,6 +252,13 @@ class JobManager(EditMixin):
         """영상·음성만 받아 둔 작업(ready)이나 실패한 작업을 이어서 악보까지 만들기."""
         job = self.get(job_id)
         has_input = any(self.job_dir(job_id).glob("input.*"))
+        if job.kind == "remix" and job.status == "error":  # 후보정 다시 시도
+            with self.lock:
+                job.options = {**job.options, **options}
+                job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+            self._save(job)
+            self.pool.submit(self._run, job_id)
+            return job
         if job.status not in ("ready", "error") or not (has_input or job.url):
             raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
         with self.lock:
@@ -266,6 +331,10 @@ class JobManager(EditMixin):
         job.status = "running"
         self._save(job)
         try:
+            if job.kind == "remix":
+                self._run_remix(job, d, log, progress)
+                job.status, job.progress, job.stage = "done", 1.0, "완료"
+                return
             if job.url and not job.source:
                 self._fetch(job, d, log, progress)
                 if opts.get("fetch_only"):
