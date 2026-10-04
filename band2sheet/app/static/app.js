@@ -94,7 +94,10 @@ function urlValue() {
 function updateStartButton() {
   const url = urlValue();
   $("#btn-start").disabled = !(url || state.file);
-  $("#btn-start").textContent = url && $("#fetch-only").checked ? "영상 받기 · 음성 추출 시작" : "악보 만들기 시작";
+  const what = $("#keep-video").checked ? "영상" : "음성";
+  $("#btn-start").textContent = url && $("#fetch-only").checked ? `${what} 받기 시작` :
+    url ? `${what} 받아서 악보 만들기` : "악보 만들기 시작";
+  $("#max-height").disabled = !$("#keep-video").checked;
   $("#title").placeholder = url ? "영상 제목 사용" : state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
   $("#drop").classList.toggle("dim", !!url);
 }
@@ -123,6 +126,7 @@ function initNewView() {
   $("#url").addEventListener("input", updateStartButton);
   $("#url").addEventListener("keydown", (e) => { if (e.key === "Enter" && urlValue()) startJob(); });
   $("#fetch-only").addEventListener("change", updateStartButton);
+  $("#keep-video").addEventListener("change", updateStartButton);
   $("#btn-start").addEventListener("click", startJob);
 }
 
@@ -152,6 +156,7 @@ async function startJob() {
     if (url) {
       Object.assign(options, {
         fetch_only: $("#fetch-only").checked,
+        keep_video: $("#keep-video").checked,
         max_height: Number($("#max-height").value),
         audio_format: $("#audio-format").value,
       });
@@ -230,13 +235,17 @@ async function startAnalysis(options, errorEl) {
   }
 }
 
+function sourcePlayer() {
+  return state.job && state.job.source && state.job.source.video ? $("#s-video") : $("#s-audio");
+}
+
 function initSourceView() {
   $("#s-mark-start").addEventListener("click", () => {
-    $("#s-start").value = $("#s-video").currentTime.toFixed(1);
+    $("#s-start").value = sourcePlayer().currentTime.toFixed(1);
   });
   $("#s-mark-end").addEventListener("click", () => {
     const start = Number($("#s-start").value) || 0;
-    const len = $("#s-video").currentTime - start;
+    const len = sourcePlayer().currentTime - start;
     if (len > 0) $("#s-duration").value = len.toFixed(1);
   });
   $("#s-analyze").addEventListener("click", () => startAnalysis({
@@ -245,7 +254,7 @@ function initSourceView() {
   }, $("#s-error")));
   $("#p-retry").addEventListener("click", () => startAnalysis({}, $("#p-error")));
   $("#s-delete").addEventListener("click", async () => {
-    if (!confirm("받은 영상과 음성을 지울까요?")) return;
+    if (!confirm("받은 파일을 지울까요?")) return;
     await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
     state.jobId = null;
     state.sourceJob = null;

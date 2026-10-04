@@ -34,16 +34,20 @@
         <h3>▶ 유튜브 링크로 시작</h3>
         <input id="url" type="url" inputmode="url" autocomplete="off"
                placeholder="https://www.youtube.com/watch?v=…  또는  https://youtu.be/…">
-        <label class="check"><input type="checkbox" id="fetch-only" checked>
-          영상 받기 · 음성 추출까지만 (영상을 보고 구간을 정한 뒤 악보 만들기)</label>
-        <div class="row">
-          <label>영상 화질<select id="max-height">
-            <option value="480">480p (가볍게)</option><option value="720" selected>720p</option>
-            <option value="1080">1080p</option></select></label>
-          <label>음성 파일 형식<select id="audio-format">
-            <option value="mp3" selected>MP3</option><option value="wav">WAV (무손실)</option>
-            <option value="m4a">M4A</option><option value="flac">FLAC (무손실)</option></select></label>
-        </div>
+        <p class="muted small">링크를 붙여 넣고 시작하면 <b>음성만 받아서 바로 악보</b>를 만들어요.</p>
+        <details class="url-more">
+          <summary>받기 옵션</summary>
+          <label class="check"><input type="checkbox" id="keep-video"> 영상도 받기 (앱에서 보면서 구간 고르기·영상 저장)</label>
+          <label class="check"><input type="checkbox" id="fetch-only"> 받기 · 음성 추출까지만 (구간을 정한 뒤 악보 만들기)</label>
+          <div class="row">
+            <label>영상 화질<select id="max-height" disabled>
+              <option value="480">480p (가볍게)</option><option value="720" selected>720p</option>
+              <option value="1080">1080p</option></select></label>
+            <label>저장할 음성 형식<select id="audio-format">
+              <option value="mp3" selected>MP3</option><option value="wav">WAV (무손실)</option>
+              <option value="m4a">M4A</option><option value="flac">FLAC (무손실)</option></select></label>
+          </div>
+        </details>
       </div>
       <div class="or"><span>또는 파일 올리기</span></div>
 
@@ -121,7 +125,7 @@
       <video id="s-video" class="source-video" controls preload="metadata" playsinline></video>
       <div class="card">
         <h3>추출한 음성</h3>
-        <audio id="s-audio" controls preload="none"></audio>
+        <audio id="s-audio" controls preload="metadata"></audio>
       </div>
       <div class="card">
         <h3>이 음원으로 악보 만들기</h3>
@@ -129,10 +133,10 @@
           <label>시작(초)<input id="s-start" type="number" min="0" step="0.1" placeholder="처음부터"></label>
           <label>길이(초)<input id="s-duration" type="number" min="1" step="0.1" placeholder="끝까지"></label>
         </div>
-        <p class="muted small">영상을 보면서
+        <p class="muted small">재생하면서
           <button id="s-mark-start" type="button">지금 위치 = 시작</button>
           <button id="s-mark-end" type="button">지금 위치 = 끝</button>
-          으로 한 곡만 고를 수 있어요. 다른 옵션은 링크를 넣을 때 고른 설정을 씁니다.</p>
+          으로 한 곡만 고를 수 있어요 (영상이 없으면 위 음성 기준). 다른 옵션은 링크를 넣을 때 고른 설정을 씁니다.</p>
         <button id="s-analyze" class="primary big">악보 만들기 시작</button>
         <p id="s-error" class="error"></p>
       </div>

@@ -95,7 +95,7 @@ def test_prepare_input_from_link(video_url, tmp_path):
 
 
 @pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="fastapi 미설치")
-def test_app_url_job_fetch_only(video_url, tmp_path):
+def test_app_url_job_keep_video_fetch_only(video_url, tmp_path):
     from fastapi.testclient import TestClient
 
     from band2sheet.app.server import create_app
@@ -106,7 +106,7 @@ def test_app_url_job_fetch_only(video_url, tmp_path):
                                               "options": {"audio_format": "ogg"}}).status_code == 400
 
     r = client.post("/api/jobs/url", json={"url": video_url, "options": {
-        "fetch_only": True, "audio_format": "wav", "max_height": 480}})
+        "fetch_only": True, "keep_video": True, "audio_format": "wav", "max_height": 480}})
     assert r.status_code == 200, r.text
     job_id = r.json()["id"]
     for _ in range(120):
@@ -134,3 +134,50 @@ def test_app_url_job_fetch_only(video_url, tmp_path):
     # 분석 중/완료된 작업에는 이어서 악보 만들기를 할 수 없다
     client.app.state.manager.get(job_id).status = "running"
     assert client.post(f"/api/jobs/{job_id}/analyze", json={"options": {}}).status_code == 409
+
+
+def _wait(client, job_id, until=("ready", "done", "error")):
+    for _ in range(120):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in until:
+            return job
+        time.sleep(0.25)
+    return job
+
+
+@pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="fastapi 미설치")
+def test_app_url_job_default_audio_only_then_analyze(video_url, tmp_path, monkeypatch):
+    """기본값: 링크를 넣으면 음성만 받아서 바로 분석으로 넘어간다."""
+    from fastapi.testclient import TestClient
+
+    import band2sheet.app.jobs as jobs
+    from band2sheet.app.server import create_app
+
+    seen = []
+
+    def fake_analyze(source, out_dir, opts, log, progress):
+        seen.append((source, opts.start, opts.duration))
+        raise RuntimeError("분석 단계 도달")
+
+    monkeypatch.setattr(jobs, "analyze", fake_analyze)
+    client = TestClient(create_app(tmp_path / "data"))
+    r = client.post("/api/jobs/url", json={"url": video_url, "options": {"start": 1}})
+    assert r.status_code == 200, r.text
+    job = _wait(client, r.json()["id"])
+    assert job["error"] == "분석 단계 도달"  # 받기 후 멈추지 않고 분석까지 감
+    assert job["source"]["video"] is None and job["source"]["audio"] == "source_audio.mp3"
+    assert any("음성 받기" in line for line in job["log"])
+    src, start, _ = seen[0]
+    assert "input." in src and start == 1.0
+    assert client.get(f"/api/jobs/{job['id']}/source/video").status_code == 404
+    assert client.get(f"/api/jobs/{job['id']}/source/audio").status_code == 200
+
+    # 받기까지만 -> 준비됨 -> 구간 정해서 이어서 분석 (다시 받지 않음)
+    r = client.post("/api/jobs/url", json={"url": video_url, "options": {"fetch_only": True}})
+    job = _wait(client, r.json()["id"])
+    assert job["status"] == "ready" and job["source"]["video"] is None and not seen[1:]
+    r = client.post(f"/api/jobs/{job['id']}/analyze", json={"options": {"start": 0.5, "duration": 2}})
+    assert r.status_code == 200
+    job = _wait(client, job["id"], until=("done", "error"))
+    assert seen[1][1:] == (0.5, 2.0)
+    assert sum("음성 받기" in line for line in job["log"]) == 1

@@ -42,7 +42,8 @@ def _ytdlp():
 
 
 def _ytdlp_opts(out_dir: Path, stem: str, progress: Callable[[float, str], None] | None,
-                cookies: str | None, cookies_from_browser: str | None) -> dict:
+                cookies: str | None, cookies_from_browser: str | None,
+                first_label: str = "영상") -> dict:
     opts: dict = {
         "outtmpl": str(out_dir / f"{stem}.%(ext)s"),
         "noplaylist": True,
@@ -62,7 +63,7 @@ def _ytdlp_opts(out_dir: Path, stem: str, progress: Callable[[float, str], None]
             if d.get("filename") != state["file"]:
                 state["file"] = d.get("filename")
                 state["n"] += 1
-            what = "영상" if state["n"] == 1 else "음성 트랙"
+            what = first_label if state["n"] == 1 else "음성 트랙"
             if d.get("status") == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate")
                 frac = min(1.0, d.get("downloaded_bytes", 0) / total) if total else 0.0
@@ -120,21 +121,30 @@ def download_video(url: str, out_dir: Path, max_height: int = 1080, stem: str = 
     return _downloaded_path(info, out_dir, stem), _meta(info, url)
 
 
-def download_youtube(url: str, out_dir: Path,
-                     progress: Callable[[float, str], None] | None = None,
-                     cookies: str | None = None,
-                     cookies_from_browser: str | None = None) -> tuple[Path, str]:
-    """yt-dlp 로 오디오만 내려받는다 (영상이 필요 없을 때 더 빠름). 반환: (오디오 파일, 영상 제목)."""
+def download_audio(url: str, out_dir: Path, stem: str = "source",
+                   progress: Callable[[float, str], None] | None = None,
+                   cookies: str | None = None,
+                   cookies_from_browser: str | None = None) -> tuple[Path, dict]:
+    """yt-dlp 로 소리만 내려받는다 (영상보다 훨씬 작고 빠름). 반환: (오디오 파일, 영상 정보)."""
     yt_dlp = _ytdlp()
     out_dir.mkdir(parents=True, exist_ok=True)
-    opts = _ytdlp_opts(out_dir, "source", progress, cookies, cookies_from_browser)
+    opts = _ytdlp_opts(out_dir, stem, progress, cookies, cookies_from_browser, first_label="음성")
     opts["format"] = "bestaudio/best"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as e:
         raise RuntimeError(f"유튜브에서 오디오를 받지 못했습니다: {e}\n{YTDLP_HINT}") from e
-    return _downloaded_path(info, out_dir, "source"), info.get("title") or "youtube"
+    return _downloaded_path(info, out_dir, stem), _meta(info, url)
+
+
+def download_youtube(url: str, out_dir: Path,
+                     progress: Callable[[float, str], None] | None = None,
+                     cookies: str | None = None,
+                     cookies_from_browser: str | None = None) -> tuple[Path, str]:
+    """오디오만 내려받기. 반환: (오디오 파일, 영상 제목)."""
+    raw, meta = download_audio(url, out_dir, "source", progress, cookies, cookies_from_browser)
+    return raw, meta["title"]
 
 
 AUDIO_CODECS = {
@@ -201,9 +211,8 @@ def fetch(source: str, out_dir: Path, audio_format: str = "wav", keep_video: boo
             raw, meta = download_video(source, tmp, max_height, progress=report, cookies=cookies,
                                        cookies_from_browser=cookies_from_browser)
         else:
-            raw, title = download_youtube(source, tmp, progress=report, cookies=cookies,
-                                          cookies_from_browser=cookies_from_browser)
-            meta = {"title": title, "url": source}
+            raw, meta = download_audio(source, tmp, progress=report, cookies=cookies,
+                                       cookies_from_browser=cookies_from_browser)
     else:
         raw = Path(source).expanduser()
         if not raw.exists():
