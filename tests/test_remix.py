@@ -308,7 +308,7 @@ def test_app_remix_job(tmp_path):
     assert job["status"] == "done", job.get("error")
     res = job["result"]
     assert job["kind"] == "remix" and res["kind"] == "remix" and res["key_short"] == "G"
-    assert res["video"].endswith(".mp4") and "stems/harmony_up.wav" in res["files"]
+    assert res["video"].endswith(".mp4") and "v1/stems/harmony_up.wav" in res["files"]
     assert any("오토튠" in n for n in res["notes"])
     listed = client.get("/api/jobs").json()[0]
     assert listed["kind"] == "remix" and listed["key"] == "G"
@@ -318,9 +318,33 @@ def test_app_remix_job(tmp_path):
     assert "harmony.mp4" in v.headers["content-disposition"]
     o = client.get(f"/api/jobs/{job_id}/remix/original")
     assert o.status_code == 200 and o.content == data
-    assert client.get(f"/api/jobs/{job_id}/remix/stems/harmony_up.wav").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/remix/v1/stems/harmony_up.wav").status_code == 200
     assert client.get(f"/api/jobs/{job_id}/remix/../job.json").status_code in (400, 404)
     assert client.get(f"/api/jobs/{job_id}/remix/nothing.wav").status_code == 404
+    assert res["versions"][0]["n"] == 1 and res["current"] == 1 and res["chord_text"]
+
+    # 다른 스타일 + 직접 고친 코드로 다시 만들기 -> 새 버전 (분석 재사용), 이전 버전도 그대로
+    bad = client.post(f"/api/jobs/{job_id}/remix", json={"options": {"chords": "G | Q7"}})
+    assert bad.status_code == 400 and "Q7" in bad.json()["detail"]
+    r = client.post(f"/api/jobs/{job_id}/remix", json={"options": {
+        "style": "jazz", "with_harmony": False, "autotune": False, "chords": "G | C | D | G", "bpm": 90}})
+    assert r.status_code == 200, r.text
+    for _ in range(400):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.25)
+    assert job["status"] == "done", job.get("error")
+    res2 = job["result"]
+    assert [v["n"] for v in res2["versions"]] == [1, 2] and res2["current"] == 2
+    v2 = res2["versions"][1]
+    assert v2["style"] == "jazz" and v2["chords_source"] == "user" and v2["reused"]
+    assert v2["chord_text"].replace(" ", "") == "G|C|D|G" and v2["video"].startswith("v2/")
+    assert "v2/jazz.mid" in v2["files"] and not any("harmony" in f for f in v2["files"])
+    assert client.get(f"/api/jobs/{job_id}/remix/{v2['video']}").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}/remix/{res['video']}").status_code == 200  # v1 도 남아 있음
+    d = client.get(f"/api/jobs/{job_id}/remix/{v2['video']}")
+    assert "jazz.mp4" in d.headers["content-disposition"]
 
 
 @pytest.mark.slow

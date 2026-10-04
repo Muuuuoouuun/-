@@ -136,6 +136,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(400, str(e))
         return asdict(job)
 
+    @app.post("/api/jobs/{job_id}/remix")
+    def remix_again(job_id: str, req: AnalyzeRequest):
+        job_or_404(job_id)
+        try:
+            return asdict(manager.remix_again(job_id, req.options))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
     @app.get("/api/jobs/{job_id}/remix/{path:path}")
     def remix_file(job_id: str, path: str):
         job = job_or_404(job_id)
@@ -149,11 +159,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         media = {".mp4": "video/mp4", ".mov": "video/quicktime", ".m4v": "video/mp4", ".webm": "video/webm",
                  ".mkv": "video/x-matroska", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
                  ".mid": "audio/midi", ".json": "application/json"}.get(f.suffix.lower())
-        r, ext = job.result, f.suffix.lower()
+        ext = f.suffix.lower()
+        version = next((v for v in job.result.get("versions") or [job.result]
+                        if path in (v.get("video"), v.get("audio"))), None)
         if path == "original":
             name = f"{_file_title(job.title)}_원본{ext}"
-        elif path in (r.get("video"), r.get("audio")):
-            name = f"{_file_title(job.title)}_{r['style']}{ext}"
+        elif version:
+            name = f"{_file_title(job.title)}_{version['style']}{ext}"
         else:
             name = f.name
         return FileResponse(f, media_type=media, filename=name)

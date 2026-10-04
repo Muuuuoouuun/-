@@ -193,10 +193,14 @@ class JobManager(EditMixin):
         self.pool.submit(self._run, job_id)
         return job
 
+    MAX_VERSIONS = 6
+
     def _run_remix(self, job: Job, d: Path, log, progress) -> None:
+        """후보정 한 번 = 버전 하나 (remix/v<n>/). 분석은 remix/analysis/ 에 두고 버전끼리 함께 쓴다."""
         from ..remix import STYLES, RemixOptions, remix
 
         o = job.options
+        num = lambda k: float(o[k]) if o.get(k) not in (None, "") else None  # noqa: E731
         opts = RemixOptions(
             style=o.get("style") or "harmony", harmony=o.get("harmony") or "both",
             autotune=bool(o.get("autotune")),
@@ -204,23 +208,67 @@ class JobManager(EditMixin):
             hard_tune=bool(o.get("hard_tune")), key=o.get("key") or None,
             with_harmony=o.get("with_harmony") if o.get("with_harmony") in (True, False) else None,
             keep_backing=o.get("keep_backing") if o.get("keep_backing") in (True, False) else None,
-            bpm=float(o["bpm"]) if o.get("bpm") else None,
+            bpm=num("bpm"), beats_per_bar=int(o.get("beats_per_bar") or 4),
+            chords=(o.get("chords") or "").strip() or None,
         )
         src = next(d.glob("input.*"))
-        out = d / "remix"
-        res = remix(src, out, opts, log, progress)
-        job.result = {
-            "kind": "remix", "style": opts.style, "style_label": STYLES[opts.style],
-            "autotune": opts.autotune, "key": res.key, "key_short": res.key_short, "notes": res.notes,
-            "video": res.video.relative_to(out).as_posix() if res.video else None,
-            "audio": res.audio.relative_to(out).as_posix(),
-            "files": [f.relative_to(out).as_posix() for f in res.files],
-            "original": src.name,
+        root = d / "remix"
+        prev = dict(job.result or {})
+        versions = list(prev.get("versions") or [])
+        n = max([v["n"] for v in versions], default=0) + 1
+        out = root / f"v{n}"
+        try:
+            res = remix(src, out, opts, log, progress, analysis_dir=root / "analysis")
+        except Exception as e:
+            if not versions:
+                raise
+            # 다시 만들기가 실패해도 이전 버전들은 그대로 볼 수 있게
+            shutil.rmtree(out, ignore_errors=True)
+            job.result = dict(prev, last_error=str(e))
+            log("오류: " + str(e))
+            return
+        rel = lambda f: f.relative_to(root).as_posix()  # noqa: E731
+        version = {
+            "n": n, "style": opts.style, "style_label": STYLES[opts.style], "autotune": opts.autotune,
+            "with_harmony": opts.with_harmony, "key": res.key, "key_short": res.key_short,
+            "tempo": res.tempo, "beats_per_bar": opts.beats_per_bar, "chord_text": res.chord_text,
+            "chords_source": "user" if opts.chords else "auto", "user_key": bool(opts.key),
+            "user_bpm": bool(opts.bpm), "notes": res.notes, "reused": res.reused,
+            "video": rel(res.video) if res.video else None, "audio": rel(res.audio),
+            "files": [rel(f) for f in res.files],
         }
+        versions.append(version)
+        while len(versions) > self.MAX_VERSIONS:  # 오래된 버전부터 지움
+            old = versions.pop(0)
+            shutil.rmtree(root / f"v{old['n']}", ignore_errors=True)
+        # 화면 호환: 현재 버전의 내용을 맨 위에도 둔다
+        job.result = {"kind": "remix", **version, "versions": versions, "current": n, "original": src.name}
+
+    def remix_again(self, job_id: str, options: dict) -> Job:
+        """같은 영상으로 스타일·화음·오토튠·템포·키·코드를 바꿔 새 버전 만들기 (분석 재사용)."""
+        from ..remix import STYLES, parse_chord_text
+
+        job = self.get(job_id)
+        if job.kind != "remix":
+            raise RuntimeError("후보정 작업이 아닙니다.")
+        if job.status in ("queued", "running"):
+            raise RuntimeError("이미 만드는 중입니다. 끝난 뒤에 다시 시도해 주세요.")
+        if options.get("style", job.options.get("style", "harmony")) not in STYLES:
+            raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
+        if options.get("chords"):
+            parse_chord_text(options["chords"])  # 형식 오류는 바로 알림
+        with self.lock:
+            job.options = {**job.options, **options}
+            job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+            if job.result:
+                job.result.pop("last_error", None)
+        self._save(job)
+        self.pool.submit(self._run, job_id)
+        return job
 
     def remix_file(self, job_id: str, path: str) -> Path:
         job = self.get(job_id)
-        if job.kind != "remix" or job.status != "done":
+        if job.kind != "remix" or not job.result:
             raise KeyError(path)
         d = self.job_dir(job_id)
         f = (d / job.result["original"] if path == "original" else d / "remix" / path).resolve()

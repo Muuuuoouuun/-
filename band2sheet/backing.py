@@ -594,14 +594,17 @@ def synthesize(notes: list[ONote], duration: float, sr: int = 44100, reverb: flo
         bus = np.zeros((total, 2) if stereo else total, dtype=np.float32)
         cache: dict[tuple, np.ndarray] = {}
         for i, nt in enumerate(pnotes):
-            s0 = int(nt.start * sr)
+            s0 = int(round(nt.start * sr))
             if s0 >= total:
                 continue
             dur = round(max(nt.end - nt.start, 0.02) * 20) / 20  # 50 ms 단위로 묶어 같은 음은 한 번만 합성
             key = (nt.pitch, dur)
             if key not in cache:
                 cache[key] = _render_note(name, part, nt.pitch, dur, sr, seed=len(cache) * 7).astype(np.float32)
-            sig = cache[key][:total - s0] * (nt.velocity / 127.0) ** 1.6
+            sig = cache[key]
+            if s0 < 0:  # 곡 시작 전에 시작한 음은 앞부분을 잘라 냄
+                sig, s0 = sig[-s0:], 0
+            sig = sig[:total - s0] * (nt.velocity / 127.0) ** 1.6
             if stereo:
                 a = (float(np.clip((nt.pitch - 62) / 30, -0.6, 0.6)) + 1) * np.pi / 4
                 bus[s0:s0 + len(sig), 0] += sig * np.cos(a)

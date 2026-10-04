@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -68,6 +69,7 @@ class RemixOptions:
     backing_level: float = 0.55  # 새 반주 음량 (리드 대비)
     bpm: float | None = None
     beats_per_bar: int = 4
+    chords: str | None = None  # 코드 진행 직접 입력 (예: "G C D G" 또는 "G | C D | Em")
     soundfont: str | None = None  # .sf2 (fluidsynth 필요) — 없으면 내장 합성기
     device: str | None = None
 
@@ -82,6 +84,9 @@ class RemixResult:
     chords: list[str]
     files: list[Path] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    tempo: float = 0.0
+    chord_text: str = ""
+    reused: bool = False  # 저장해 둔 분석을 다시 썼는지
 
 
 def _print(msg: str) -> None:
@@ -89,8 +94,154 @@ def _print(msg: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 분석 보조
+# 분석 — 한 번 해 두면 스타일·화음·오토튠을 바꿔 다시 만들 때 그대로 재사용
 # ---------------------------------------------------------------------------
+
+PREP_VERSION = 2
+
+
+@dataclass
+class Prep:
+    """무거운 준비 단계 결과: 소리, 보컬/반주, 음높이 곡선, 멜로디 음표."""
+    mix: np.ndarray  # (n, 2)
+    vocal: np.ndarray  # (n,)
+    backing: np.ndarray | None  # (n, 2)
+    track: PitchTrack
+    notes: list[Note]
+    reused: bool = False
+
+    @property
+    def duration(self) -> float:
+        return len(self.mix) / SR
+
+
+@dataclass
+class Analysis:
+    key: Key
+    tempo: float
+    beats: list[float]
+    beats_per_bar: int
+    downbeat: int
+    spans: list  # backing.ChordSpan
+    names: list[str]
+    vocal_only: bool
+    chords_source: str  # auto | user
+    notes: list[str] = field(default_factory=list)
+
+    def bar_times(self) -> list[float]:
+        bt, bpb = self.beats, self.beats_per_bar
+        bars = [b for i, b in enumerate(bt) if (i - self.downbeat) % bpb == 0]
+        period = float(np.median(np.diff(bt))) if len(bt) > 1 else 0.5
+        first = self.spans[0].start if self.spans else (bars[0] if bars else 0.0)
+        while bars and bars[0] > first + 1e-3:
+            bars.insert(0, bars[0] - bpb * period)
+        return bars
+
+    def chord_text(self) -> str:
+        """마디별 코드 진행 (예: 'G | C | D | G G/B'). 앱에서 고쳐서 다시 만들 때 씀."""
+        bars = self.bar_times()
+        if not self.spans or len(bars) < 2:
+            return ""
+        out = []
+        last = self.spans[-1].end
+        for a, b in zip(bars, bars[1:] + [bars[-1] + (bars[-1] - bars[-2])]):
+            if a >= last - 1e-3:
+                break
+            names = []
+            for c, nm in zip(self.spans, self.names):
+                ov = min(b, c.end) - max(a, c.start)
+                if ov >= 0.24 * (b - a) and (not names or names[-1] != nm):
+                    names.append(nm)
+            out.append(" ".join(names) or "N.C.")
+        return " | ".join(out)
+
+    def chord_list(self) -> list[dict]:
+        return [{"start": round(c.start, 2), "end": round(c.end, 2), "name": nm}
+                for c, nm in zip(self.spans, self.names)]
+
+
+def _signature(source: Path, opts: RemixOptions) -> list:
+    st = source.stat()
+    return [PREP_VERSION, st.st_size, st.st_mtime_ns, bool(opts.separate)]
+
+
+def prepare(source: Path, adir: Path, opts: RemixOptions, log: Log = _print,
+            step: Callable[[float, str], None] | None = None) -> Prep:
+    """소리 꺼내기 -> (Demucs) 분리 -> 음높이 추적. 같은 파일·설정이면 저장해 둔 결과를 불러온다."""
+    step = step or (lambda f, m: log(m))
+    adir.mkdir(parents=True, exist_ok=True)
+    meta_path = adir / "prep.json"
+    sig = _signature(source, opts)
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("sig") == sig:
+                mix, _ = sf.read(str(adir / "mix.wav"), always_2d=True)
+                vocal, _ = sf.read(str(adir / "vocal.wav"))
+                backing = sf.read(str(adir / "backing.wav"), always_2d=True)[0] if meta.get("backing") else None
+                pz = np.load(adir / "pitch.npz")
+                track = PitchTrack(pz["times"], pz["midi"])
+                notes = [Note(float(a), float(b), int(p), int(v)) for a, b, p, v in pz["notes"]]
+                step(0.45, "① 저장해 둔 분석 결과를 다시 사용합니다 (분리·음높이 분석 생략)")
+                return Prep(mix, vocal, backing, track, notes, reused=True)
+        except (OSError, ValueError, KeyError):
+            pass  # 망가진 캐시는 새로 만든다
+
+    step(0.02, "① 영상에서 소리 꺼내는 중")
+    mix_path = audio_io.to_wav(source, adir / "mix.wav", sr=SR)
+    mix, _ = sf.read(str(mix_path), always_2d=True)
+    sep = None
+    if opts.separate:
+        step(0.06, "② 보컬과 반주 나누는 중")
+        sep = _separate(mix_path, adir / "tmp", opts.device, log)
+    if sep is not None:
+        vocal, backing = sep
+        n = min(len(vocal), len(mix))
+        vocal, backing, mix = vocal[:n], backing[:n], mix[:n]
+    else:
+        vocal, backing = mix.mean(axis=1), None
+    step(0.30, "③ 음높이 분석 중")
+    track = track_pitch(vocal, SR)
+    if not np.any(track.voiced()):
+        raise RuntimeError("노래(음높이)를 찾지 못했습니다. 목소리가 들리는 영상인지 확인해 주세요.")
+    notes = _melody_notes(vocal, track)
+
+    sf.write(str(adir / "vocal.wav"), vocal, SR, subtype="FLOAT")
+    if backing is not None:
+        sf.write(str(adir / "backing.wav"), backing, SR, subtype="FLOAT")
+    np.savez_compressed(adir / "pitch.npz", times=track.times, midi=track.midi,
+                        notes=np.array([[n.start, n.end, n.pitch, n.velocity] for n in notes]).reshape(-1, 4))
+    shutil.rmtree(adir / "tmp", ignore_errors=True)
+    meta_path.write_text(json.dumps({"sig": sig, "backing": backing is not None}), encoding="utf-8")
+    return Prep(mix, vocal, backing, track, notes)
+
+
+def _melody_notes(vocal: np.ndarray, track: PitchTrack) -> list[Note]:
+    """음높이 곡선 -> 멜로디 음표 (비브라토·꺾기는 한 음으로, 같은 음 반복은 음절마다 나눔)."""
+    from .instruments import INSTRUMENTS
+    from .transcribe import notes_from_f0
+    from .vocalfx import HOP
+
+    ya = librosa.resample(vocal, orig_sr=SR, target_sr=ANALYSIS_SR)
+    notes = notes_from_f0(ya, ANALYSIS_SR, HOP, track.midi.copy(), INSTRUMENTS["vocals"])
+    # 비브라토의 음량 흔들림이 '새 음 시작'으로 잘못 잡힌 조각은 다시 붙인다:
+    # 같은 음이 틈 없이 이어지고 경계에서 소리가 크게 줄지 않았으면 한 음.
+    rms = librosa.feature.rms(y=ya, frame_length=2048, hop_length=HOP)[0]
+    ft = HOP / ANALYSIS_SR
+    merged: list[Note] = []
+    for n in notes:
+        if merged and merged[-1].pitch == n.pitch and n.start - merged[-1].end < 0.035:
+            prev = merged[-1]
+            k0, kb, k1 = int(prev.start / ft), int(n.start / ft), max(int(n.end / ft), int(n.start / ft) + 1)
+            dip = float(rms[max(kb - 2, 0):kb + 3].min()) if kb < len(rms) else 0.0
+            ref = min(float(np.median(rms[k0:kb] if kb > k0 else rms[k0:k0 + 1])),
+                      float(np.median(rms[kb:k1])) if k1 <= len(rms) else 0.0)
+            if dip > 0.55 * ref:
+                merged[-1] = Note(prev.start, n.end, prev.pitch, max(prev.velocity, n.velocity))
+                continue
+        merged.append(n)
+    return merged
+
 
 def _separate(mix: Path, work: Path, device: str | None, log: Log) -> tuple[np.ndarray, np.ndarray] | None:
     """Demucs 로 (보컬 모노, 반주 스테레오). 설치돼 있지 않거나 실패하면 None."""
@@ -111,18 +262,6 @@ def _separate(mix: Path, work: Path, device: str | None, log: Log) -> tuple[np.n
     return voc.mean(axis=1), backing
 
 
-def _notes_from_track(track: PitchTrack) -> list[Note]:
-    """음높이 곡선 -> 대략의 음표 (키·코드 추정용)."""
-    notes, start, cur = [], None, None
-    for i, m in enumerate(np.append(track.midi, np.nan)):
-        q = None if np.isnan(m) else int(round(m))
-        if q != cur:
-            if cur is not None and i - start >= 4:
-                notes.append(Note(track.times[start], track.times[start] + (i - start) * track.frame_t, cur, 80))
-            start, cur = i, q
-    return notes
-
-
 def _chroma_notes(y: np.ndarray, sr: int, beats: list[float]) -> list[Note]:
     """반주 음원의 박별 크로마 -> 가짜 음표 (코드 인식에 쓰기 위함)."""
     ya = librosa.resample(y, orig_sr=sr, target_sr=ANALYSIS_SR)
@@ -141,10 +280,15 @@ def _chroma_notes(y: np.ndarray, sr: int, beats: list[float]) -> list[Note]:
     return out
 
 
-def _beats(path: Path, bpm: float | None, duration: float, log: Log) -> tuple[list[float], list[float]]:
+def _beats(y: np.ndarray, bpm: float | None, duration: float, log: Log) -> tuple[list[float], list[float]]:
+    import tempfile
+
     from .rhythm import track_beats
 
-    info = track_beats(path, bpm, log=log)
+    with tempfile.TemporaryDirectory() as td:  # 비트 추적기는 파일 경로를 받는다
+        path = Path(td) / "beat.wav"
+        sf.write(str(path), y, SR)
+        info = track_beats(path, bpm, log=log)
     beats = list(info.beats)
     if len(beats) < 2:
         beats = list(np.arange(0.0, duration, 60.0 / (bpm or 90.0)))
@@ -152,6 +296,97 @@ def _beats(path: Path, bpm: float | None, duration: float, log: Log) -> tuple[li
     while beats[-1] < duration:  # 끝까지 박 채우기
         beats.append(beats[-1] + period)
     return beats, list(info.downbeats)
+
+
+CHORD_RE = re.compile(r"^([A-Ga-g])([#b♯♭]?)(maj7|M7|m7|min7|min|m|7|sus4|sus2|sus|dim|°|aug|\+)?"
+                      r"(?:/[A-Ga-g][#b♯♭]?)?$")
+_QMAP = {None: "", "maj7": "maj7", "M7": "maj7", "m7": "m7", "min7": "m7", "min": "m", "m": "m", "7": "7",
+         "sus4": "sus4", "sus": "sus4", "sus2": "sus2", "dim": "dim", "°": "dim", "aug": "", "+": ""}
+_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+
+def parse_chord_text(text: str) -> list[list[tuple[int | None, str]]]:
+    """'G C D G' (한 마디에 하나) 또는 'G | C D | Em' (마디를 | 로, 한 마디에 여러 개) -> 마디별 코드."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    bars = [b.split() for b in text.split("|")] if "|" in text else [[t] for t in text.split()]
+    out = []
+    for bar in bars:
+        cells = []
+        for tok in bar:
+            if tok.upper() in ("N.C.", "NC", "N", "-", "X", "%"):
+                cells.append(cells[-1] if tok == "%" and cells else (None, ""))
+                continue
+            m = CHORD_RE.match(tok)
+            if not m:
+                raise ValueError(f"코드를 알아볼 수 없습니다: '{tok}' (예: G, Em, D7, Cmaj7, Bm7, Asus4, D/F#)")
+            pc = (_PC[m.group(1).upper()] + {"#": 1, "♯": 1, "b": -1, "♭": -1}.get(m.group(2), 0)) % 12
+            cells.append((pc, _QMAP[m.group(3)]))
+        out.append(cells or [(None, "")])
+    return out
+
+
+def _user_spans(text: str, bars: list[float], period: float, bpb: int):
+    from .backing import ChordSpan
+
+    parsed = parse_chord_text(text)
+    bars = list(bars)
+    while len(bars) < len(parsed) + 1:
+        bars.append(bars[-1] + bpb * period if bars else 0.0)
+    spans = []
+    for i, cells in enumerate(parsed):
+        a, b = bars[i], bars[i + 1]
+        for j, (root, q) in enumerate(cells):
+            t0, t1 = a + (b - a) * j / len(cells), a + (b - a) * (j + 1) / len(cells)
+            if spans and spans[-1].root == root and spans[-1].quality == q:
+                spans[-1].end = t1
+            else:
+                spans.append(ChordSpan(t0, t1, root, q))
+    return [c for c in spans if c.root is not None]
+
+
+def analyze_music(prep: Prep, opts: RemixOptions, log: Log = _print) -> Analysis:
+    """박·키·코드. 가볍기 때문에 (템포·키·코드를 바꿔) 다시 만들 때마다 새로 계산한다."""
+    from .backing import ChordSpan
+    from .harmonize import chord_name, estimate_tempo, harmonize, track_beats_from_notes
+    from .rhythm import downbeat_from_model, estimate_downbeat
+
+    bpb = opts.beats_per_bar
+    duration = prep.duration
+    user_key = Key.parse(opts.key) if opts.key else None
+    vocal_only = prep.backing is None or _rms(prep.backing) < 0.08 * (_rms(prep.vocal) or 1.0)
+    memo: list[str] = []
+    if vocal_only:
+        # 반주 없이 노래만: 멜로디에 사람이 반주를 붙이듯 템포·마디·키·코드를 함께 추정
+        bpm = opts.bpm or estimate_tempo(prep.notes)
+        beats = track_beats_from_notes(prep.notes, duration, bpm)
+        h = harmonize(prep.notes, beats, bpb, user_key)
+        key, downbeat = h.key, h.downbeat
+        spans = [ChordSpan(max(t0, 0.0), t1, r, q) for t0, t1, r, q in h.chords if t1 > 0]
+        memo.append("반주 없는 노래로 보고 멜로디에 어울리는 코드를 붙였습니다")
+    else:
+        beats, downbeats = _beats(prep.mix, opts.bpm, duration, log)
+        timemap = TimeMap(beats)
+        tracks = {"vocals": prep.notes, "piano": _chroma_notes(prep.backing.mean(axis=1), SR, beats)}
+        key = user_key or detect_key((n.pitch, n.duration * (0.5 if name == "vocals" else 1.0))
+                                     for name, ns in tracks.items() for n in ns)[0]
+        downbeat = downbeat_from_model(beats, downbeats, bpb)
+        if downbeat is None:
+            downbeat = estimate_downbeat(tracks, timemap, bpb)
+        events = detect_chords(tracks, timemap, key, bpb, downbeat)
+        spans = [ChordSpan(float(timemap.to_seconds(e.start + downbeat)),
+                           float(timemap.to_seconds(e.end + downbeat)), e.root, e.quality)
+                 for e in events if e.root is not None]
+    tempo = 60.0 / float(np.median(np.diff(beats)))
+    a = Analysis(key, tempo, beats, bpb, downbeat, spans, [], vocal_only, "auto", memo)
+    if opts.chords:
+        period = 60.0 / tempo
+        a.spans = _user_spans(opts.chords, a.bar_times(), period, bpb)
+        a.chords_source = "user"
+        memo.append("코드 진행: 직접 입력한 코드 사용")
+    a.names = [chord_name(c.root, c.quality, key) for c in a.spans]
+    return a
 
 
 # ---------------------------------------------------------------------------
@@ -204,18 +439,29 @@ def _master(stereo: np.ndarray, target_rms: float = 0.12) -> np.ndarray:
 # 전체 흐름
 # ---------------------------------------------------------------------------
 
-def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Log = _print,
-          progress: Progress | None = None) -> RemixResult:
-    opts = opts or RemixOptions()
+def _validate(opts: RemixOptions) -> None:
     if opts.style not in STYLES:
         raise ValueError(f"스타일은 {', '.join(STYLES)} 중 하나입니다.")
     if opts.harmony not in ("both", "up", "down"):
         raise ValueError("화음은 both / up / down 중 하나입니다.")
+    if opts.beats_per_bar not in (2, 3, 4, 6):
+        raise ValueError("박자는 2, 3, 4, 6 박만 지원합니다.")
+    if opts.chords:
+        parse_chord_text(opts.chords)  # 형식 오류를 일찍 알림
+    if opts.key:
+        Key.parse(opts.key)
+
+
+def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Log = _print,
+          progress: Progress | None = None, analysis_dir: Path | None = None) -> RemixResult:
+    """후보정 전체. 분석 결과는 analysis_dir(기본 out_dir/analysis)에 저장해 두고 다음에 재사용한다."""
+    opts = opts or RemixOptions()
+    _validate(opts)
     source = Path(source).expanduser()
     if not source.exists():
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {source}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    work = out_dir / "work"
+    adir = analysis_dir or out_dir / "analysis"
     notes_log: list[str] = []
 
     def step(frac: float, msg: str) -> None:
@@ -227,59 +473,20 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
         notes_log.append(msg)
         log("   · " + msg)
 
-    # 1) 소리 꺼내기
-    step(0.02, "① 영상에서 소리 꺼내는 중")
-    mix_path = audio_io.to_wav(source, work / "mix.wav", sr=SR)
-    mix, _ = sf.read(str(mix_path), always_2d=True)
-    duration = len(mix) / SR
-
-    # 2) 보컬 / 반주 분리
-    sep = None
-    if opts.separate:
-        step(0.06, "② 보컬과 반주 나누는 중")
-        sep = _separate(mix_path, work, opts.device, log)
-    if sep is not None:
-        vocal, backing = sep
-        n = min(len(vocal), len(mix))
-        vocal, backing, mix = vocal[:n], backing[:n], mix[:n]
+    prep = prepare(source, adir, opts, log, step)
+    if prep.backing is not None:
         note("보컬/반주 분리: Demucs")
-    else:
-        vocal, backing = mix.mean(axis=1), None
-    keep_backing = opts.keep_backing if opts.keep_backing is not None else opts.style == "harmony"
-
-    # 3) 분석: 음높이, 박, 키, 코드
-    step(0.30, "③ 음높이 분석 중")
-    track = track_pitch(vocal, SR)
-    if not np.any(track.voiced()):
-        raise RuntimeError("노래(음높이)를 찾지 못했습니다. 목소리가 들리는 영상인지 확인해 주세요.")
-    vnotes = _notes_from_track(track)
-    step(0.45, "   박·키·코드 분석 중")
-    beats, downbeats = _beats(mix_path, opts.bpm, duration, log)
-    timemap = TimeMap(beats)
-    tracks: dict[str, list[Note]] = {"vocals": vnotes}
-    if backing is not None and np.any(backing):
-        tracks["piano"] = _chroma_notes(backing.mean(axis=1), SR, beats)
-    if opts.key:
-        key = Key.parse(opts.key)
-    else:
-        key, _ = detect_key((n.pitch, n.duration * (0.5 if name == "vocals" else 1.0))
-                            for name, ns in tracks.items() for n in ns)
+    step(0.48, "   박·키·코드 분석 중")
+    an = analyze_music(prep, opts, log)
+    for m in an.notes:
+        note(m)
+    key, spans, names, beats, bpb, downbeat = an.key, an.spans, an.names, an.beats, an.beats_per_bar, an.downbeat
+    tempo, duration = an.tempo, prep.duration
+    vocal, backing, mix, track = prep.vocal, prep.backing, prep.mix, prep.track
     note(f"키: {key.name}" + ("" if opts.key else " (자동)"))
-    from .rhythm import downbeat_from_model, estimate_downbeat
-
-    bpb = opts.beats_per_bar
-    downbeat = downbeat_from_model(beats, downbeats, bpb)
-    if downbeat is None:
-        downbeat = estimate_downbeat(tracks, timemap, bpb)
-    events = detect_chords(tracks, timemap, key, bpb, downbeat)
-    from .backing import ChordSpan
-
-    spans = [ChordSpan(float(timemap.to_seconds(e.start + downbeat)),
-                       float(timemap.to_seconds(e.end + downbeat)), e.root, e.quality) for e in events]
-    names = [e.name(key) for e in events]
-    tempo = 60.0 / float(np.median(np.diff(beats)))
-    note(f"템포 약 {tempo:.0f} BPM, 코드 {len([e for e in events if e.root is not None])}개: "
-         + " ".join(dict.fromkeys(n for n in names if n != "N.C.")))
+    note(f"템포 약 {tempo:.0f} BPM" + ("" if opts.bpm else " (자동)") + f", {bpb}박자")
+    note("코드 진행: " + (an.chord_text() or "(없음)"))
+    keep_backing = opts.keep_backing if opts.keep_backing is not None else opts.style == "harmony"
 
     def chord_at(t: float):
         for c in spans:
@@ -287,10 +494,13 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
                 return chord_tones(c.root, c.quality)
         return None
 
+    # 지난번 결과물 정리 (분석 폴더는 그대로)
+    _clear_outputs(out_dir)
     stems_dir = out_dir / "stems"
     stems_dir.mkdir(exist_ok=True)
     files: list[Path] = []
-
+    work = adir / "tmp"
+    work.mkdir(exist_ok=True)
     # 4) 오토튠 (리드 보컬)
     lead = vocal
     lead_shift = None
@@ -370,14 +580,35 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
         video = mux_video(source, audio, out_dir / f"{audio_io.safe_name(source.stem)}_{opts.style}")
         files.insert(0, video)
 
-    info = {"source": str(source), "options": asdict(opts), "key": key.name, "tempo": round(tempo, 1),
-            "chords": [{"start": round(c.start, 2), "end": round(c.end, 2), "name": nm}
-                       for c, nm in zip(spans, names)],
-            "notes": notes_log}
+    info = {"source": str(source), "options": asdict(opts), "key": key.name, "key_short": key.short_name,
+            "tempo": round(tempo, 1), "beats_per_bar": bpb, "vocal_only": an.vocal_only,
+            "chords_source": an.chords_source, "chord_text": an.chord_text(), "chords": an.chord_list(),
+            "video": video.name if video else None, "notes": notes_log}
     (out_dir / "remix.json").write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
     step(1.0, "완료")
-    return RemixResult(out_dir, audio, video, key.name, key.short_name, names, files, notes_log)
+    return RemixResult(out_dir, audio, video, key.name, key.short_name, names, files, notes_log,
+                       tempo=round(tempo, 1), chord_text=an.chord_text(), reused=prep.reused)
+
+
+def _clear_outputs(out_dir: Path) -> None:
+    """다시 만들 때 이전 결과물(영상·음원·트랙·MIDI)만 지운다."""
+    old = out_dir / "remix.json"
+    if old.exists():
+        try:
+            v = json.loads(old.read_text(encoding="utf-8")).get("video")
+            if v and "/" not in v:
+                (out_dir / v).unlink(missing_ok=True)
+        except ValueError:
+            pass
+        old.unlink()
+    shutil.rmtree(out_dir / "stems", ignore_errors=True)
+    (out_dir / "remix.wav").unlink(missing_ok=True)
+    for f in out_dir.glob("*.mid"):
+        f.unlink()
+
+
+
 
 
 def _rms(x: np.ndarray) -> float:

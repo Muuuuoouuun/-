@@ -106,7 +106,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="오토튠 켜기 (강도 0~1, 기본 0.7 — 1 에 가까울수록 정확히 맞춤)")
     m.add_argument("--hard-tune", action="store_true", help="비브라토까지 펴는 '로봇 보이스' 오토튠")
     m.add_argument("--key", help="키 직접 지정 (예: G, Em; 기본 자동)")
-    m.add_argument("--bpm", type=float, help="템포 직접 지정 (오케스트라 박자가 어긋날 때)")
+    m.add_argument("--bpm", type=float, help="템포 직접 지정 (반주 박자가 어긋날 때)")
+    m.add_argument("--beats", type=int, choices=[2, 3, 4, 6], default=4, help="한 마디 박 수 (기본 4, 왈츠는 3)")
+    m.add_argument("--chords", help='코드 진행 직접 입력. 마디마다 하나: "G C D G" / 마디를 | 로: "G | C D | Em | D"'),
     m.add_argument("--no-separate", action="store_true", help="보컬/반주 분리 안 함 (보컬만 녹음된 영상)")
     g = m.add_mutually_exclusive_group()
     g.add_argument("--keep-backing", dest="keep_backing", action="store_true", default=None,
@@ -215,12 +217,15 @@ def cmd_remix(args) -> int:
         hard_tune=args.hard_tune, key=args.key, separate=not args.no_separate,
         keep_backing=args.keep_backing, harmony_level=args.harmony_level, with_harmony=args.with_harmony,
         backing_level=args.backing_level, bpm=args.bpm, soundfont=args.soundfont,
+        beats_per_bar=args.beats, chords=args.chords,
         device=args.device,
     )
     if args.hard_tune and args.autotune is None:
         opts.autotune, opts.autotune_strength = True, 1.0
     res = remix(args.source, out, opts)
     print()
+    print(f"코드 진행: {res.chord_text}  (템포 {res.tempo:.0f} BPM)")
+    print("  틀린 곳은 --chords \"...\" 로 고쳐 다시 실행하세요 (분석은 저장돼 있어 금방 끝납니다).")
     print(f"완료! {STYLES[opts.style]}" + (" + 오토튠" if opts.autotune else "") + f" · 키 {res.key}")
     for f in res.files:
         print("  -", f)

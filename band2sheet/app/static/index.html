@@ -180,12 +180,34 @@
           <button id="x-delete" class="ghost danger">삭제</button>
         </div>
       </div>
-      <div class="compare seg" id="x-compare">
-        <button data-v="remix" class="on">후보정</button>
-        <button data-v="original">원본</button>
-      </div>
+      <div class="versions" id="x-versions" title="같은 위치에서 바꿔 들으며 비교"></div>
       <video id="x-video" class="source-video" controls preload="metadata" playsinline></video>
       <audio id="x-audio" controls preload="metadata" class="hidden"></audio>
+      <p id="x-last-error" class="error"></p>
+      <div class="card again" id="x-again">
+        <h3>🔁 다른 스타일로 다시 만들기 <span class="muted small">— 분석은 다시 하지 않아 빨라요</span></h3>
+        <div class="seg style-grid" id="xa-style"></div>
+        <div class="row wrap">
+          <label class="check"><input type="checkbox" id="xa-with-harmony"> 내 목소리 화음</label>
+          <label class="inline">화음 성부<select id="xa-harmony">
+            <option value="both">3도 위 + 아래</option><option value="up">위만</option><option value="down">아래만</option></select></label>
+          <label class="check"><input type="checkbox" id="xa-autotune"> 오토튠</label>
+          <label class="inline">강도 <input id="xa-strength" type="range" min="10" max="100" value="70"></label>
+        </div>
+        <div class="row">
+          <label>템포(BPM)<input id="xa-bpm" type="number" min="30" max="260" step="0.5"></label>
+          <label>박자<select id="xa-beats"><option value="4">4/4</option><option value="3">3/4</option>
+            <option value="2">2/4</option><option value="6">6/8</option></select></label>
+          <label>키<select id="xa-key"><option value="">자동</option></select></label>
+        </div>
+        <label>코드 진행 <span class="muted small">마디는 <b>|</b> 로 나누고, 한 마디에 코드가 여럿이면 띄어 쓰세요 (예: G | C D | Em | D)</span>
+          <textarea id="xa-chords" rows="3" spellcheck="false"></textarea></label>
+        <div class="row wrap">
+          <button id="xa-go" class="primary">이 설정으로 다시 만들기</button>
+          <button id="xa-auto" class="ghost" type="button">코드·템포·키 자동으로 되돌리기</button>
+        </div>
+        <p id="xa-error" class="error"></p>
+      </div>
       <div class="grid2">
         <div class="card">
           <h3>분석 · 처리 내용</h3>
