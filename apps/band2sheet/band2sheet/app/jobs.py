@@ -142,14 +142,24 @@ class JobManager(EditMixin):
         return sorted(self.jobs.values(), key=lambda j: j.created, reverse=True)
 
     def delete(self, job_id: str) -> None:
-        job = self.get(job_id)
-        if job.status == "running":
-            raise RuntimeError("실행 중인 작업은 지울 수 없습니다.")
         with self.lock:
+            job = self.get(job_id)
+            if job.status in ("queued", "running"):
+                raise RuntimeError("대기 중이거나 실행 중인 작업은 지울 수 없습니다.")
             self.jobs.pop(job_id, None)
         shutil.rmtree(self.job_dir(job_id), ignore_errors=True)
 
     # ------------------------------------------------------------------ 생성/실행
+    def _submit_locked(self, job: Job) -> None:
+        """호출자가 lock 을 잡은 채 등록·저장·제출을 마친 뒤 worker 를 시작한다."""
+        self._save(job)
+        try:
+            self.pool.submit(self._run, job.id)
+        except Exception as e:
+            job.status, job.error, job.stage = "error", f"작업을 시작하지 못했습니다: {e}", "시작 실패"
+            self._save(job)
+            raise RuntimeError(job.error) from e
+
     def create(self, filename: str, data_stream, options: dict) -> Job:
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_EXT:
@@ -165,8 +175,7 @@ class JobManager(EditMixin):
                   options=options)
         with self.lock:
             self.jobs[job_id] = job
-        self._save(job)
-        self.pool.submit(self._run, job_id)
+            self._submit_locked(job)
         return job
 
     def create_from_url(self, url: str, options: dict) -> Job:
@@ -186,21 +195,19 @@ class JobManager(EditMixin):
         job = Job(id=job_id, title=title, filename=url, created=time.time(), options=options, url=url)
         with self.lock:
             self.jobs[job_id] = job
-        self._save(job)
-        self.pool.submit(self._run, job_id)
+            self._submit_locked(job)
         return job
 
     def start_analysis(self, job_id: str, options: dict) -> Job:
         """영상·음성만 받아 둔 작업(ready)이나 실패한 작업을 이어서 악보까지 만들기."""
-        job = self.get(job_id)
-        has_input = any(self.job_dir(job_id).glob("input.*"))
-        if job.status not in ("ready", "error") or not (has_input or job.url):
-            raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
         with self.lock:
+            job = self.get(job_id)
+            has_input = any(self.job_dir(job_id).glob("input.*"))
+            if job.status not in ("ready", "error") or not (has_input or job.url):
+                raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
             job.options = {**job.options, **options, "fetch_only": False}
             job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
-        self._save(job)
-        self.pool.submit(self._run, job_id)
+            self._submit_locked(job)
         return job
 
     def source_file(self, job_id: str, kind: str) -> Path:
@@ -240,10 +247,14 @@ class JobManager(EditMixin):
         job.source = dict(meta, video=src.name if keep_video else None, audio=audio.name)
 
     def _run(self, job_id: str) -> None:
-        job = self.get(job_id)
+        with self.lock:
+            job = self.get(job_id)
+            job.status = "running"
+            self._save(job)
         d = self.job_dir(job_id)
         opts = job.options
         last_save = [0.0]
+        final_status = "error"
 
         def log(msg: str) -> None:
             job.log.append(msg)
@@ -255,13 +266,11 @@ class JobManager(EditMixin):
         def progress(frac: float, msg: str) -> None:
             job.progress, job.stage = round(frac, 3), msg.strip()
 
-        job.status = "running"
-        self._save(job)
         try:
             if job.url and not job.source:
                 self._fetch(job, d, log, progress)
                 if opts.get("fetch_only"):
-                    job.status, job.progress, job.stage = "ready", 0.1, "영상·음성 준비 완료"
+                    final_status, job.progress, job.stage = "ready", 0.1, "영상·음성 준비 완료"
                     return
             src = next(d.glob("input.*"))
             a = AnalyzeOptions(
@@ -295,13 +304,16 @@ class JobManager(EditMixin):
                                                         pdf=bool(opts.get("pdf"))), log)
                 job.result = render_summary(res2, project, d)
                 job.renders[job.result["key_short"]] = job.result
-            job.status, job.progress, job.stage = "done", 1.0, "완료"
+            final_status, job.progress, job.stage = "done", 1.0, "완료"
         except Exception as e:  # 화면에 오류 표시
-            job.status, job.error = "error", str(e)
+            job.error = str(e)
             job.log.append("오류: " + str(e))
             job.log.append(traceback.format_exc(limit=3))
         finally:
-            self._save(job)
+            with self.lock:
+                # 최종 저장이 끝나기 전에는 삭제나 재분석을 허용하지 않는다.
+                job.status = final_status
+                self._save(job)
 
     def rerender(self, job_id: str, target_key: str | None, semitones: int | None,
                  direction: str = "nearest", subdiv: int | None = None) -> dict:

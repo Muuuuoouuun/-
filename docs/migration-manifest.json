@@ -1,0 +1,474 @@
+{
+  "band2sheet_base": "091fce730d3341f2c0a65c8f7e94c333437894e4",
+  "airchoir_base": "e8bdf36208be39f4d829e667556b23abc8784cc0",
+  "files": [
+    {
+      "app": "band2sheet",
+      "source": "README.md",
+      "target": "apps/band2sheet/README.md",
+      "sha256": "d44249ca72a07483b47d8668692e26a2e7397a4d5a409adb978127da3034b410"
+    },
+    {
+      "app": "band2sheet",
+      "source": "pyproject.toml",
+      "target": "apps/band2sheet/pyproject.toml",
+      "sha256": "b42b2e36ee16738f23acc31a48c62608a87e5781eb9c3b3fe8b9927f49c6fe50"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/sections.py",
+      "target": "apps/band2sheet/band2sheet/sections.py",
+      "sha256": "7c6feba118f18dffe3ce200c31b82c2405bc7a6844bc12a85c6c5445bed3edf4"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/engines.py",
+      "target": "apps/band2sheet/band2sheet/engines.py",
+      "sha256": "06179304b84b867f3578fb79674d58e3597a1d048121b44843b2123514941cc0"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/notation.py",
+      "target": "apps/band2sheet/band2sheet/notation.py",
+      "sha256": "ed39870b982ce1240be38221bcad5469b8f06d9b31cbb5a79bcf5dd925b51edf"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/lyrics.py",
+      "target": "apps/band2sheet/band2sheet/lyrics.py",
+      "sha256": "ae8c07c08b86520d572aec71c462baa70eb0d2010fd539dfa69fd613bd274e34"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/__init__.py",
+      "target": "apps/band2sheet/band2sheet/__init__.py",
+      "sha256": "7027a02fa17a0f02872c2236f7b17ef763655ae4b2be88ed0ecb8aec26399646"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/separate.py",
+      "target": "apps/band2sheet/band2sheet/separate.py",
+      "sha256": "aff9863b27b7e086d247a5050dffb40eeb64cb725ccc549069bf946488e49842"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/cleanup.py",
+      "target": "apps/band2sheet/band2sheet/cleanup.py",
+      "sha256": "c6f851c102f8e0f26867a1e8d995e657537d8fc0dcc4e6b5e7011b845ac79422"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/xml_transpose.py",
+      "target": "apps/band2sheet/band2sheet/xml_transpose.py",
+      "sha256": "b0464b12ed5b1507ba33ee68c3faf93c0fb0d73ca52cf5ed921a994380dead23"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/audio_io.py",
+      "target": "apps/band2sheet/band2sheet/audio_io.py",
+      "sha256": "bb753ea47862f5d55d09173e4a749e616a546dde1c75fba36082e975d8c92a30"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/instruments.py",
+      "target": "apps/band2sheet/band2sheet/instruments.py",
+      "sha256": "0cf2d77422e7ed7150a0b304df3ccb2d487aa2f13f32f9390b76cf8face4c8f8"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/theory.py",
+      "target": "apps/band2sheet/band2sheet/theory.py",
+      "sha256": "92ffc1add960192780e5f90a7113a2e6391d358f82e1a8c64ba525de47382486"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/view.py",
+      "target": "apps/band2sheet/band2sheet/view.py",
+      "sha256": "14042d8efa696bdb9a98f58739d7d79340b34a9cb4adb153e8622967e1d4d796"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/cli.py",
+      "target": "apps/band2sheet/band2sheet/cli.py",
+      "sha256": "90dfcc13cea5b092c936b906bd22dd8021db280670632f8b0b807c29b1e35d3f"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/pipeline.py",
+      "target": "apps/band2sheet/band2sheet/pipeline.py",
+      "sha256": "aa3b43bfb9c6ca109b8aef93d5d88d9def0891742cb98a836e5757e52cd58281"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/transcribe.py",
+      "target": "apps/band2sheet/band2sheet/transcribe.py",
+      "sha256": "1794f5afd13baa04835931b88ed00087e4c76671b32893ccc2925a04ac2109ab"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/__main__.py",
+      "target": "apps/band2sheet/band2sheet/__main__.py",
+      "sha256": "13a1a5b340cdcfc1902b62be90e508c7c71886000d5bf087e7854aadf09fb35e"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/rhythm.py",
+      "target": "apps/band2sheet/band2sheet/rhythm.py",
+      "sha256": "514bcf61c73254da0f196636a36a21a30fd48879d85235a91e10eef81ac7a111"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/project.py",
+      "target": "apps/band2sheet/band2sheet/project.py",
+      "sha256": "548e6e2747f7b73431daa8d60f84226c02cf7cda411b0798e904b5a2a5786968"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/score.py",
+      "target": "apps/band2sheet/band2sheet/score.py",
+      "sha256": "5bc96e811d65d77a6d3a11b1be2bf444bab92e9ca3732efb44a370f25646db38"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/chords.py",
+      "target": "apps/band2sheet/band2sheet/chords.py",
+      "sha256": "07cba50b820f9d1bae45a9969b3ba1654e375c85633e336a60c82d08388c1015"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/server.py",
+      "target": "apps/band2sheet/band2sheet/app/server.py",
+      "sha256": "87c0063b0f9c6d90c7fbab4356d9c7dc976dff66ff87c2bfba5b44666fab0f07"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/__init__.py",
+      "target": "apps/band2sheet/band2sheet/app/__init__.py",
+      "sha256": "0c53c16b1e6b94fab3f8becb7c4465fe17aac8aa0dc7beb88ee4a5077eac35f8"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/jobs.py",
+      "target": "apps/band2sheet/band2sheet/app/jobs.py",
+      "sha256": "dfbc96519d9ffabea96f20ac127c9c83375ca65a006f29a6774796e547b9dfc0"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/index.html",
+      "target": "apps/band2sheet/band2sheet/app/static/index.html",
+      "sha256": "f035753f6bd96bddd994f9a98a251fe142cfc84990db4294ab3b4c17857b5fa6"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/chords.js",
+      "target": "apps/band2sheet/band2sheet/app/static/chords.js",
+      "sha256": "00180969df88f5204b205944c061239fcbddd8a31a5fa7b06400acec8f36768a"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/views.js",
+      "target": "apps/band2sheet/band2sheet/app/static/views.js",
+      "sha256": "cf7640a35e34d521f518190d171c9f8e16e324b81a79e3553c3e004afd693863"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/style.css",
+      "target": "apps/band2sheet/band2sheet/app/static/style.css",
+      "sha256": "24da4f2c1eab600a0c9828da8b9f8c990720d83806afdf9fe2c52c40bf1ad95f"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/app.js",
+      "target": "apps/band2sheet/band2sheet/app/static/app.js",
+      "sha256": "d8acafff698d7709b2f9d815c2f815bc1cf8ecc9f26854e2684bbc2ec1a2616e"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/vendor/OSMD-LICENSE",
+      "target": "apps/band2sheet/band2sheet/app/static/vendor/OSMD-LICENSE",
+      "sha256": "261655f10cf6b90bd062fbe3c7fa4dd03e0324fdfc4b53a3c7d626e3aec694a8"
+    },
+    {
+      "app": "band2sheet",
+      "source": "band2sheet/app/static/vendor/opensheetmusicdisplay.min.js",
+      "target": "apps/band2sheet/band2sheet/app/static/vendor/opensheetmusicdisplay.min.js",
+      "sha256": "86e439e5ec1c0cbf8b7051e0cf32291d377fb97cf6b8976b9ef87c714e0ca032"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_structure.py",
+      "target": "apps/band2sheet/tests/test_structure.py",
+      "sha256": "4c5e6a03aed3a2d085d7ee418c2920616265d1785ce239f34f6ec863fc47d904"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_theory.py",
+      "target": "apps/band2sheet/tests/test_theory.py",
+      "sha256": "3c5c8a889ab199de851c959d4157119d6dba8a3ccd50716eff35fcdc3f163987"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/synth.py",
+      "target": "apps/band2sheet/tests/synth.py",
+      "sha256": "4e30101ed4214bd06aacf597c5cd59f9f95ed71770643327f433d0b3bd0a1732"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_separate.py",
+      "target": "apps/band2sheet/tests/test_separate.py",
+      "sha256": "bc68ccb291d0cf1b920d49d5e63a9b26cc2928595457d68bcb2a8d2eb07654fa"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/__init__.py",
+      "target": "apps/band2sheet/tests/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_score.py",
+      "target": "apps/band2sheet/tests/test_score.py",
+      "sha256": "d4fe0f33a81c3356e2bda4cfeb6013ea979dd21cd8f40f6c71a8cc18c6251f38"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_fetch.py",
+      "target": "apps/band2sheet/tests/test_fetch.py",
+      "sha256": "de0031990c029bc5f023fe4f5a2db0d28f513add87fc1b3b1fec8093e35c1fc9"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_view.py",
+      "target": "apps/band2sheet/tests/test_view.py",
+      "sha256": "a1a151b2bd23c5cf3a0b7636293675a74bbc39737426e69a067aaa89a77c94a7"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_cli.py",
+      "target": "apps/band2sheet/tests/test_cli.py",
+      "sha256": "e817f5b5f4d4a7c9e34d7a9fa9c76790e16641ca0b43412503dca4070eaaef55"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/song.py",
+      "target": "apps/band2sheet/tests/song.py",
+      "sha256": "0b975c540cc08413ccc756f9f67cdb7d9bfee51b5999744f938644b8e7e7f451"
+    },
+    {
+      "app": "band2sheet",
+      "source": "tests/test_app.py",
+      "target": "apps/band2sheet/tests/test_app.py",
+      "sha256": "27e26e47c50aad5234e2131cc17866980321a40625b02fd34f3aef05d2fe2bde"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/ui_live.png",
+      "target": "apps/band2sheet/docs/ui_live.png",
+      "sha256": "61bc5f2ae4aeb03f5b110deeca882ce53e007a39fd6b31892cead599c5479965"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/ui_chordsheet.png",
+      "target": "apps/band2sheet/docs/ui_chordsheet.png",
+      "sha256": "897b49d144ebbab8126add0f641900f21b08448c94f3510ba5c101671b7d7151"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/app_lead_sheet_playing.png",
+      "target": "apps/band2sheet/docs/app_lead_sheet_playing.png",
+      "sha256": "1f46e4ef1a1a832d0bba4b4ba51a07df416ccfd1a5017fc1abae62d6ad336956"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/example_full_score_Bb.png",
+      "target": "apps/band2sheet/docs/example_full_score_Bb.png",
+      "sha256": "4bffa93ff329c13b2f5178c9b557e4e7791ec3a9397e78fb68fc9267a694dc22"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/ui_roll.png",
+      "target": "apps/band2sheet/docs/ui_roll.png",
+      "sha256": "4c182a7df7aeaf45cb3d6b2de87da0d8671c5f85e514aaa51cd39c1c6c3a9ace"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/app_guitar_tab.png",
+      "target": "apps/band2sheet/docs/app_guitar_tab.png",
+      "sha256": "8ee125ec2f3fb04591f6c0674523643a00bc60a724648e2be179f3a378efd97f"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/example_structure_lead.png",
+      "target": "apps/band2sheet/docs/example_structure_lead.png",
+      "sha256": "d03675fd5b4288d37ab638b884c3fcd5bf0e2984778eb829acfb72c7bd5cd5a2"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/example_full_score_G.png",
+      "target": "apps/band2sheet/docs/example_full_score_G.png",
+      "sha256": "f2089bf37d7172dfaee858b475504944ca5cad1623d0336ff6dde435421039e5"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/example_drum_kit.png",
+      "target": "apps/band2sheet/docs/example_drum_kit.png",
+      "sha256": "946fd06521f9187ac5e7ab0f6cd3f807e79ccc4cb9e764fa8f880f43dfc1c2ae"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/OPEN_SOURCE.md",
+      "target": "apps/band2sheet/docs/OPEN_SOURCE.md",
+      "sha256": "c673af9d9c4237421c38c0b48bf270a782c072fda70a26b397a91f9fbfed2def"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/app_upload.png",
+      "target": "apps/band2sheet/docs/app_upload.png",
+      "sha256": "2bf888ed86aaa5e84c2179bbf77aebd9e977c416c500104d7b4afebfd59a4dfd"
+    },
+    {
+      "app": "band2sheet",
+      "source": "docs/ui_chord_edit.png",
+      "target": "apps/band2sheet/docs/ui_chord_edit.png",
+      "sha256": "b1bb19e4c28dc0818b66ca82c32d00735d5f40fd17598fe0f8a503ae8681e297"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/PLAN.md",
+      "target": "apps/airchoir/PLAN.md",
+      "sha256": "e9a1a73ea58defab8bcc2d527140b09c62655fe494615e3f61e985f226cca1eb"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/README.md",
+      "target": "apps/airchoir/README.md",
+      "sha256": "82b3b9629fe57f098681e16a1a2d6b9c83a9e0114226787e98f33f6257fc3887"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/core/dsp.js",
+      "target": "apps/airchoir/core/dsp.js",
+      "sha256": "f831753b850970fed29dc11832eb920df16727d8e84e5833a0df248845f22e76"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/core/recorder-worklet.js",
+      "target": "apps/airchoir/core/recorder-worklet.js",
+      "sha256": "79a0b21533909fac7b80ca2375bce46a660e8cac60922cf519daab3c4dcbcee2"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/core/recorder.js",
+      "target": "apps/airchoir/core/recorder.js",
+      "sha256": "55212db105331b04f22e114db72ab91d957130c708eb0ef25286d3ae0cdd4fdf"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/core/worklet.js",
+      "target": "apps/airchoir/core/worklet.js",
+      "sha256": "b6de638645df596ed8e7c4302685b778896a413bb619adcb5ae96eb96290d782"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/index.html",
+      "target": "apps/airchoir/index.html",
+      "sha256": "c838f2144234fdaff20d8dfe2a67c8efcd94a46f556b0fbf786e9094a4bf6a82"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/package.json",
+      "target": "apps/airchoir/package.json",
+      "sha256": "427fc55dd6f86b021cd915d09e94dbab6de6e249bb539e4d58ffb572ebd94d56"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/phase0/README.md",
+      "target": "apps/airchoir/phase0/README.md",
+      "sha256": "604fa4da7fdc87c601cb7d3daf5fabc629a7feda03864ae5bf65b6d162776377"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/phase0/app.js",
+      "target": "apps/airchoir/phase0/app.js",
+      "sha256": "825239d6f573962c84973f686c6cd70180f6c7cc5808a3c9293d8290b9e3e2dd"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/phase0/index.html",
+      "target": "apps/airchoir/phase0/index.html",
+      "sha256": "e016fea4f846e530f2eb080d634c82ab2a238c3e1a63c223943601904f01b61a"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/app.js",
+      "target": "apps/airchoir/src/app.js",
+      "sha256": "c3de2644f30a18c72cb9cbfe941f43909082a3220b76e5446dee2bf0af82b195"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/audio.js",
+      "target": "apps/airchoir/src/audio.js",
+      "sha256": "7c69edf47dcaea2d6beb7cc7439883f63b06f79b185d81283152676f6d6783d8"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/gestures.js",
+      "target": "apps/airchoir/src/gestures.js",
+      "sha256": "6780e9d62b87b9eb6add09fdfda743803a68b27b615bbdc3795ea399a02ae3e9"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/hands.js",
+      "target": "apps/airchoir/src/hands.js",
+      "sha256": "fa7e4f9ec8c27964db5c0aaa592a890cf8b5a26497ff4228a924b087891403cf"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/orbs.js",
+      "target": "apps/airchoir/src/orbs.js",
+      "sha256": "a4f4ba54bf45092d2ba37be31a38b8a0e24c4b9227d0f4b2da25dcf4151cb40c"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/src/stage.js",
+      "target": "apps/airchoir/src/stage.js",
+      "sha256": "496ef82b371791cf416a79d924d9498872d13fccd143c3b0374c8d6fd6651d65"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/app.check.mjs",
+      "target": "apps/airchoir/test/app.check.mjs",
+      "sha256": "148b8512bd38c76ca107547e3a7260fb6ce0803fbca460effb584b9c0f1ec0d8"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/dsp.test.mjs",
+      "target": "apps/airchoir/test/dsp.test.mjs",
+      "sha256": "0b655360acf2445fc3eacce0f6f0c1ddd365c96bf6f45864d4dd391f0c4c20a1"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/fixtures/hands.json",
+      "target": "apps/airchoir/test/fixtures/hands.json",
+      "sha256": "259c497d90708aeec434629862be2dd92157c5e1faf71c6e8b00a3509654e1f1"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/gestures.test.mjs",
+      "target": "apps/airchoir/test/gestures.test.mjs",
+      "sha256": "9b05d9dad381059017d4007d049110cbddb7f305052fa07db34380ce1f78b27a"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/orbs.test.mjs",
+      "target": "apps/airchoir/test/orbs.test.mjs",
+      "sha256": "31c0015c23a21c0a3e0a4fb8c3c8a124342b24c8518fafc2ef31e90d514e1d11"
+    },
+    {
+      "app": "airchoir",
+      "source": "air-choir/test/phase0.check.mjs",
+      "target": "apps/airchoir/test/phase0.check.mjs",
+      "sha256": "2c6bb53084ea02c24ee9419ff2c87d57606d18fe38aff8fddcf388d1bf8a592a"
+    }
+  ]
+}

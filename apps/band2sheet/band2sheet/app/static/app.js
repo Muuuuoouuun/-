@@ -13,6 +13,12 @@ const state = {
   file: null,
   quality: "standard",
   jobId: null,
+  jobEpoch: 0,
+  jobRequest: 0,
+  viewRequest: 0,
+  jobsRequest: 0,
+  analysisJobs: new Set(),
+  startingJob: false,
   job: null,
   result: null,
   tab: "full_score",
@@ -39,6 +45,36 @@ async function api(path, opts = {}) {
 function show(view) {
   for (const v of ["new", "source", "progress", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
   if (view !== "source") { $("#s-video").pause(); $("#s-audio").pause(); }
+}
+
+function jobContext() {
+  return { id: state.jobId, epoch: state.jobEpoch };
+}
+
+function isCurrentJob(context) {
+  return context.id === state.jobId && context.epoch === state.jobEpoch;
+}
+
+function selectJob(id) {
+  stopAudio();
+  clearTimeout(state.pollTimer);
+  state.pollTimer = null;
+  state.jobEpoch++;
+  state.jobId = id;
+  state.job = null;
+  state.result = null;
+  state.tab = "full_score";
+  updateAnalysisButtons();
+  $("#player").classList.add("hidden");
+  show(id ? "progress" : "new");
+  if (id) {
+    $("#p-title").textContent = "작업 불러오는 중…";
+    $("#p-bar").style.width = "0%";
+    $("#p-stage").textContent = "";
+    $("#p-log").textContent = "";
+    $("#p-error").textContent = "";
+    $("#p-retry").classList.add("hidden");
+  }
 }
 
 function fmtTime(s) {
@@ -93,9 +129,10 @@ function urlValue() {
 
 function updateStartButton() {
   const url = urlValue();
-  $("#btn-start").disabled = !(url || state.file);
+  $("#btn-start").disabled = state.startingJob || !(url || state.file);
+  $("#btn-start").setAttribute("aria-busy", String(state.startingJob));
   const what = $("#keep-video").checked ? "영상" : "음성";
-  $("#btn-start").textContent = url && $("#fetch-only").checked ? `${what} 받기 시작` :
+  $("#btn-start").textContent = state.startingJob ? "시작하는 중…" : url && $("#fetch-only").checked ? `${what} 받기 시작` :
     url ? `${what} 받아서 악보 만들기` : "악보 만들기 시작";
   $("#max-height").disabled = !$("#keep-video").checked;
   $("#title").placeholder = url ? "영상 제목 사용" : state.file ? state.file.name.replace(/\.[^.]+$/, "") : "파일 이름 사용";
@@ -131,6 +168,10 @@ function initNewView() {
 }
 
 async function startJob() {
+  if (state.startingJob || !(urlValue() || state.file)) return;
+  state.startingJob = true;
+  const context = jobContext();
+  const file = state.file;
   $("#start-error").textContent = "";
   const options = {
     title: $("#title").value.trim(),
@@ -149,7 +190,7 @@ async function startJob() {
     language: $("#language").value,
   };
   const url = urlValue();
-  $("#btn-start").disabled = true;
+  updateStartButton();
   $("#btn-start").textContent = url ? "시작하는 중…" : "올리는 중…";
   try {
     let job;
@@ -164,20 +205,23 @@ async function startJob() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, options }),
       });
-      $("#url").value = "";
+      if (isCurrentJob(context) && urlValue() === url) $("#url").value = "";
     } else {
       const fd = new FormData();
-      fd.append("file", state.file);
+      fd.append("file", file);
       fd.append("options", JSON.stringify(options));
       job = await api("/api/jobs", { method: "POST", body: fd });
-      setFile(null);
-      $("#file").value = "";
+      if (isCurrentJob(context) && state.file === file) {
+        setFile(null);
+        $("#file").value = "";
+      }
     }
     await loadJobs();
-    openJob(job.id);
+    if (isCurrentJob(context)) await openJob(job.id);
   } catch (e) {
-    $("#start-error").textContent = e.message;
+    if (isCurrentJob(context)) $("#start-error").textContent = e.message;
   } finally {
+    state.startingJob = false;
     updateStartButton();
   }
 }
@@ -219,19 +263,41 @@ function showSource() {
   $("#s-video-dl").href = `${base}/video`;
   $("#s-audio-dl").href = `${base}/audio`;
   $("#s-error").textContent = "";
+  updateAnalysisButtons();
+}
+
+function updateAnalysisButtons() {
+  const pending = state.analysisJobs.has(state.jobId);
+  const canAnalyze = state.job && state.job.id === state.jobId && ["ready", "error"].includes(state.job.status);
+  for (const [selector, label] of [["#s-analyze", "악보 만들기 시작"], ["#p-retry", "다시 시도"]]) {
+    const button = $(selector);
+    button.disabled = pending || !canAnalyze;
+    button.textContent = pending ? "시작하는 중…" : label;
+    button.setAttribute("aria-busy", String(pending));
+  }
 }
 
 async function startAnalysis(options, errorEl) {
+  const context = jobContext();
+  const job = state.job;
+  if (!job || job.id !== context.id || !["ready", "error"].includes(job.status) || state.analysisJobs.has(context.id)) return;
+  state.analysisJobs.add(context.id);
+  updateAnalysisButtons();
   errorEl.textContent = "";
   try {
-    await api(`/api/jobs/${state.job.id}/analyze`, {
+    await api(`/api/jobs/${context.id}/analyze`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ options }),
     });
+    // The accepted action still belongs to this job after navigating away and back.
+    if (state.jobId === context.id && state.job) state.job.status = "queued";
     await loadJobs();
-    refreshJob();
+    if (state.jobId === context.id) await refreshJob();
   } catch (e) {
-    errorEl.textContent = e.message;
+    if (isCurrentJob(context)) errorEl.textContent = e.message;
+  } finally {
+    state.analysisJobs.delete(context.id);
+    updateAnalysisButtons();
   }
 }
 
@@ -255,17 +321,25 @@ function initSourceView() {
   $("#p-retry").addEventListener("click", () => startAnalysis({}, $("#p-error")));
   $("#s-delete").addEventListener("click", async () => {
     if (!confirm("받은 파일을 지울까요?")) return;
-    await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
-    state.jobId = null;
+    const context = jobContext();
+    await api(`/api/jobs/${context.id}`, { method: "DELETE" });
+    if (isCurrentJob(context)) selectJob(null);
     state.sourceJob = null;
     await loadJobs();
-    show("new");
   });
 }
 
 // ------------------------------------------------------------------ 작업 목록
 async function loadJobs() {
-  const jobs = await api("/api/jobs");
+  const request = ++state.jobsRequest;
+  let jobs;
+  try {
+    jobs = await api("/api/jobs");
+  } catch (e) {
+    if (request === state.jobsRequest) toast(`작업 목록을 불러오지 못했습니다: ${e.message}`);
+    return [];
+  }
+  if (request !== state.jobsRequest) return jobs;
   const ul = $("#job-list");
   ul.innerHTML = "";
   $("#job-empty").classList.toggle("hidden", jobs.length > 0);
@@ -284,17 +358,40 @@ async function loadJobs() {
 }
 
 async function openJob(id) {
-  stopAudio();
-  clearTimeout(state.pollTimer);
-  state.jobId = id;
-  state.tab = "full_score";
+  selectJob(id);
+  const context = jobContext();
   await loadJobs();
-  await refreshJob();
+  if (isCurrentJob(context)) await refreshJob();
 }
 
 async function refreshJob() {
-  const job = await api(`/api/jobs/${state.jobId}`);
+  const context = jobContext();
+  if (!context.id) return;
+  const request = ++state.jobRequest;
+  const current = () => isCurrentJob(context) && request === state.jobRequest;
+  clearTimeout(state.pollTimer);
+  state.pollTimer = null;
+  let job;
+  try {
+    job = await api(`/api/jobs/${context.id}`);
+  } catch (e) {
+    if (!current()) return;
+    if (!state.job || ["queued", "running"].includes(state.job.status)) {
+      show("progress");
+      $("#player").classList.add("hidden");
+      if (state.job) $("#p-title").textContent = state.job.title;
+      $("#p-stage").textContent = "작업 상태를 불러오지 못했습니다.";
+      $("#p-error").textContent = e.message;
+      $("#p-retry").classList.add("hidden");
+      if (state.job) state.pollTimer = setTimeout(() => { if (current()) refreshJob(); }, 2500);
+    } else {
+      toast(e.message);
+    }
+    return;
+  }
+  if (!current()) return;
   state.job = job;
+  updateAnalysisButtons();
   if (job.status === "done") {
     await showResult();
     loadJobs();
@@ -315,7 +412,9 @@ async function refreshJob() {
   $("#p-error").textContent = job.error || "";
   $("#p-retry").classList.toggle("hidden", job.status !== "error");
   if (job.status === "running" || job.status === "queued") {
-    state.pollTimer = setTimeout(() => { refreshJob(); loadJobs(); }, 1200);
+    state.pollTimer = setTimeout(() => {
+      if (current()) { refreshJob(); loadJobs(); }
+    }, 1200);
   } else {
     loadJobs();
   }
@@ -323,6 +422,7 @@ async function refreshJob() {
 
 // ------------------------------------------------------------------ 결과 화면
 async function showResult() {
+  const context = jobContext();
   const job = state.job;
   state.result = job.result;
   show("result");
@@ -332,26 +432,33 @@ async function showResult() {
   renderActivity();
   renderFiles();
   const keep = state.viewJob === job.id && state.view;
-  await loadView({ semitones: keep ? state.view.semitones : (job.result.semitones || 0) });
-  switchView(state.pane || "chart");
+  const loaded = await loadView({ semitones: keep ? state.view.semitones : (job.result.semitones || 0) });
+  if (loaded && isCurrentJob(context)) switchView(state.pane || "chart");
 }
 
 async function loadView(params) {
+  const context = jobContext();
+  if (!state.job || state.job.id !== context.id) return false;
+  const request = ++state.viewRequest;
+  const current = () => isCurrentJob(context) && request === state.viewRequest;
   const q = new URLSearchParams();
   if (params.target_key) q.set("key", params.target_key);
   else q.set("semitones", String(params.semitones || 0));
   $("#t-info").textContent = "불러오는 중…";
   try {
-    const v = await api(`/api/jobs/${state.job.id}/view?${q}`);
+    const v = await api(`/api/jobs/${context.id}/view?${q}`);
+    if (!current()) return false;
     state.view = v;
-    state.viewJob = state.job.id;
+    state.viewJob = context.id;
     renderHeader();
     renderStructure();
-    Views.setData(v, state.job.id);
+    Views.setData(v, context.id);
     updateStale();
     if (state.pane === "score" && scoreStale()) refreshScore();
+    return true;
   } catch (e) {
-    $("#t-info").textContent = e.message;
+    if (current()) $("#t-info").textContent = e.message;
+    return false;
   }
 }
 
@@ -565,12 +672,10 @@ function initResultView() {
   $("#files-refresh").addEventListener("click", refreshScore);
   $("#r-delete").addEventListener("click", async () => {
     if (!confirm("이 작업과 만든 악보를 모두 지울까요?")) return;
-    await api(`/api/jobs/${state.job.id}`, { method: "DELETE" });
-    stopAudio();
-    state.jobId = null;
-    $("#player").classList.add("hidden");
+    const context = jobContext();
+    await api(`/api/jobs/${context.id}`, { method: "DELETE" });
+    if (isCurrentJob(context)) selectJob(null);
     await loadJobs();
-    show("new");
   });
   $("#m-play").addEventListener("click", togglePlay);
   $("#m-seek").addEventListener("input", (e) => {
@@ -584,7 +689,7 @@ function initResultView() {
     seek: (t, play) => { seekAll(t); const m = masterAudio(); if (play && m && m.paused) togglePlay(); },
     time: () => { const m = masterAudio(); return m ? m.currentTime : 0; },
     playing: () => { const m = masterAudio(); return !!m && !m.paused; },
-    reload: () => loadView({ semitones: state.view ? state.view.semitones : 0 }).then(markStale),
+    reload: () => loadView({ semitones: state.view ? state.view.semitones : 0 }).then((loaded) => { if (loaded) markStale(); }),
   });
 }
 
@@ -839,11 +944,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   initSourceView();
   initResultView();
   $("#btn-new").addEventListener("click", () => {
-    stopAudio();
-    clearTimeout(state.pollTimer);
-    state.jobId = null;
+    selectJob(null);
     loadJobs();
-    show("new");
   });
   $("#btn-engines").addEventListener("click", () => $("#engines-dialog").showModal());
   try {

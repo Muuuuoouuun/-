@@ -1,0 +1,273 @@
+<meta charset="utf-8">
+<title>AirChoir</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&family=Instrument+Serif&display=swap">
+<style>
+  /* 무대: 카메라 화면이 주인공, 오른쪽은 악보대처럼 조용한 설정 패널. 어두운 무대 한 가지 룩으로 고정. */
+  :root {
+    --ink: #13121d;
+    --panel: #1c1a2a;
+    --raised: #262438;
+    --line: #34314b;
+    --fg: #eeebf6;
+    --muted: #a19db9;
+    --voice: #f6ead0;
+    --v1: #ffb454;
+    --v2: #ff7fa9;
+    --v3: #5fd3c4;
+    --v4: #93b5ff;
+    --good: #72d892;
+    --warn: #ffcc66;
+    --bad: #ff7070;
+    --skeleton: rgba(238, 235, 246, 0.55);
+    --track: rgba(19, 18, 29, 0.55);
+    --scrim: rgba(19, 18, 29, 0.72);
+    --dark-end: #3a2a6b;
+    --bright-end: #ffe9b0;
+    --font-display: "Instrument Serif", "Times New Roman", serif;
+    --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    --r: 12px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--ink); color: var(--fg); font: 15px/1.5 var(--font-body); }
+  .wrap { max-width: 1400px; margin: 0 auto; padding-inline: 20px; padding-block: 16px 32px; display: grid; gap: 14px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; }
+  .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .brand h1 { margin: 0; font: 400 36px/1 var(--font-display); }
+  .brand span { color: var(--muted); font-size: 14px; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px; }
+  .st { font: 500 12px/1 var(--font-body); padding: 7px 10px; border-radius: 99px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+  .st[data-state="on"] { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+  .st[data-state="busy"] { color: var(--warn); }
+  .st[data-state="off"] { color: var(--muted); }
+
+  .notice { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--panel); border-radius: var(--r); padding: 10px 14px; font-size: 14px; }
+  .notice.error { border-left-color: var(--bad); }
+
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; align-items: start; }
+
+  /* 무대 */
+  .stage { position: relative; aspect-ratio: 16 / 9; max-width: 100%; border-radius: var(--r); overflow: hidden; background:
+      radial-gradient(ellipse at 50% 115%, rgba(255, 180, 84, 0.08), transparent 60%), var(--panel);
+    border: 1px solid var(--line); touch-action: none; }
+  .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage.pointer { cursor: crosshair; }
+
+  .hud { position: absolute; top: 14px; left: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; max-width: calc(100% - 90px); pointer-events: none; }
+  .hud-card { background: var(--scrim); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 8px 12px; display: grid; gap: 2px; min-width: 0; }
+  .hud-card small { font-size: 11px; letter-spacing: 0.08em; color: var(--muted); }
+  .hud-note { font: 400 34px/1 var(--font-display); color: var(--voice); font-variant-numeric: tabular-nums; }
+  .hud-note.off { color: var(--line); }
+  .hud-chips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; min-height: 34px; }
+  .chip { font: 600 13px/1 var(--font-data); padding: 6px 7px; border-radius: 6px; border: 1px solid currentColor; }
+  .chip.v0 { color: var(--v1); } .chip.v1 { color: var(--v2); } .chip.v2 { color: var(--v3); } .chip.v3 { color: var(--v4); }
+  .chip.idle { color: var(--muted); border-color: var(--line); font-weight: 500; }
+  .hud-preset { font-size: 15px; font-weight: 500; }
+  .beat { display: flex; gap: 6px; align-items: center; height: 34px; }
+  .beat i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  .beat i:first-child { width: 13px; height: 13px; }
+  .beat i.on { background: var(--voice); }
+  .orb-status.rec { border-color: var(--bad); }
+  .orb-status.rec .hud-preset { color: var(--bad); }
+  .row.between { justify-content: space-between; }
+  .data { font: 500 13px/1 var(--font-data); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .start { position: absolute; inset: 0; display: grid; place-items: center; background: var(--scrim); padding: 20px; overflow: auto; }
+  .start-card { max-width: 520px; display: grid; gap: 14px; text-align: left; }
+  .start-card h2 { margin: 0; font: 400 clamp(30px, 5vw, 44px)/1.05 var(--font-display); text-wrap: balance; }
+  .start-card p { margin: 0; color: var(--muted); }
+  .steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 14px; }
+  .steps li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: baseline; }
+  .steps b { font: 500 13px/1 var(--font-data); color: var(--v1); }
+  .start-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  button, select, .file-btn {
+    font: 500 14px/1 var(--font-body); color: var(--fg); background: var(--raised);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 13px; cursor: pointer;
+  }
+  button:hover, select:hover, .file-btn:hover { border-color: var(--muted); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .file-btn:focus-within { outline: 2px solid var(--v4); outline-offset: 2px; }
+  button.primary { background: var(--voice); color: var(--ink); border-color: var(--voice); font-weight: 600; }
+  button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; padding-inline: 4px; }
+  button[aria-pressed="true"] { background: var(--fg); color: var(--ink); border-color: var(--fg); }
+  .file-btn { position: relative; display: inline-flex; align-items: center; }
+  .file-btn input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  kbd { font: 500 11px/1 var(--font-data); color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+
+  /* 오른쪽 패널 */
+  .side { display: grid; gap: 14px; min-width: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; display: grid; gap: 10px; min-width: 0; }
+  .label { font-size: 12px; letter-spacing: 0.08em; color: var(--muted); margin: 0; }
+  .guide { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .guide li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; padding: 7px 8px; border-radius: 7px; font-size: 14px; align-items: baseline; }
+  .guide li span:first-child { font: 500 13px/1.3 var(--font-data); color: var(--muted); }
+  .guide li.now { background: var(--raised); box-shadow: inset 3px 0 0 var(--v1); }
+  .guide li.now span:first-child { color: var(--fg); }
+  .guide .sep { height: 1px; background: var(--line); margin: 4px 0; padding: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .seg button { padding: 9px 4px; font-size: 13px; }
+  .slider { display: grid; grid-template-columns: 82px minmax(0, 1fr) 40px; gap: 8px; align-items: center; font-size: 13px; }
+  .slider output { font: 400 12px/1 var(--font-data); color: var(--muted); text-align: right; }
+  input[type="range"] { width: 100%; accent-color: var(--v1); }
+  .check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  input[type="checkbox"] { accent-color: var(--v1); width: 16px; height: 16px; }
+  .muted { color: var(--muted); font-size: 13px; margin: 0; }
+  .trace { width: 100%; height: 150px; display: block; border-radius: 8px; background: var(--ink); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  @media (max-width: 980px) {
+    .main { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 560px) {
+    .wrap { padding-inline: 16px; }
+    .stage { aspect-ratio: 3 / 4; }
+    .hud-note { font-size: 28px; }
+    .hud-card { padding: 6px 9px; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>AirChoir</h1>
+      <span>허밍 한 번이면, 내가 합창단</span>
+    </div>
+    <div class="status" aria-live="polite">
+      <span class="st" id="st-audio" data-state="off">소리 꺼짐</span>
+      <span class="st" id="st-cam" data-state="off">카메라 꺼짐</span>
+    </div>
+  </header>
+
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+  <div class="main">
+    <section class="stage" id="stage" aria-label="카메라 무대">
+      <video id="video" playsinline muted hidden></video>
+      <canvas id="overlay"></canvas>
+      <div class="hud" aria-live="polite">
+        <div class="hud-card">
+          <small>지금 부르는 음</small>
+          <div id="hud-note" class="hud-note off">—</div>
+        </div>
+        <div class="hud-card">
+          <small>합창단</small>
+          <div id="hud-chips" class="hud-chips"><span class="chip idle">손을 보여 주세요</span></div>
+        </div>
+        <div class="hud-card">
+          <small>손동작</small>
+          <div id="hud-preset" class="hud-preset">—</div>
+        </div>
+        <div class="hud-card">
+          <small>박자 · <span id="hud-bpm">90</span></small>
+          <div id="hud-beat" class="beat" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+        </div>
+        <div class="hud-card orb-status" id="hud-orb" hidden>
+          <small>오브</small>
+          <div id="hud-orb-text" class="hud-preset"></div>
+        </div>
+      </div>
+
+      <div class="start" id="start">
+        <div class="start-card">
+          <h2>이어폰을 끼고, 손을 들어 보세요</h2>
+          <p>카메라로 손 모양을, 마이크로 목소리를 읽어요. 영상과 소리는 이 기기 밖으로 나가지 않아요.</p>
+          <ol class="steps">
+            <li><b>1</b><span>"아~" 하고 길게 불러요</span></li>
+            <li><b>2</b><span>손가락 하나를 펴면 3도 위 화음이 붙어요. 더 펼수록 합창단이 커져요</span></li>
+            <li><b>3</b><span>손을 올리면 커지고, 주먹을 쥐면 멈춰요</span></li>
+          </ol>
+          <div class="start-actions">
+            <button class="primary" id="start-mic" type="button">카메라·마이크로 시작</button>
+            <button id="start-demo" type="button">데모 노래로 시작</button>
+          </div>
+          <button class="link" id="start-pointer" type="button">카메라 없이 마우스로 해 보기</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="panel">
+        <p class="label">손동작</p>
+        <ul class="guide" id="guide">
+          <li data-g="none"><span>손 안 보임</span><span>내 목소리만</span></li>
+          <li data-g="1"><span>손가락 1개</span><span>3도 위</span></li>
+          <li data-g="2"><span>손가락 2개</span><span>3도 + 5도 위</span></li>
+          <li data-g="3"><span>손가락 3개</span><span>3·5도 + 베이스</span></li>
+          <li data-g="4"><span>4~5개</span><span>풀 합창</span></li>
+          <li data-g="fist"><span>주먹</span><span>즉시 정지</span></li>
+          <li class="sep" aria-hidden="true"></li>
+          <li><span>손 높이</span><span>합창단 음량</span></li>
+          <li><span>손 좌우</span><span>왼쪽은 어둡게 울리고, 오른쪽은 밝게</span></li>
+        </ul>
+        <p class="muted" id="pointer-help" hidden>마우스 모드: 무대 위에서 움직이면 손 위치, 키보드 <kbd>0</kbd>~<kbd>5</kbd>가 손가락 개수, 버튼을 누르고 있으면 핀치예요.</p>
+      </div>
+
+      <div class="panel">
+        <div class="row between">
+          <p class="label">오브 (반복 녹음)</p>
+          <span class="data" id="orb-count">0 / 6</span>
+        </div>
+        <ul class="guide" id="orb-guide">
+          <li data-o="pinch"><span>핀치 유지</span><span>다음 마디부터 녹음, 놓으면 마디 끝에서 완성 (최대 4마디)</span></li>
+          <li data-o="throw"><span>휙 던지기</span><span>떨어진 자리에서 반복. 좌우는 소리 방향, 위일수록 크게</span></li>
+          <li data-o="drag"><span>오브 핀치</span><span>잡아서 옮기기</span></li>
+          <li><span>오브에 주먹</span><span>터뜨려서 지우기</span></li>
+          <li><span>편 손 1초</span><span>오브 위에 대고 있으면 음소거 켜고 끄기</span></li>
+        </ul>
+        <div class="row">
+          <select id="bpm" aria-label="빠르기"></select>
+          <label class="check"><input id="metronome" type="checkbox"> 메트로놈 항상 켜기</label>
+          <button id="clear-orbs" type="button" disabled>모두 지우기</button>
+        </div>
+        <p class="muted" id="bpm-lock" hidden>녹음 중이거나 오브가 있는 동안은 빠르기를 바꿀 수 없어요. 박이 어긋나거든요.</p>
+        <p class="muted">녹음에는 내 목소리와 화음만 들어가요. 이미 돌고 있는 오브와 메트로놈 소리는 빠져요.</p>
+      </div>
+
+      <div class="panel">
+        <p class="label">소리</p>
+        <div class="row" role="group" aria-label="소리 입력">
+          <button id="src-mic" type="button" aria-pressed="false">마이크</button>
+          <button id="src-demo" type="button" aria-pressed="false">데모 노래</button>
+          <label class="file-btn" id="src-file-label">녹음 파일<input id="src-file" type="file" accept="audio/*,video/*"></label>
+        </div>
+        <div class="slider">
+          <label for="dry">내 목소리</label>
+          <input id="dry" type="range" min="0" max="1" step="0.05" value="0">
+          <output id="dry-v" for="dry">0.00</output>
+        </div>
+        <p class="muted">마이크일 때는 내 목소리를 꺼 두는 게 자연스러워요. 이어폰 안에서 살짝 늦게 들리거든요.</p>
+      </div>
+
+      <div class="panel">
+        <p class="label">화음</p>
+        <div class="row">
+          <select id="key" aria-label="키"></select>
+          <select id="scale" aria-label="장조 또는 단조">
+            <option value="major">장조</option>
+            <option value="minor">단조</option>
+          </select>
+        </div>
+        <div class="seg" role="group" aria-label="화음 엔진">
+          <button type="button" data-engine="granular" aria-pressed="false" title="Tone.js PitchShift 방식">그레인 <kbd>Q</kbd></button>
+          <button type="button" data-engine="psola" aria-pressed="true" title="목소리 한 주기씩 잘라 붙임">PSOLA <kbd>W</kbd></button>
+          <button type="button" data-engine="synth" aria-pressed="false" title='"아~" 합성 목소리'>합성 <kbd>E</kbd></button>
+        </div>
+        <label class="check"><input id="lock" type="checkbox" checked> 화음을 정확한 음에 고정</label>
+      </div>
+
+      <div class="panel">
+        <p class="label">최근 6초 음정</p>
+        <canvas id="trace" class="trace" aria-label="흰 선은 부른 음, 색 선은 화음"></canvas>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script type="module" src="src/app.js"></script>
