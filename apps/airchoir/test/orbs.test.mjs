@@ -164,3 +164,103 @@ test('오브는 최대 6개', async () => {
   assert.equal(st.mode, 'idle');
   assert.match(st.message.text, /가득/);
 });
+
+test('버튼 녹음 시작도 최소 두 박 뒤 마디를 사용하고 중복 시작을 막는다', () => {
+  const { st } = setup();
+  const events = [];
+  st.on('countin', (rec) => events.push(rec));
+  assert.equal(st.beginRecording(1.2), true);
+  assert.equal(st.mode, 'countin');
+  assert.deepEqual(st.rec, { begin: 4, asked: 1.2 });
+  assert.equal(st.beginRecording(1.3), false);
+  assert.equal(events.length, 1);
+  assert.equal(events[0], st.rec);
+});
+
+test('버튼 녹음 시작도 오브 개수 제한을 지킨다', async () => {
+  const { st, audio } = setup();
+  st.maxOrbs = 1;
+  await makeHeldOrb(st);
+  st.placeHeld();
+  const before = audio.log.length;
+  assert.equal(st.beginRecording(5), false);
+  assert.equal(st.mode, 'idle');
+  assert.equal(st.rec, null);
+  assert.equal(audio.log.length, before);
+  assert.match(st.message.text, /가득/);
+});
+
+test('카운트인에서 완료 버튼을 누르면 녹음을 만들지 않고 취소한다', () => {
+  const { st, audio } = setup();
+  let canceled = 0;
+  st.on('cancel', () => canceled++);
+  st.beginRecording(0.1);
+  assert.equal(st.finishRecording(0.5), true);
+  assert.equal(st.mode, 'idle');
+  assert.equal(st.rec, null);
+  assert.equal(st.count, 0);
+  assert.equal(canceled, 1);
+  assert.equal(st.finishRecording(0.6), false);
+  assert.equal(st.cancelRecording(), false);
+  assert.equal(canceled, 1);
+  assert.deepEqual(audio.log, []);
+});
+
+test('완료 버튼은 최소 한 마디와 다음 마디 경계 및 최대 길이를 지킨다', () => {
+  for (const [now, expectedEnd] of [[2.1, 4], [4.6, 6], [10.5, 10]]) {
+    const { st } = setup();
+    const events = [];
+    st.on('finishing', (rec) => events.push(rec));
+    st.beginRecording(0.1);
+    st.update(hand({ pinch: true }), 2);
+    assert.equal(st.mode, 'recording');
+    assert.equal(st.finishRecording(now), true);
+    assert.equal(st.mode, 'finishing');
+    assert.equal(st.rec.end, expectedEnd);
+    assert.equal(st.finishRecording(now + 0.1), false);
+    assert.equal(events.length, 1);
+  }
+});
+
+test('취소 버튼은 각 녹음 단계에서 기존 오브와 재생을 보존한다', async () => {
+  for (const mode of ['countin', 'recording', 'finishing']) {
+    const { st, audio } = setup();
+    await makeHeldOrb(st);
+    st.placeHeld();
+    const existing = st.orbs[0];
+    let canceled = 0;
+    st.on('cancel', () => canceled++);
+    st.beginRecording(5);
+    if (mode !== 'countin') st.update(hand({ pinch: true }), st.rec.begin);
+    if (mode === 'finishing') st.finishRecording(st.rec.begin + 0.1);
+    assert.equal(st.mode, mode);
+    const before = audio.log.length;
+    assert.equal(st.cancelRecording(), true);
+    assert.equal(st.mode, 'idle');
+    assert.equal(st.rec, null);
+    assert.deepEqual(st.orbs, [existing]);
+    assert.equal(existing.state, 'placed');
+    assert.equal(audio.log.length, before);
+    assert.equal(canceled, 1);
+    st.update(gone, 20);
+    assert.equal(st.count, 1);
+  }
+});
+
+test('배치 버튼은 든 오브만 한 번 내려놓고 재생한다', async () => {
+  const { st, audio } = setup();
+  assert.equal(st.placeHeld(), false);
+  await makeHeldOrb(st);
+  const orb = st.held;
+  const placed = [];
+  st.on('place', (value) => placed.push(value));
+  assert.equal(st.cancelRecording(), false);
+  assert.equal(st.beginRecording(5), false);
+  assert.equal(st.placeHeld(), true);
+  assert.equal(st.mode, 'idle');
+  assert.equal(st.held, null);
+  assert.equal(orb.state, 'placed');
+  assert.equal(st.placeHeld(), false);
+  assert.deepEqual(placed, [orb]);
+  assert.equal(audio.log.filter(([event]) => event === 'play').length, 1);
+});

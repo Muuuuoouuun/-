@@ -161,9 +161,9 @@ export function orbColor(midi, alpha = 1) {
   return `hsl(${Math.round(225 - t * 215)} 85% 66% / ${alpha})`;
 }
 
-function drawLoops(g, W, H, { station, transport, now, pinchAt }, colors, fonts) {
+function drawLoops(g, W, H, { station, transport, now, pinchAt, selectedId, reducedMotion }, colors, fonts) {
   const beat = transport.position(now);
-  const pulse = 1 + 0.07 * Math.pow(1 - beat.frac, 3);
+  const pulse = reducedMotion ? 1 : 1 + 0.07 * Math.pow(1 - beat.frac, 3);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
 
@@ -187,6 +187,19 @@ function drawLoops(g, W, H, { station, transport, now, pinchAt }, colors, fonts)
     g.arc(x, y, r, 0, Math.PI * 2);
     g.fill();
     g.restore();
+
+    if (o.id === selectedId) {
+      g.strokeStyle = colors.label;
+      g.lineWidth = 1;
+      g.setLineDash([2, 4]);
+      g.beginPath();
+      g.arc(x, y, r + 13, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = colors.label;
+      g.font = `11px ${fonts.body}`;
+      g.fillText(`오브 ${o.id} · 선택됨`, x, y + r + 30);
+    }
 
     // 루프 진행 위치 (12시부터 시계 방향)
     g.lineWidth = 2.5;

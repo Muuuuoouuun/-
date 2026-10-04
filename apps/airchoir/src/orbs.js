@@ -97,6 +97,46 @@ export class OrbStation {
     return best;
   }
 
+  // 손동작과 버튼이 같은 녹음 상태 전이를 사용한다.
+  beginRecording(now) {
+    if (this.mode !== 'idle') return false;
+    if (this.orbs.length >= this.maxOrbs) {
+      this.say(`오브가 가득 찼어요 (최대 ${this.maxOrbs}개). 주먹으로 하나를 터뜨려 주세요`, now);
+      return false;
+    }
+    const T = this.transport;
+    this.mode = 'countin';
+    this.rec = { begin: T.nextBar(now, 2 * T.beat), asked: now };
+    this.emit('countin', this.rec);
+    return true;
+  }
+
+  finishRecording(now) {
+    if (this.mode === 'countin') return this.cancelRecording();
+    if (this.mode !== 'recording') return false;
+    const T = this.transport;
+    const limit = this.rec.begin + this.maxBars * T.bar;
+    this.rec.end = Math.min(limit, Math.max(this.rec.begin + T.bar, T.nextBar(now)));
+    this.mode = 'finishing';
+    this.emit('finishing', this.rec);
+    return true;
+  }
+
+  cancelRecording() {
+    if (!['countin', 'recording', 'finishing'].includes(this.mode)) return false;
+    this.mode = 'idle';
+    this.rec = null;
+    this.emit('cancel');
+    return true;
+  }
+
+  placeHeld() {
+    if (this.mode !== 'holding' || !this.held) return false;
+    this.place(this.held);
+    this.release();
+    return true;
+  }
+
   // g: GestureTracker.state() 결과
   update(g, now) {
     const dt = this.lastNow == null ? 0 : Math.min(0.1, Math.max(0, now - this.lastNow));
@@ -120,21 +160,15 @@ export class OrbStation {
             this.mode = 'drag';
             this.drag = { orb, dx: orb.x - point.x, dy: orb.y - point.y };
             this.emit('grab', orb);
-          } else if (this.orbs.length >= this.maxOrbs) {
-            this.say(`오브가 가득 찼어요 (최대 ${this.maxOrbs}개). 주먹으로 하나를 터뜨려 주세요`, now);
           } else {
-            this.mode = 'countin';
-            this.rec = { begin: T.nextBar(now, 2 * T.beat), asked: now };
-            this.emit('countin', this.rec);
+            this.beginRecording(now);
           }
         }
         break;
 
       case 'countin':
         if (!pinch) {
-          this.mode = 'idle';
-          this.rec = null;
-          this.emit('cancel');
+          this.cancelRecording();
         } else if (now >= this.rec.begin) {
           this.mode = 'recording';
           this.emit('record', this.rec);
@@ -144,9 +178,7 @@ export class OrbStation {
       case 'recording': {
         const limit = this.rec.begin + this.maxBars * T.bar;
         if (!pinch || now >= limit) {
-          this.rec.end = Math.min(limit, Math.max(this.rec.begin + T.bar, T.nextBar(now)));
-          this.mode = 'finishing';
-          this.emit('finishing', this.rec);
+          this.finishRecording(now);
         }
         break;
       }
@@ -170,16 +202,13 @@ export class OrbStation {
             this.release();
             this.emit('throw', orb);
           } else if (pinchStart) {
-            this.place(orb); // 핀치하면 그 자리에 내려놓기
-            this.release();
+            this.placeHeld(); // 핀치하면 그 자리에 내려놓기
           }
         } else {
-          this.place(orb); // 손이 사라지면 마지막 자리에
-          this.release();
+          this.placeHeld(); // 손이 사라지면 마지막 자리에
         }
         if (this.held && now - this.heldSince > HOLD_TIMEOUT) {
-          this.place(orb);
-          this.release();
+          this.placeHeld();
         }
         break;
       }

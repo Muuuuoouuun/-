@@ -19,6 +19,15 @@ const Views = (() => {
   const $ = (s) => document.querySelector(s);
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  let chordPopup = null;
+  let viewEpoch = 0, rollEpoch = 0, rollRevision = 0;
+  const rollSaves = new Map();
+  const chordQueues = new Map();
+  const lyricSaves = new Map();
+  const lyricQueues = new Map();
+  const viewContext = () => ({ jobId: ctx.jobId, epoch: viewEpoch });
+  const currentView = (session) => session.jobId === ctx.jobId && session.epoch === viewEpoch;
+
   function init(hooks) {
     Object.assign(ctx.hooks, hooks);
     $("#cs-mode").addEventListener("click", (e) => {
@@ -34,27 +43,54 @@ const Views = (() => {
       $("#cs-edit").classList.toggle("on", ctx.edit);
       $("#chordsheet").classList.toggle("editing", ctx.edit);
       $("#cs-edit-hint").classList.toggle("hidden", !ctx.edit);
+      $("#cs-edit").setAttribute("aria-pressed", String(ctx.edit));
+      if (!ctx.edit) closePop();
+      updateChordButtons();
     });
     $("#cs-print").addEventListener("click", () => window.print());
     $("#live-capo").addEventListener("change", (e) => { ctx.capo = e.target.checked; renderLive(true); });
     initRoll();
+    $("#chord-pop").addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        closePop();
+      }
+    });
     document.addEventListener("click", (e) => {
       const pop = $("#chord-pop");
-      if (!pop.classList.contains("hidden") && !pop.contains(e.target) && !e.target.closest(".cs-chords")) closePop();
+      if (!pop.classList.contains("hidden") && !pop.contains(e.target) && !e.target.closest(".cs-chords")) closePop(false);
     });
   }
 
   function setData(view, jobId) {
     const changedJob = ctx.jobId !== jobId;
+    const localTrack = ctx.view && ctx.view.tracks[ctx.roll.track];
+    const incomingTrack = view.tracks[ctx.roll.track];
+    const keepRollEdits = !changedJob && ctx.view && (ctx.view.semitones || 0) === (view.semitones || 0) &&
+      (ctx.roll.dirty || ctx.roll.drag?.moved) && localTrack && incomingTrack && localTrack.kind === incomingTrack.kind;
+    if (keepRollEdits) {
+      // Chord/lyric refreshes must not replace the unsaved notes currently being edited.
+      view.tracks[ctx.roll.track] = { ...incomingTrack, notes: localTrack.notes, range: localTrack.range };
+      ctx.roll.dirty = true;
+      if (!Number.isInteger(ctx.roll.sel) || !localTrack.notes[ctx.roll.sel]) ctx.roll.sel = null;
+    } else {
+      ctx.roll.dirty = false;
+      ctx.roll.sel = null;
+      ctx.roll.undo = [];
+    }
+    viewEpoch++;
+    lyricSaves.clear();
+    closePop(false);
     ctx.view = view;
     ctx.timeline = null;
     ctx.jobId = jobId;
     ctx.nowBar = -1;
+    ctx.roll.drag = null;
     if (changedJob) {
       ctx.roll.track = null;
       ctx.roll.scroll = 0;
       ctx.roll.dirty = false;
-      ctx.roll.undo = [];
     }
     renderChordSheet();
     renderLive(true);
@@ -143,6 +179,8 @@ const Views = (() => {
       html += `</div></section>`;
     }
     const box = $("#chordsheet");
+    const focusedRow = document.activeElement && document.activeElement.closest(".cs-chords");
+    const focusedBar = focusedRow && box.contains(focusedRow) ? focusedRow.dataset.bar : null;
     box.innerHTML = html;
     applyFont();
     box.querySelectorAll(".cs-bar").forEach((el) => {
@@ -154,6 +192,27 @@ const Views = (() => {
         }
         ctx.hooks.seek(v.bars[bar].start, true);
       });
+      const row = el.querySelector(".cs-chords");
+      row.addEventListener("keydown", (e) => {
+        if (!ctx.edit || (e.key !== "Enter" && e.key !== " ")) return;
+        e.preventDefault();
+        openChordPop(row, Number(el.dataset.bar));
+      });
+    });
+    updateChordButtons();
+    if (focusedBar !== null && ctx.edit) box.querySelector(`.cs-chords[data-bar="${focusedBar}"]`)?.focus();
+  }
+
+  function updateChordButtons() {
+    $$q("#chordsheet .cs-chords").forEach((row) => {
+      if (ctx.edit) {
+        row.setAttribute("role", "button");
+        row.setAttribute("tabindex", "0");
+        row.setAttribute("aria-haspopup", "dialog");
+        row.setAttribute("aria-label", `${ctx.view.bars[Number(row.dataset.bar)].number}마디 코드 편집`);
+      } else {
+        for (const attr of ["role", "tabindex", "aria-haspopup", "aria-label"]) row.removeAttribute(attr);
+      }
     });
   }
 
@@ -189,61 +248,121 @@ const Views = (() => {
   function openChordPop(row, bar, e) {
     const v = ctx.view;
     const rect = row.getBoundingClientRect();
-    const rel = Math.min(0.999, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const clientX = e ? e.clientX : rect.left;
+    const rel = Math.min(0.999, Math.max(0, (clientX - rect.left) / rect.width));
     const beat = Math.floor(rel * v.beats_per_bar);
     const current = [...v.bars[bar].chords].reverse().find((c) => c.beat <= beat);
     const pop = $("#chord-pop");
-    pop.innerHTML = `<div class="pop-head">${v.bars[bar].number}마디 ${beat + 1}박부터</div>
-      <input id="pop-input" value="${esc(current && !current.held ? current.name : "")}" placeholder="예: G, Em7, D/F#">
+    const session = chordPopup = { ...viewContext(), row, bar, saving: false };
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-labelledby", "pop-title");
+    pop.setAttribute("aria-describedby", "pop-help");
+    pop.setAttribute("aria-busy", "false");
+    pop.innerHTML = `<div class="pop-head" id="pop-title">${v.bars[bar].number}마디 ${beat + 1}박부터 코드 편집</div>
+      <p id="pop-help" class="small muted">코드를 입력하거나 아래에서 선택하세요. Escape로 닫을 수 있어요.</p>
+      <label for="pop-input">코드 이름</label>
+      <input id="pop-input" aria-describedby="pop-err" value="${esc(current && !current.held ? current.name : "")}" placeholder="예: G, Em7, D/F#">
       <div class="pop-quick">${diatonic().map((n) => `<button data-n="${esc(n)}">${esc(n)}</button>`).join("")}</div>
       <div class="pop-actions"><button class="primary" id="pop-ok">적용</button><button id="pop-del">코드 지우기</button><button id="pop-cancel" class="ghost">취소</button></div>
-      <p class="error small" id="pop-err"></p>`;
+      <p class="error small" id="pop-err" role="alert" aria-atomic="true"></p>`;
     pop.classList.remove("hidden");
     const pr = pop.getBoundingClientRect();
-    pop.style.left = `${Math.min(window.innerWidth - pr.width - 10, Math.max(10, e.clientX - 40))}px`;
+    pop.style.left = `${Math.min(window.innerWidth - pr.width - 10, Math.max(10, clientX - 40))}px`;
     pop.style.top = `${Math.min(window.innerHeight - pr.height - 10, rect.bottom + 6)}px`;
     const input = $("#pop-input");
     input.focus();
     input.select();
     const submit = async (name) => {
-      try {
-        await ctx.hooks.api(`/api/jobs/${ctx.jobId}/chord`, {
+      if (session !== chordPopup || !currentView(session) || session.saving) return;
+      session.saving = true;
+      const error = $("#pop-err");
+      error.textContent = "";
+      pop.setAttribute("aria-busy", "true");
+      $("#pop-ok").textContent = "저장 중…";
+      const queueKey = JSON.stringify([session.jobId, bar]);
+      const previous = chordQueues.get(queueKey);
+      const write = (async () => {
+        if (previous) { try { await previous; } catch (_) { /* allow the next edit to retry */ } }
+        if (session !== chordPopup || !currentView(session)) return false;
+        await ctx.hooks.api(`/api/jobs/${session.jobId}/chord`, {
           method: "PUT", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bar, beat, name, semitones: v.semitones }),
         });
+        return true;
+      })();
+      chordQueues.set(queueKey, write);
+      try {
+        if (!await write || session !== chordPopup || !currentView(session)) return;
         closePop();
         ctx.hooks.reload();
-      } catch (err) { $("#pop-err").textContent = err.message; }
+      } catch (err) {
+        if (session === chordPopup && currentView(session)) error.textContent = err.message;
+      } finally {
+        session.saving = false;
+        if (chordQueues.get(queueKey) === write) chordQueues.delete(queueKey);
+        if (session === chordPopup) {
+          pop.setAttribute("aria-busy", "false");
+          $("#pop-ok").textContent = "적용";
+        }
+      }
     };
     pop.querySelectorAll(".pop-quick button").forEach((b) => b.addEventListener("click", () => submit(b.dataset.n)));
     $("#pop-ok").addEventListener("click", () => submit(input.value));
     $("#pop-del").addEventListener("click", () => submit(""));
-    $("#pop-cancel").addEventListener("click", closePop);
-    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") submit(input.value); if (ev.key === "Escape") closePop(); });
+    $("#pop-cancel").addEventListener("click", () => closePop());
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); submit(input.value); } });
   }
 
-  function closePop() { $("#chord-pop").classList.add("hidden"); }
+  function closePop(restoreFocus = true) {
+    $("#chord-pop").classList.add("hidden");
+    $("#chord-pop").setAttribute("aria-busy", "false");
+    const session = chordPopup;
+    chordPopup = null;
+    if (restoreFocus && session && session.jobId === ctx.jobId) {
+      const row = session.row.isConnected ? session.row : $(`#chordsheet .cs-chords[data-bar="${session.bar}"]`);
+      if (row && ctx.edit) row.focus();
+    }
+  }
 
   function editLyrics(el, bar) {
     if (el.isContentEditable) return;
+    const session = viewContext(), view = ctx.view;
+    let completed = false;
     el.contentEditable = "true";
     el.classList.add("typing");
     el.focus();
     const done = async (save) => {
+      if (completed) return;
+      completed = true;
       el.contentEditable = "false";
       el.classList.remove("typing");
-      if (!save) { el.textContent = ctx.view.bars[bar].lyrics || ""; return; }
+      if (!save) { el.textContent = view.bars[bar].lyrics || ""; return; }
+      if (!currentView(session)) return;
       const text = el.textContent.trim();
-      if (text === (ctx.view.bars[bar].lyrics || "")) return;
-      try {
-        await ctx.hooks.api(`/api/jobs/${ctx.jobId}/lyrics`, {
+      const queueKey = JSON.stringify([session.jobId, bar]);
+      if (text === (view.bars[bar].lyrics || "") && !lyricQueues.has(queueKey)) return;
+      const request = {};
+      lyricSaves.set(bar, request);
+      const current = () => currentView(session) && lyricSaves.get(bar) === request;
+      const previous = lyricQueues.get(queueKey);
+      // Keep writes to the same bar in order as well as guarding their UI responses.
+      const write = (async () => {
+        if (previous) { try { await previous; } catch (_) { /* a failed save must allow retry */ } }
+        if (!current()) return false;
+        await ctx.hooks.api(`/api/jobs/${session.jobId}/lyrics`, {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bar, text }),
         });
-        ctx.view.bars[bar].lyrics = text;
+        return true;
+      })();
+      lyricQueues.set(queueKey, write);
+      try {
+        if (!await write || !current()) return;
+        view.bars[bar].lyrics = text;
         el.classList.add("edited");
         ctx.hooks.toast("가사를 저장했어요");
         ctx.hooks.markStale();
-      } catch (err) { ctx.hooks.toast(err.message); }
+      } catch (err) { if (current()) ctx.hooks.toast(err.message); }
+      finally { if (lyricQueues.get(queueKey) === write) lyricQueues.delete(queueKey); }
     };
     el.onkeydown = (ev) => {
       if (ev.key === "Enter") { ev.preventDefault(); el.blur(); }
@@ -332,10 +451,13 @@ const Views = (() => {
     $("#roll-undo").addEventListener("click", undoRoll);
     $("#roll-delete").addEventListener("click", () => { if (R.sel != null) { pushUndo(); notes().splice(R.sel, 1); R.sel = null; dirty(); } });
     window.addEventListener("keydown", (e) => {
-      if ($("#v-roll").classList.contains("hidden") || e.target.closest("input, textarea, [contenteditable=true]")) return;
+      if (e.defaultPrevented || e.isComposing || !track() || $("#v-roll").closest(".hidden") ||
+        e.target.closest(".hidden, input, textarea, select, button, summary, a[href], [contenteditable], [role=button], [role=dialog]") ||
+        e.target.isContentEditable) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undoRoll(); return; }
       if (R.sel == null) return;
       const n = notes()[R.sel];
+      if (!n) { R.sel = null; updateRollStatus(); return; }
       if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); pushUndo(); notes().splice(R.sel, 1); R.sel = null; dirty(); }
       else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
@@ -362,7 +484,9 @@ const Views = (() => {
     if (!R.track || !v.tracks[R.track]) R.track = names.find((n) => n !== "drums") || names[0] || null;
     box.innerHTML = names.map((n) => `<button data-t="${n}" class="${n === R.track ? "on" : ""}">${esc(v.tracks[n].label_ko)} <small>${v.tracks[n].notes.length}</small></button>`).join("");
     box.querySelectorAll("button").forEach((b) => b.addEventListener("click", async () => {
+      if (R.track === b.dataset.t) return;
       if (R.dirty && !confirm("저장하지 않은 수정이 있어요. 버리고 다른 악기로 갈까요?")) return;
+      rollEpoch++;
       if (R.dirty) { R.dirty = false; ctx.hooks.reload(); }
       R.track = b.dataset.t; R.sel = null; R.undo = [];
       renderRollTabs(); drawRoll();
@@ -557,6 +681,7 @@ const Views = (() => {
     const dRow = Math.round((y - R.drag.y) / info.rowH);
     if (!R.drag.moved && Math.abs(x - R.drag.x) < 3 && dRow === 0) return;
     if (!R.drag.moved) { pushUndo(); R.drag.moved = true; }
+    rollRevision++;
     const n = notes()[R.sel];
     const [s0, e0, p0] = R.drag.orig;
     if (R.drag.resize) {
@@ -594,6 +719,7 @@ const Views = (() => {
   }
 
   function pushUndo() {
+    rollRevision++;
     R.undo.push(JSON.stringify(notes()));
     if (R.undo.length > 100) R.undo.shift();
   }
@@ -606,6 +732,7 @@ const Views = (() => {
   }
 
   function dirty() {
+    rollRevision++;
     R.dirty = true;
     drawRoll();
     updateRollStatus();
@@ -614,10 +741,12 @@ const Views = (() => {
   function updateRollStatus() {
     const t = track();
     if (!t) return;
-    $("#roll-save").disabled = !R.dirty;
+    const saving = rollSaves.has(JSON.stringify([ctx.jobId, R.track]));
+    $("#roll-save").disabled = !R.dirty || Boolean(saving);
+    $("#roll-save").setAttribute("aria-busy", String(Boolean(saving)));
     $("#roll-undo").disabled = !R.undo.length;
     $("#roll-delete").disabled = R.sel == null;
-    let msg = R.dirty ? "저장하지 않은 수정이 있어요" : `${t.notes.length}개 음표`;
+    let msg = saving ? "음표를 저장하고 있어요" : R.dirty ? "저장하지 않은 수정이 있어요" : `${t.notes.length}개 음표`;
     if (R.sel != null && t.notes[R.sel]) {
       const n = t.notes[R.sel];
       const label = t.kind === "drums" ? (ctx.view.drum_kit[String(n[2])] || {}).name_ko : NOTE[n[2] % 12] + (Math.floor(n[2] / 12) - 1);
@@ -626,18 +755,33 @@ const Views = (() => {
     $("#roll-status").textContent = msg;
   }
 
+  function currentRollSave(session) {
+    return currentView(session) && session.track === R.track && session.rollEpoch === rollEpoch;
+  }
+
   async function saveRoll() {
+    const saveKey = JSON.stringify([ctx.jobId, R.track]);
+    if (!ctx.view || !track() || !R.dirty || rollSaves.has(saveKey)) return;
+    const session = { ...viewContext(), track: R.track, rollEpoch, revision: rollRevision };
+    rollSaves.set(saveKey, session);
+    updateRollStatus();
     try {
-      await ctx.hooks.api(`/api/jobs/${ctx.jobId}/notes/${R.track}`, {
+      await ctx.hooks.api(`/api/jobs/${session.jobId}/notes/${session.track}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notes: notes(), semitones: ctx.view.semitones }),
       });
-      R.dirty = false;
-      R.undo = [];
-      updateRollStatus();
-      ctx.hooks.toast("음표를 저장했어요. 오선 악보·파일은 다시 만들 때 반영돼요.");
+      if (!currentRollSave(session)) return;
+      if (session.revision === rollRevision) {
+        R.dirty = false;
+        R.undo = [];
+        ctx.hooks.toast("음표를 저장했어요. 오선 악보·파일은 다시 만들 때 반영돼요.");
+      } else ctx.hooks.toast("이전 수정은 저장했어요. 새 수정은 다시 저장해 주세요.");
       ctx.hooks.markStale();
-    } catch (err) { ctx.hooks.toast(err.message); }
+    } catch (err) { if (currentRollSave(session)) ctx.hooks.toast(err.message); }
+    finally {
+      if (rollSaves.get(saveKey) === session) rollSaves.delete(saveKey);
+      updateRollStatus();
+    }
   }
 
   let audioCtx = null;
@@ -676,7 +820,20 @@ const Views = (() => {
     if (name === "live") renderLive(true);
   }
 
-  function hasUnsaved() { return R.dirty; }
+  function hasUnsaved() { return R.dirty || Boolean(R.drag?.moved); }
+  function getEditRevision() { return rollRevision; }
+
+  function discardUnsaved() {
+    viewEpoch++;
+    rollEpoch++;
+    lyricSaves.clear();
+    R.dirty = false;
+    R.undo = [];
+    R.sel = null;
+    R.drag = null;
+    closePop(false);
+    updateRollStatus();
+  }
 
   function chordAt(t) {
     if (!ctx.view) return null;
@@ -685,5 +842,5 @@ const Views = (() => {
     return cur;
   }
 
-  return { init, setData, tick, shown, hasUnsaved, chordAt, ctx };
+  return { init, setData, tick, shown, hasUnsaved, getEditRevision, discardUnsaved, chordAt, ctx };
 })();

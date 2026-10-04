@@ -26,10 +26,11 @@ const theme = {
 };
 const ENGINE_KEYS = { q: 'granular', w: 'psola', e: 'synth' };
 const HISTORY_SEC = 6;
+const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-const audio = new ChoirAudio();
+let audio = new ChoirAudio();
 const cam = new HandCamera($('video'));
-const tracker = new GestureTracker();
+let tracker = new GestureTracker();
 let gesture = tracker.state();
 let stats = null;
 let history = [];
@@ -37,6 +38,11 @@ let mode = null; // 'camera' | 'pointer'
 let soundRequest = 0;
 let startupRequest = 0;
 let active = true;
+let starting = false;
+let sessionActive = false;
+let manualRecording = false;
+let selectedOrbId = null;
+let loopSignature = '';
 const pointer = { inside: false, down: false, x: 0.5, y: 0.5, fingers: 2 };
 
 // 오브 모드: 마디 그리드 + 오브 상태. 녹음한 구간의 음 높이로 오브 색을 정한다.
@@ -71,14 +77,16 @@ function status(id, text, state) {
   const el = $(id);
   el.textContent = text;
   el.dataset.state = state;
+  if (starting) $('start-progress').textContent = text;
 }
 
-function markSource(kind) {
+function markSource(kind, filename) {
   $('src-mic').setAttribute('aria-pressed', String(kind === 'mic'));
   $('src-demo').setAttribute('aria-pressed', String(kind === 'demo'));
   $('src-file-label').style.borderColor = kind === 'file' ? 'var(--fg)' : '';
   const label = { mic: '마이크 켜짐', demo: '데모 노래 재생 중', file: '녹음 파일 재생 중' }[kind] || '소리 꺼짐';
   status('st-audio', label, kind ? 'on' : 'off');
+  $('source-name').textContent = kind === 'file' ? filename || '오디오 파일 재생 중' : kind === 'demo' ? '작은 별 · 합성 목소리 데모' : kind === 'mic' ? '실시간 마이크 입력' : '세션을 시작하면 입력을 바꿀 수 있어요.';
 }
 
 function setDry(val) {
@@ -89,14 +97,18 @@ function setDry(val) {
 
 // ───────────── 시작 ─────────────
 
-audio.onStats = (s) => {
-  stats = s;
-  history.push({ t: s.t, midi: s.midi, targets: s.targets });
-  const cut = s.t - HISTORY_SEC;
-  while (history.length && history[0].t < cut) history.shift();
-  pitchLog.push({ t: s.t, midi: s.midi });
-  while (pitchLog.length && pitchLog[0].t < s.t - 30) pitchLog.shift();
-};
+function watchAudio(instance) {
+  instance.onStats = (s) => {
+    if (instance !== audio) return;
+    stats = s;
+    history.push({ t: s.t, midi: s.midi, targets: s.targets });
+    const cut = s.t - HISTORY_SEC;
+    while (history.length && history[0].t < cut) history.shift();
+    pitchLog.push({ t: s.t, midi: s.midi });
+    while (pitchLog.length && pitchLog[0].t < s.t - 30) pitchLog.shift();
+  };
+}
+watchAudio(audio);
 
 async function startSound(kind, file) {
   const request = ++soundRequest;
@@ -122,7 +134,8 @@ async function startSound(kind, file) {
     if (request === soundRequest) controls.forEach((control) => (control.disabled = false));
   }
   if (request !== soundRequest) return false;
-  markSource(kind);
+  notice('');
+  markSource(kind, file?.name);
   setDry(kind === 'mic' ? 0 : 0.85);
   return true;
 }
@@ -168,18 +181,105 @@ function usePointer(message) {
 }
 
 async function start(kind) {
+  if (starting || sessionActive) return;
   const request = ++startupRequest;
-  $('start').hidden = true;
+  starting = true;
+  $('start-intro').hidden = true;
+  $('start-busy').hidden = false;
+  $('session-end').disabled = false;
+  $('start-cancel').focus();
   notice('');
   const soundKind = kind === 'pointer' ? 'demo' : kind;
   let ok = await startSound(soundKind);
   if (request !== startupRequest) return;
   if (!ok && soundKind === 'mic') ok = await startSound('demo');
   if (request !== startupRequest) return;
-  if (!ok) { $('start').hidden = false; return; }
+  if (!ok) {
+    starting = false;
+    $('start-intro').hidden = false;
+    $('start-busy').hidden = true;
+    $('session-end').disabled = true;
+    $('start-pointer').focus();
+    return;
+  }
   if (kind === 'pointer') usePointer();
   else await startCamera(request);
+  if (request !== startupRequest) return;
+  starting = false;
+  sessionActive = true;
+  $('start').hidden = true;
+  renderLoopHud();
+  $('record-toggle').focus();
 }
+
+// Session end and page exit share the same cleanup; a fresh engine lets a canceled
+// permission/worklet request finish without blocking a new session.
+function stopSession({ focus = true } = {}) {
+  startupRequest++;
+  soundRequest++;
+  starting = sessionActive = manualRecording = false;
+  station.clear();
+  station.prev = { pinch: false, fist: false };
+  station.lastNow = null;
+  station.nextId = 1;
+  station.lastPoint = { x: 0.5, y: 0.58 };
+  cam.stop();
+  const oldAudio = audio;
+  oldAudio.onStats = null;
+  void oldAudio.dispose().catch(() => {});
+  audio = new ChoirAudio();
+  audio.setParams({ ...oldAudio.params });
+  watchAudio(audio);
+  tracker = new GestureTracker();
+  gesture = tracker.state();
+  window.airchoir.audio = audio;
+  window.airchoir.tracker = tracker;
+  mode = null;
+  pointer.down = pointer.inside = false;
+  stats = null;
+  history = [];
+  pitchLog.length = 0;
+  selectedOrbId = null;
+  metronomeWanted = false;
+  $('metronome').checked = false;
+  $('start').hidden = false;
+  $('start-intro').hidden = false;
+  $('start-busy').hidden = true;
+  $('video').hidden = true;
+  $('stage').classList.remove('pointer');
+  $('pointer-help').hidden = true;
+  $('session-end').disabled = true;
+  ['src-mic', 'src-demo', 'src-file'].map($).forEach((control) => (control.disabled = true));
+  markSource(null);
+  status('st-cam', '시작 전', 'off');
+  notice('');
+  renderLoopHud();
+  if (focus) $('start-pointer').focus();
+}
+
+function recordAction() {
+  if (!sessionActive || !audio.ready) return;
+  const now = audio.ctx.currentTime;
+  if (station.mode === 'idle') {
+    manualRecording = station.beginRecording(now);
+  } else if (station.mode === 'countin' || station.mode === 'recording') {
+    manualRecording = false;
+    station.finishRecording(now);
+  } else if (station.mode === 'holding') {
+    station.placeHeld();
+  }
+  renderLoopHud();
+}
+
+function cancelRecording() {
+  manualRecording = false;
+  station.cancelRecording();
+  renderLoopHud();
+  $('record-toggle').focus();
+}
+
+station.on('orb', (orb) => { manualRecording = false; selectedOrbId = orb.id; });
+station.on('grab', (orb) => { selectedOrbId = orb.id; });
 
 // ───────────── 마우스 모드 ─────────────
 
@@ -235,9 +335,17 @@ function bindControls() {
   $('start-mic').onclick = () => start('mic');
   $('start-demo').onclick = () => start('demo');
   $('start-pointer').onclick = () => start('pointer');
+  $('start-cancel').onclick = () => stopSession();
+  $('session-end').onclick = () => stopSession();
+  $('record-toggle').onclick = recordAction;
+  $('record-cancel').onclick = cancelRecording;
   $('src-mic').onclick = () => startSound('mic');
   $('src-demo').onclick = () => startSound('demo');
-  $('src-file').onchange = (e) => e.target.files[0] && startSound('file', e.target.files[0]);
+  $('src-file').onchange = (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (file) startSound('file', file);
+  };
   $('dry').oninput = (e) => setDry(+e.target.value);
 
   const key = $('key');
@@ -250,13 +358,48 @@ function bindControls() {
   [70, 80, 90, 100, 110, 120, 130].forEach((b) => bpm.add(new Option(`${b} BPM`, b, b === 90, b === 90)));
   bpm.onchange = () => transport.set(+bpm.value);
   $('metronome').onchange = (e) => (metronomeWanted = e.target.checked);
-  $('clear-orbs').onclick = () => station.clear();
+  $('clear-orbs').onclick = () => { manualRecording = false; station.clear(); selectedOrbId = null; renderLoopHud(); $('record-toggle').focus(); };
+  $('loop-list').onclick = (e) => {
+    const button = e.target.closest('[data-orb-id]');
+    if (!button) return;
+    selectedOrbId = +button.dataset.orbId;
+    renderLoopHud();
+  };
+  $('orb-mute').onclick = () => {
+    const orb = station.orbs.find((o) => o.id === selectedOrbId);
+    if (orb) { orb.muted = !orb.muted; audio.mix(orb); renderLoopHud(); }
+  };
+  $('orb-delete').onclick = () => {
+    const orb = station.orbs.find((o) => o.id === selectedOrbId);
+    if (orb) station.pop(orb, audio.ctx.currentTime);
+    selectedOrbId = station.orbs[0]?.id ?? null;
+    renderLoopHud();
+    ($('loop-list').querySelector('[aria-pressed="true"]') || $('record-toggle')).focus();
+  };
+  $('orb-place').onclick = () => {
+    station.placeHeld();
+    renderLoopHud();
+    ($('loop-list').querySelector('[aria-pressed="true"]') || $('record-toggle')).focus();
+  };
   document.querySelectorAll('[data-engine]').forEach((b) => (b.onclick = () => setEngine(b.dataset.engine)));
 
   window.addEventListener('keydown', (e) => {
-    if (e.target.closest?.('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest?.('input, select, textarea, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const k = e.key.toLowerCase();
-    if (ENGINE_KEYS[k]) setEngine(ENGINE_KEYS[k]);
+    if (k === 'escape') {
+      if (starting) { e.preventDefault(); stopSession(); }
+      else if (['countin', 'recording', 'finishing'].includes(station.mode)) { e.preventDefault(); cancelRecording(); }
+    } else if (k === ' ' && !e.target.closest?.('button, a, summary')) { e.preventDefault(); recordAction(); }
+    else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && e.target.closest?.('#stage, #loop-list')) {
+      const orb = station.orbs.find((o) => o.id === selectedOrbId && o.state === 'placed');
+      if (!orb) return;
+      e.preventDefault();
+      orb.x += e.key === 'ArrowRight' ? 0.025 : e.key === 'ArrowLeft' ? -0.025 : 0;
+      orb.y += e.key === 'ArrowDown' ? 0.025 : e.key === 'ArrowUp' ? -0.025 : 0;
+      station.keepInside(orb);
+      audio.mix(orb);
+    }
+    else if (ENGINE_KEYS[k]) setEngine(ENGINE_KEYS[k]);
     else if (mode === 'pointer' && k >= '0' && k <= '5') pointer.fingers = +k;
   });
 }
@@ -306,10 +449,11 @@ function drawOverlay() {
       y0: Math.min(0.45, (hud.offsetTop + hud.offsetHeight + 10) / H),
       y1: 1 - 52 / H,
     };
-    station.update({ ...gesture, screen }, now);
+    const manual = manualRecording && ['countin', 'recording'].includes(station.mode);
+    station.update(manual ? { ...gesture, present: true, pinch: true, fist: false, screen } : { ...gesture, screen }, now);
     const recording = ['countin', 'recording', 'finishing'].includes(station.mode);
     audio.setMetronome(metronomeWanted || recording, transport);
-    loops = { station, transport, now, pinchAt: screen?.pinchPoint };
+    loops = { station, transport, now, pinchAt: screen?.pinchPoint, selectedId: selectedOrbId, reducedMotion: motionPreference.matches };
   }
   drawStage(og, W, H, { mapper, gesture, stats, theme, loops });
 }
@@ -371,7 +515,7 @@ function renderHud() {
 
   const chips = $('hud-chips');
   let html;
-  if (!gesture.present) html = `<span class="chip idle">${mode ? '손을 보여 주세요' : '시작 전'}</span>`;
+  if (!gesture.present) html = `<span class="chip idle">${mode === 'pointer' ? '무대 위에서 움직여 보세요' : mode ? '손을 보여 주세요' : '시작 전'}</span>`;
   else if (gesture.fist) html = '<span class="chip idle">정지</span>';
   else if (on && stats.targets.length) html = stats.targets.map((m, i) => `<span class="chip v${i}">${midiName(m)}</span>`).join('');
   else html = '<span class="chip idle">노래를 기다리는 중</span>';
@@ -390,31 +534,72 @@ function renderHud() {
   renderLoopHud();
 }
 
-const ORB_STATUS = {
-  countin: '다음 마디부터 녹음해요',
-  recording: '● 녹음 중 · 놓으면 마디 끝에서 완성',
-  finishing: '마디 끝까지 마저 부르세요',
-  holding: '휙 던지면 그 자리에서 반복돼요',
-  drag: '옮기는 중 · 놓으면 내려놓기',
-};
-
 function renderLoopHud() {
-  if (!audio.ready) return;
-  const pos = transport.position(audio.ctx.currentTime);
+  const now = audio.ctx?.currentTime ?? 0;
+  const pos = transport.position(now);
   document.querySelectorAll('#hud-beat i').forEach((el, i) => el.classList.toggle('on', i === pos.beat));
   $('hud-bpm').textContent = `${transport.bpm}`;
-  const text = station.message?.text || ORB_STATUS[station.mode] || '';
+  const mode = station.mode;
+  const stateText = {
+    countin: `카운트인 · ${Math.max(1, Math.ceil(((station.rec?.begin ?? now) - now) / transport.beat))}박 뒤 녹음`,
+    recording: `녹음 중 · ${Math.max(1, Math.ceil((now - (station.rec?.begin ?? now)) / transport.bar))}마디째`,
+    finishing: '현재 마디를 마무리하는 중',
+    holding: '새 오브가 준비됐어요', drag: '선택한 오브를 옮기는 중',
+  };
+  const text = station.message?.text || stateText[mode] || (sessionActive ? station.count ? `${station.count}개 오브 · ${station.orbs.filter((o) => !o.muted && o.state === 'placed').length}개 재생 중` : '첫 루프를 녹음해 보세요' : '시작할 준비가 됐어요');
   const card = $('hud-orb');
-  card.hidden = !text;
   $('hud-orb-text').textContent = text;
-  card.classList.toggle('rec', station.mode === 'recording' || station.mode === 'finishing');
+  card.classList.toggle('rec', mode === 'recording' || mode === 'finishing');
+  const detail = {
+    countin: '다음 마디에 시작 · Esc로 취소',
+    recording: '마치기를 누르면 마디 끝에서 완성',
+    finishing: '계속 불러 주세요 · Esc로 취소',
+    holding: '던지거나 내려놓기로 반복 재생',
+    drag: '좌우는 패닝 · 높이는 음량',
+  };
+  $('record-detail').textContent = !sessionActive ? '데모나 마이크로 세션을 시작하세요.' : detail[mode] || 'Space로 녹음 · 최대 4마디';
+  $('record-toggle').dataset.state = mode;
+  $('record-label').textContent = {countin:'대기 취소',recording:'녹음 마치기',finishing:'마디 마무리 중',holding:'오브 내려놓기',drag:'오브 이동 중'}[mode] || '녹음 시작';
+  $('record-toggle').disabled = !sessionActive || !audio.ready || ['finishing','drag'].includes(mode) || (mode === 'idle' && station.count >= station.maxOrbs);
+  $('record-cancel').hidden = !['recording', 'finishing'].includes(mode);
+  $('stage-empty').hidden = !sessionActive || station.count > 0 || mode !== 'idle' || gesture.present;
   $('orb-count').textContent = `${station.count} / ${station.maxOrbs}`;
   const busy = station.count > 0 || station.mode !== 'idle';
   $('bpm').disabled = busy;
   $('bpm-lock').hidden = !busy;
   $('clear-orbs').disabled = !busy;
+  $('metronome').disabled = !sessionActive;
   const g = station.mode === 'idle' ? null : station.mode === 'drag' ? 'drag' : station.mode === 'holding' ? 'throw' : 'pinch';
   document.querySelectorAll('#orb-guide li[data-o]').forEach((li) => li.classList.toggle('now', li.dataset.o === g));
+  renderLoops();
+}
+
+function renderLoops() {
+  if (!station.orbs.some((o) => o.id === selectedOrbId)) selectedOrbId = station.orbs[0]?.id ?? null;
+  const signature = station.orbs.map((o) => `${o.id}:${o.state}:${o.ready}:${o.muted}:${o.bars}`).join('|');
+  if (signature !== loopSignature) {
+    const focused = document.activeElement?.dataset.orbId;
+    const list = $('loop-list');
+    list.replaceChildren(...station.orbs.map((orb) => {
+      const button = document.createElement('button');
+      button.className = 'loop-card'; button.dataset.orbId = orb.id; button.dataset.muted = orb.muted;
+      button.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight ArrowUp ArrowDown');
+      const state = !orb.ready ? '녹음 가져오는 중' : orb.muted ? '음소거' : orb.state === 'held' ? '손에 들고 있음' : orb.state === 'flying' ? '날아가는 중' : '반복 재생';
+      button.innerHTML = `<span class="orb-icon" aria-hidden="true"></span><span><strong>오브 ${orb.id} · ${orb.bars}마디</strong><small>${state}</small></span>`;
+      return button;
+    }));
+    if (focused) list.querySelector(`[data-orb-id="${focused}"]`)?.focus({ preventScroll: true });
+    loopSignature = signature;
+  }
+  $('loop-empty').hidden = station.count > 0;
+  $('loop-actions').hidden = station.count === 0;
+  for (const button of $('loop-list').children) button.setAttribute('aria-pressed', String(+button.dataset.orbId === selectedOrbId));
+  const selected = station.orbs.find((o) => o.id === selectedOrbId);
+  if (!selected) return;
+  $('selected-orb-name').textContent = `오브 ${selected.id} 선택됨 · 방향키로 이동`;
+  $('orb-mute').textContent = selected.muted ? '음소거 해제' : '음소거';
+  $('orb-mute').setAttribute('aria-pressed', String(selected.muted));
+  $('orb-place').hidden = station.held !== selected;
 }
 
 let lastHud = 0;
@@ -436,31 +621,16 @@ function frame(now) {
 
 window.addEventListener('pagehide', () => {
   active = false;
-  startupRequest++;
-  soundRequest++;
   cancelAnimationFrame(frameId);
-  station.clear();
-  cam.stop();
-  void audio.dispose().catch(() => {});
-  mode = null;
-  pointer.down = pointer.inside = false;
-  stats = null;
-  history = [];
-  pitchLog.length = 0;
+  stopSession({ focus: false });
 });
 window.addEventListener('pageshow', () => {
   if (active) return;
   active = true;
-  $('start').hidden = false;
-  $('video').hidden = true;
-  $('stage').classList.remove('pointer');
-  $('pointer-help').hidden = true;
-  ['src-mic', 'src-demo', 'src-file'].map($).forEach((control) => (control.disabled = false));
-  markSource(null);
-  status('st-cam', '카메라 꺼짐', 'off');
   frameId = requestAnimationFrame(frame);
 });
 
 bindControls();
 bindPointer();
+renderLoopHud();
 frameId = requestAnimationFrame(frame);

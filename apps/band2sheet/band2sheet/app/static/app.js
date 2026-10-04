@@ -16,8 +16,14 @@ const state = {
   jobEpoch: 0,
   jobRequest: 0,
   viewRequest: 0,
+  scoreRequest: 0,
+  sheetRequest: 0,
+  refreshing: null,
+  renderQueues: new Map(),
+  sheetLoading: null,
   jobsRequest: 0,
   analysisJobs: new Set(),
+  deletingJobs: new Set(),
   startingJob: false,
   job: null,
   result: null,
@@ -55,7 +61,19 @@ function isCurrentJob(context) {
   return context.id === state.jobId && context.epoch === state.jobEpoch;
 }
 
+function canLeaveJob() {
+  return !Views.hasUnsaved() || confirm("저장하지 않은 악보 수정이 있어요. 수정을 버리고 계속할까요?");
+}
+
+async function newJob() {
+  if (!canLeaveJob()) return false;
+  selectJob(null);
+  await loadJobs();
+  return true;
+}
+
 function selectJob(id) {
+  Views.discardUnsaved();
   stopAudio();
   clearTimeout(state.pollTimer);
   state.pollTimer = null;
@@ -64,17 +82,41 @@ function selectJob(id) {
   state.job = null;
   state.result = null;
   state.tab = "full_score";
+  state.osmd = null;
+  $("#sheet").replaceChildren();
+  state.refreshing = null;
+  state.sheetLoading = null;
+  $("#sheet-loading").classList.add("hidden");
+  updateScoreButtons();
   updateAnalysisButtons();
+  updateDeleteButtons();
   $("#player").classList.add("hidden");
   show(id ? "progress" : "new");
   if (id) {
+    $("#p-heading").textContent = "작업 불러오는 중";
     $("#p-title").textContent = "작업 불러오는 중…";
-    $("#p-bar").style.width = "0%";
-    $("#p-stage").textContent = "";
+    updateProgress(0, "작업 상태를 확인하고 있습니다.");
     $("#p-log").textContent = "";
     $("#p-error").textContent = "";
     $("#p-retry").classList.add("hidden");
+    $("#p-refresh").classList.add("hidden");
   }
+}
+
+function updateProgress(progress, stage) {
+  const value = Math.max(0, Math.min(100, Math.round((Number(progress) || 0) * 100)));
+  const bar = $("#p-bar");
+  bar.style.width = `${value}%`;
+  bar.setAttribute("role", "progressbar");
+  bar.setAttribute("aria-label", "악보 분석 진행률");
+  bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", "100");
+  bar.setAttribute("aria-valuenow", String(value));
+  bar.setAttribute("aria-valuetext", `${value}% · ${stage}`);
+  $("#p-stage").textContent = stage;
+  $("#p-stage").setAttribute("role", "status");
+  $("#p-stage").setAttribute("aria-live", "polite");
+  $("#p-error").setAttribute("role", "alert");
 }
 
 function fmtTime(s) {
@@ -156,10 +198,16 @@ function initNewView() {
     drop.classList.remove("over");
     if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
   });
-  $$("#quality button").forEach((b) => b.addEventListener("click", () => {
-    $$("#quality button").forEach((x) => x.classList.toggle("on", x === b));
-    state.quality = b.dataset.v;
-  }));
+  $$("#quality button").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b.dataset.v === state.quality));
+    b.addEventListener("click", () => {
+      $$("#quality button").forEach((x) => {
+        x.classList.toggle("on", x === b);
+        x.setAttribute("aria-pressed", String(x === b));
+      });
+      state.quality = b.dataset.v;
+    });
+  });
   $("#url").addEventListener("input", updateStartButton);
   $("#url").addEventListener("keydown", (e) => { if (e.key === "Enter" && urlValue()) startJob(); });
   $("#fetch-only").addEventListener("change", updateStartButton);
@@ -269,11 +317,43 @@ function showSource() {
 function updateAnalysisButtons() {
   const pending = state.analysisJobs.has(state.jobId);
   const canAnalyze = state.job && state.job.id === state.jobId && ["ready", "error"].includes(state.job.status);
-  for (const [selector, label] of [["#s-analyze", "악보 만들기 시작"], ["#p-retry", "다시 시도"]]) {
+  for (const [selector, label] of [["#s-analyze", "악보 만들기 시작"], ["#p-retry", "분석 다시 시도"]]) {
     const button = $(selector);
     button.disabled = pending || !canAnalyze;
     button.textContent = pending ? "시작하는 중…" : label;
     button.setAttribute("aria-busy", String(pending));
+  }
+}
+
+function updateDeleteButtons() {
+  const pending = state.deletingJobs.has(state.jobId);
+  for (const selector of ["#s-delete", "#r-delete"]) {
+    $(selector).disabled = pending;
+    $(selector).setAttribute("aria-busy", String(pending));
+  }
+}
+
+async function deleteJob(message, errorEl) {
+  const context = jobContext();
+  if (!context.id || state.deletingJobs.has(context.id) || !canLeaveJob() || !confirm(message)) return false;
+  state.deletingJobs.add(context.id);
+  updateDeleteButtons();
+  if (errorEl) errorEl.textContent = "";
+  try {
+    await api(`/api/jobs/${context.id}`, { method: "DELETE" });
+    if (isCurrentJob(context)) selectJob(null);
+    if (state.sourceJob === context.id) state.sourceJob = null;
+    await loadJobs();
+    return true;
+  } catch (e) {
+    if (isCurrentJob(context)) {
+      if (errorEl) errorEl.textContent = e.message;
+      else toast(e.message);
+    }
+    return false;
+  } finally {
+    state.deletingJobs.delete(context.id);
+    updateDeleteButtons();
   }
 }
 
@@ -319,28 +399,42 @@ function initSourceView() {
     duration: Number($("#s-duration").value) || null,
   }, $("#s-error")));
   $("#p-retry").addEventListener("click", () => startAnalysis({}, $("#p-error")));
-  $("#s-delete").addEventListener("click", async () => {
-    if (!confirm("받은 파일을 지울까요?")) return;
-    const context = jobContext();
-    await api(`/api/jobs/${context.id}`, { method: "DELETE" });
-    if (isCurrentJob(context)) selectJob(null);
-    state.sourceJob = null;
-    await loadJobs();
-  });
+  $("#p-refresh").addEventListener("click", refreshJob);
+  $("#p-new").addEventListener("click", newJob);
+  $("#s-delete").addEventListener("click", () => deleteJob("받은 파일을 지울까요?", $("#s-error")));
 }
 
 // ------------------------------------------------------------------ 작업 목록
 async function loadJobs() {
   const request = ++state.jobsRequest;
+  const ul = $("#job-list");
+  const retry = $("#jobs-retry");
+  ul.setAttribute("aria-busy", "true");
+  retry.disabled = true;
+  retry.textContent = "목록 확인하는 중…";
   let jobs;
   try {
     jobs = await api("/api/jobs");
   } catch (e) {
-    if (request === state.jobsRequest) toast(`작업 목록을 불러오지 못했습니다: ${e.message}`);
+    if (request === state.jobsRequest) {
+      $("#jobs-error").textContent = `작업 목록을 불러오지 못했습니다: ${e.message}`;
+      $("#jobs-error").classList.remove("hidden");
+      retry.classList.remove("hidden");
+      $("#job-empty").classList.add("hidden");
+    }
     return [];
+  } finally {
+    if (request === state.jobsRequest) {
+      ul.setAttribute("aria-busy", "false");
+      retry.disabled = false;
+      retry.textContent = "목록 다시 확인";
+    }
   }
   if (request !== state.jobsRequest) return jobs;
-  const ul = $("#job-list");
+  $("#jobs-error").textContent = "";
+  $("#jobs-error").classList.add("hidden");
+  retry.classList.add("hidden");
+  const focusedJob = document.activeElement && document.activeElement.dataset.jobId;
   ul.innerHTML = "";
   $("#job-empty").classList.toggle("hidden", jobs.length > 0);
   for (const j of jobs) {
@@ -349,15 +443,29 @@ async function loadJobs() {
     const st = j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
       j.status === "ready" ? "영상·음성 준비됨 · 악보 만들기 전" :
       j.status === "queued" ? "대기 중" : `${Math.round(j.progress * 100)}% · ${j.stage}`;
-    li.innerHTML = `<span class="t"></span><span class="s ${j.status}">${st}</span>`;
-    li.querySelector(".t").textContent = j.title;
-    li.addEventListener("click", () => openJob(j.id));
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "job-button";
+    button.dataset.jobId = j.id;
+    if (j.id === state.jobId) button.setAttribute("aria-current", "true");
+    const title = document.createElement("span");
+    title.className = "t";
+    title.textContent = j.title;
+    const status = document.createElement("span");
+    status.className = `s ${j.status}`;
+    status.textContent = st;
+    button.append(title, status);
+    button.addEventListener("click", () => openJob(j.id));
+    li.appendChild(button);
     ul.appendChild(li);
+    if (focusedJob === j.id) button.focus({ preventScroll: true });
   }
   return jobs;
 }
 
 async function openJob(id) {
+  if (id === state.jobId && state.job) return true;
+  if (!canLeaveJob()) return false;
   selectJob(id);
   const context = jobContext();
   await loadJobs();
@@ -369,6 +477,10 @@ async function refreshJob() {
   if (!context.id) return;
   const request = ++state.jobRequest;
   const current = () => isCurrentJob(context) && request === state.jobRequest;
+  const retry = $("#p-refresh");
+  retry.disabled = true;
+  retry.setAttribute("aria-busy", "true");
+  retry.textContent = "다시 확인하는 중…";
   clearTimeout(state.pollTimer);
   state.pollTimer = null;
   let job;
@@ -379,17 +491,26 @@ async function refreshJob() {
     if (!state.job || ["queued", "running"].includes(state.job.status)) {
       show("progress");
       $("#player").classList.add("hidden");
-      if (state.job) $("#p-title").textContent = state.job.title;
-      $("#p-stage").textContent = "작업 상태를 불러오지 못했습니다.";
+      $("#p-heading").textContent = "작업을 확인하지 못했습니다";
+      $("#p-title").textContent = state.job ? state.job.title : "선택한 작업";
+      updateProgress(state.job ? state.job.progress : 0, "연결을 확인한 뒤 작업 상태를 다시 불러오세요.");
       $("#p-error").textContent = e.message;
       $("#p-retry").classList.add("hidden");
+      retry.classList.remove("hidden");
       if (state.job) state.pollTimer = setTimeout(() => { if (current()) refreshJob(); }, 2500);
     } else {
       toast(e.message);
     }
     return;
+  } finally {
+    if (current()) {
+      retry.disabled = false;
+      retry.setAttribute("aria-busy", "false");
+      retry.textContent = "상태 다시 확인";
+    }
   }
   if (!current()) return;
+  retry.classList.add("hidden");
   state.job = job;
   updateAnalysisButtons();
   if (job.status === "done") {
@@ -405,8 +526,9 @@ async function refreshJob() {
   show("progress");
   $("#player").classList.add("hidden");
   $("#p-title").textContent = job.title;
-  $("#p-bar").style.width = `${Math.round(job.progress * 100)}%`;
-  $("#p-stage").textContent = job.status === "queued" ? "다른 작업이 끝나기를 기다리는 중…" : job.stage;
+  $("#p-heading").textContent = job.status === "error" ? "분석을 완료하지 못했습니다" : job.status === "queued" ? "분석 대기 중" : "악보 분석 중";
+  updateProgress(job.progress, job.status === "error" ? "오류를 확인한 뒤 분석을 다시 시도하거나 다른 파일로 시작하세요." :
+    job.status === "queued" ? "다른 작업이 끝나기를 기다리는 중…" : job.stage);
   $("#p-log").textContent = job.log.join("\n");
   $("#p-log").scrollTop = 1e9;
   $("#p-error").textContent = job.error || "";
@@ -428,6 +550,7 @@ async function showResult() {
   show("result");
   $("#player").classList.remove("hidden");
   $("#r-title").textContent = job.title;
+  $("#r-title").title = job.title;
   buildMixer();
   renderActivity();
   renderFiles();
@@ -436,9 +559,10 @@ async function showResult() {
   if (loaded && isCurrentJob(context)) switchView(state.pane || "chart");
 }
 
-async function loadView(params) {
+async function loadView(params, { discardUnsaved = false } = {}) {
   const context = jobContext();
   if (!state.job || state.job.id !== context.id) return false;
+  const editRevision = discardUnsaved ? Views.getEditRevision() : null;
   const request = ++state.viewRequest;
   const current = () => isCurrentJob(context) && request === state.viewRequest;
   const q = new URLSearchParams();
@@ -448,8 +572,15 @@ async function loadView(params) {
   try {
     const v = await api(`/api/jobs/${context.id}/view?${q}`);
     if (!current()) return false;
+    if (discardUnsaved && Views.getEditRevision() !== editRevision) {
+      renderHeader();
+      $("#t-info").textContent = "기다리는 동안 수정한 내용이 있어 조옮김을 적용하지 않았습니다. 다시 조옮김해 주세요.";
+      return false;
+    }
+    if (discardUnsaved) Views.discardUnsaved();
     state.view = v;
     state.viewJob = context.id;
+    updateScoreButtons();
     renderHeader();
     renderStructure();
     Views.setData(v, context.id);
@@ -457,7 +588,10 @@ async function loadView(params) {
     if (state.pane === "score" && scoreStale()) refreshScore();
     return true;
   } catch (e) {
-    if (current()) $("#t-info").textContent = e.message;
+    if (current()) {
+      if (discardUnsaved && state.view) renderHeader();
+      $("#t-info").textContent = e.message;
+    }
     return false;
   }
 }
@@ -504,32 +638,75 @@ function markStale() {
 }
 
 async function refreshScore() {
-  if (state.refreshing) return;
-  state.refreshing = true;
-  $("#sheet-loading").classList.remove("hidden");
-  $("#sheet-loading").textContent = "오선 악보·파일 만드는 중…";
+  const context = jobContext();
+  const view = state.view;
+  if (!state.job || state.job.id !== context.id || !view) return;
+  if (state.refreshing && isCurrentJob(state.refreshing.context) && state.refreshing.view === view) return;
+  const token = { context, view, request: ++state.scoreRequest };
+  const current = () => isCurrentJob(context) && state.view === view && token.request === state.scoreRequest;
+  state.refreshing = token;
+  updateScoreButtons();
+  beginSheetLoading(token, "오선 악보·파일 만드는 중…");
+  // Rendering writes output files and the server's saved result. Serialize each
+  // job's writes, skipping superseded queued views while other jobs remain usable.
+  const previous = state.renderQueues.get(context.id);
+  let release;
+  const turn = new Promise((resolve) => { release = resolve; });
+  state.renderQueues.set(context.id, turn);
   try {
-    state.result = await api(`/api/jobs/${state.job.id}/render`, {
+    if (previous) await previous;
+    if (!current()) return;
+    const result = await api(`/api/jobs/${context.id}/render`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ semitones: state.view.semitones }),
+      body: JSON.stringify({ semitones: view.semitones }),
     });
+    if (!current()) return;
+    state.result = result;
     renderFiles();
     updateStale();
     renderActivity();
     if (state.pane === "score") renderScorePane();
     loadJobs();
   } catch (e) {
-    toast(e.message);
+    if (current()) toast(e.message);
   } finally {
-    state.refreshing = false;
-    $("#sheet-loading").textContent = "악보 그리는 중…";
-    $("#sheet-loading").classList.add("hidden");
+    release();
+    if (state.renderQueues.get(context.id) === turn) state.renderQueues.delete(context.id);
+    if (state.refreshing === token) {
+      state.refreshing = null;
+      updateScoreButtons();
+    }
+    endSheetLoading(token);
   }
+}
+
+function updateScoreButtons() {
+  const pending = !!state.refreshing && isCurrentJob(state.refreshing.context) && state.refreshing.view === state.view;
+  for (const selector of ["#score-refresh", "#files-refresh"]) {
+    $(selector).disabled = pending;
+    $(selector).setAttribute("aria-busy", String(pending));
+  }
+}
+
+function beginSheetLoading(token, label) {
+  state.sheetLoading = token;
+  $("#sheet-loading").textContent = label;
+  $("#sheet-loading").classList.remove("hidden");
+}
+
+function endSheetLoading(token) {
+  if (state.sheetLoading !== token) return;
+  state.sheetLoading = null;
+  $("#sheet-loading").textContent = "악보 그리는 중…";
+  $("#sheet-loading").classList.add("hidden");
 }
 
 function switchView(name) {
   state.pane = name;
-  $$("#viewtabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === name));
+  $$("#viewtabs button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.view === name);
+    b.setAttribute("aria-pressed", String(b.dataset.view === name));
+  });
   for (const p of ["chart", "live", "roll", "score"]) $(`#v-${p}`).classList.toggle("hidden", p !== name);
   if (name === "score") {
     if (scoreStale()) refreshScore();
@@ -554,9 +731,11 @@ function renderScorePane() {
   if (!items.find((i) => i.id === state.tab)) state.tab = "full_score";
   for (const it of items) {
     const b = document.createElement("button");
+    b.type = "button";
     b.innerHTML = `<span></span>${it.badge ? ` <span class="badge">${it.badge}</span>` : ""}`;
     b.firstChild.textContent = it.label;
     b.classList.toggle("on", it.id === state.tab);
+    b.setAttribute("aria-pressed", String(it.id === state.tab));
     b.addEventListener("click", () => { state.tab = it.id; renderScorePane(); });
     tabs.appendChild(b);
   }
@@ -617,46 +796,57 @@ function showPartInfo() {
 }
 
 async function loadSheet() {
+  const context = jobContext();
   const r = state.result;
-  const file = `${state.tab}.musicxml`;
-  $("#sheet-loading").classList.remove("hidden");
+  const part = state.tab;
+  if (!r || !state.job || state.job.id !== context.id) return;
+  const token = { request: ++state.sheetRequest };
+  const current = () => isCurrentJob(context) && state.result === r && state.tab === part && token.request === state.sheetRequest;
+  beginSheetLoading(token, "악보 그리는 중…");
   try {
-    const xml = await api(`/api/jobs/${state.job.id}/files/${r.sheet_dir}/${file}`);
-    if (!state.osmd) {
-      state.osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("sheet", {
-        autoResize: false, backend: "svg", drawTitle: true, drawSubtitle: true, drawComposer: false,
-        drawLyricist: false, drawCredits: false, drawingParameters: "default", followCursor: true,
-        newSystemFromXML: true, // 악보 파일에 넣은 줄바꿈(구간 시작·4마디) 그대로
-        newPageFromXML: false,
-        autoGenerateMultipleRestMeasuresFromRestMeasures: true, // 쉬는 마디는 여러 마디 쉼표로
-        drawPartAbbreviations: true, stretchLastSystemLine: false,
-      });
-      const R = state.osmd.EngravingRules;
-      R.ChordSymbolTextHeight = 2.3; // 코드 이름 크게
-      R.RehearsalMarkFontSize = 11;
-      // 템포 표시와 첫 구간 상자가 겹치지 않게: 템포는 위로, 줄 첫 마디의 구간 상자는 오른쪽으로
-      R.MetronomeMarkYShift = -4.5;
-      R.RehearsalMarkXOffsetSystemStartMeasure = 0;
-      R.LyricsHeight = 2.2;
-      R.SheetSubtitleHeight = 1.8;
-      R.MinimumDistanceBetweenSystems = 6;
-      R.VoiceSpacingMultiplierVexflow = 0.75; // 조금 촘촘하게 (기본 0.85 / 3)
-      R.VoiceSpacingAddendVexflow = 2.5;
-    }
-    await state.osmd.load(xml);
+    const xml = await api(`/api/jobs/${context.id}/files/${r.sheet_dir}/${part}.musicxml`);
+    if (!current()) return;
+    // OSMD.load mutates its instance asynchronously. Keep it detached until this
+    // exact job visit, output revision, and selected part are still current.
+    const container = document.createElement("div");
+    const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
+      autoResize: false, backend: "svg", drawTitle: false, drawSubtitle: false, drawComposer: false,
+      drawLyricist: false, drawCredits: false, drawingParameters: "default", followCursor: true,
+      newSystemFromXML: true, // 악보 파일에 넣은 줄바꿈(구간 시작·4마디) 그대로
+      newPageFromXML: false,
+      autoGenerateMultipleRestMeasuresFromRestMeasures: true, // 쉬는 마디는 여러 마디 쉼표로
+      drawPartAbbreviations: true, stretchLastSystemLine: false,
+    });
+    const R = osmd.EngravingRules;
+    R.ChordSymbolTextHeight = 2.3; // 코드 이름 크게
+    R.RehearsalMarkFontSize = 11;
+    // 템포 표시와 첫 구간 상자가 겹치지 않게: 템포는 위로, 줄 첫 마디의 구간 상자는 오른쪽으로
+    R.MetronomeMarkYShift = -4.5;
+    R.RehearsalMarkXOffsetSystemStartMeasure = 0;
+    R.LyricsHeight = 2.2;
+    R.SheetSubtitleHeight = 1.8;
+    R.MinimumDistanceBetweenSystems = 6;
+    R.VoiceSpacingMultiplierVexflow = 0.75; // 조금 촘촘하게 (기본 0.85 / 3)
+    R.VoiceSpacingAddendVexflow = 2.5;
+    await osmd.load(xml);
+    if (!current()) return;
+    $("#sheet").replaceChildren(container);
+    state.osmd = osmd;
     drawSheet();
     state.lastMeasure = -1;
   } catch (e) {
-    $("#sheet").textContent = `악보를 불러오지 못했습니다: ${e.message}`;
-    state.osmd = null;
+    if (current()) {
+      $("#sheet").textContent = `악보를 불러오지 못했습니다: ${e.message}`;
+      state.osmd = null;
+    }
   } finally {
-    $("#sheet-loading").classList.add("hidden");
+    endSheetLoading(token);
   }
 }
 
 async function transpose(body) {
-  if (Views.hasUnsaved() && !confirm("악기별 보기에서 저장하지 않은 수정이 있어요. 버릴까요?")) return;
-  await loadView(body);
+  if (!canLeaveJob()) { renderHeader(); return; }
+  await loadView(body, { discardUnsaved: true });
   loadJobs();
 }
 
@@ -670,13 +860,7 @@ function initResultView() {
   $$("#viewtabs button").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   $("#score-refresh").addEventListener("click", refreshScore);
   $("#files-refresh").addEventListener("click", refreshScore);
-  $("#r-delete").addEventListener("click", async () => {
-    if (!confirm("이 작업과 만든 악보를 모두 지울까요?")) return;
-    const context = jobContext();
-    await api(`/api/jobs/${context.id}`, { method: "DELETE" });
-    if (isCurrentJob(context)) selectJob(null);
-    await loadJobs();
-  });
+  $("#r-delete").addEventListener("click", () => deleteJob("이 작업과 만든 악보를 모두 지울까요?"));
   $("#m-play").addEventListener("click", togglePlay);
   $("#m-seek").addEventListener("input", (e) => {
     const a = masterAudio();
@@ -828,7 +1012,7 @@ function stopAudio() {
   state.audios = {};
   state.mute.clear();
   state.solo.clear();
-  $("#m-play").textContent = "▶ 재생";
+  $("#m-play").textContent = "재생";
 }
 
 function masterAudio() {
@@ -852,15 +1036,30 @@ function buildMixer() {
     row.className = "mix-row";
     row.innerHTML = `<span></span><button class="m" title="음소거">M</button><button class="s" title="이 악기만">S</button><input type="range" min="0" max="100" value="${name === "mix" ? 0 : 90}">`;
     row.firstChild.textContent = STEM_LABELS[name] || name;
-    row.querySelector(".m").addEventListener("click", (e) => { toggleSet(state.mute, name); e.target.classList.toggle("on-m", state.mute.has(name)); applyMix(); });
-    row.querySelector(".s").addEventListener("click", (e) => { toggleSet(state.solo, name); e.target.classList.toggle("on-s", state.solo.has(name)); applyMix(); });
+    row.querySelector(".m").setAttribute("aria-label", `${STEM_LABELS[name] || name} 음소거`);
+    row.querySelector(".m").setAttribute("aria-pressed", "false");
+    row.querySelector(".s").setAttribute("aria-label", `${STEM_LABELS[name] || name}만 재생`);
+    row.querySelector(".s").setAttribute("aria-pressed", "false");
+    row.querySelector(".m").addEventListener("click", (e) => {
+      toggleSet(state.mute, name);
+      e.currentTarget.classList.toggle("on-m", state.mute.has(name));
+      e.currentTarget.setAttribute("aria-pressed", String(state.mute.has(name)));
+      applyMix();
+    });
+    row.querySelector(".s").addEventListener("click", (e) => {
+      toggleSet(state.solo, name);
+      e.currentTarget.classList.toggle("on-s", state.solo.has(name));
+      e.currentTarget.setAttribute("aria-pressed", String(state.solo.has(name)));
+      applyMix();
+    });
+    row.querySelector("input").setAttribute("aria-label", `${STEM_LABELS[name] || name} 음량`);
     row.querySelector("input").addEventListener("input", applyMix);
     row.dataset.name = name;
     box.appendChild(row);
   }
   const master = masterAudio();
   master.addEventListener("timeupdate", onTime);
-  master.addEventListener("ended", () => { $("#m-play").textContent = "▶ 재생"; });
+  master.addEventListener("ended", () => { $("#m-play").textContent = "재생"; });
   applyMix();
 }
 
@@ -884,10 +1083,10 @@ function togglePlay() {
   if (master.paused) {
     const t = master.currentTime;
     for (const a of all) { a.currentTime = t; a.play().catch(() => {}); }
-    $("#m-play").textContent = "⏸ 일시정지";
+    $("#m-play").textContent = "일시정지";
   } else {
     for (const a of all) a.pause();
-    $("#m-play").textContent = "▶ 재생";
+    $("#m-play").textContent = "재생";
   }
 }
 
@@ -943,10 +1142,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   initNewView();
   initSourceView();
   initResultView();
-  $("#btn-new").addEventListener("click", () => {
-    selectJob(null);
-    loadJobs();
-  });
+  $("#btn-new").addEventListener("click", newJob);
+  $("#jobs-retry").addEventListener("click", loadJobs);
   $("#btn-engines").addEventListener("click", () => $("#engines-dialog").showModal());
   try {
     await loadInfo();
