@@ -10,6 +10,8 @@
   <link href="src/style.css" rel="stylesheet"/>
  </head>
  <body>
+  <section aria-label="집중 연주 조작" class="focus-toolbar" hidden="" id="focus-toolbar">
+  </section>
   <div class="wrap">
    <header class="app-header">
     <div class="brand">
@@ -26,6 +28,9 @@
      </div>
     </div>
     <div class="header-actions">
+     <button class="quiet" disabled="" id="focus-enter" type="button">
+      집중 연주
+     </button>
      <div aria-live="polite" class="status">
       <span class="st" data-state="off" id="st-audio">
        소리 꺼짐
@@ -41,6 +46,8 @@
    </header>
    <div aria-live="polite" class="notice" hidden="" id="notice" role="status">
    </div>
+   <section aria-label="영상 녹화 상태" class="focus-recording-indicator" hidden="" id="focus-recording-indicator">
+   </section>
    <main class="main">
     <section aria-label="연주 모드" class="performance-controls" id="performance-controls">
     </section>
@@ -456,7 +463,7 @@
         <kbd>
          Esc
         </kbd>
-        현재 녹음 취소
+        모든 소리 정지
         <br/>
         오브 선택 후 방향키로 위치를 옮기거나 음소거·삭제 버튼을 쓰세요. 폼 입력 중에는 단축키가 동작하지 않습니다.
        </p>
@@ -464,6 +471,8 @@
      </div>
     </details>
    </main>
+   <details class="focus-recording-result" hidden="" id="focus-recording-result">
+   </details>
    <footer class="footer">
     <span>
      녹음에는 현재 악기만 · 기존 루프와 클릭 소리는 제외

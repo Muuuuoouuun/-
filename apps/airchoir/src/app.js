@@ -5,6 +5,7 @@ import { ChoirAudio } from './audio.js';
 import { drawStage, coverMapper } from './stage.js';
 import { Transport, OrbStation } from './orbs.js';
 import { Performance } from './performance.js';
+import { FocusSession } from './focus-session.js';
 
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
@@ -45,6 +46,7 @@ let manualRecording = false;
 let selectedOrbId = null;
 let loopSignature = '';
 let performer;
+let focusSession;
 const pointer = { inside: false, down: false, x: 0.5, y: 0.5, fingers: 2 };
 
 // 오브 모드: 마디 그리드 + 오브 상태. 녹음한 구간의 음 높이로 오브 색을 정한다.
@@ -121,6 +123,7 @@ watchAudio(audio);
 
 async function startSound(kind, file) {
   if (performer?.state.product === 'chord') return false;
+  focusSession?.boundary('mode-change');
   const request = ++soundRequest;
   const controls = ['src-mic', 'src-demo', 'src-file'].map($);
   controls.forEach((control) => (control.disabled = true));
@@ -241,12 +244,14 @@ async function start(kind) {
   performer.sessionStarted();
   updateProductControls();
   renderLoopHud();
-  $('record-toggle').focus();
+  if (mode === 'camera') focusSession.enter();
+  else $('record-toggle').focus();
 }
 
 // Session end and page exit share the same cleanup; a fresh engine lets a canceled
 // permission/worklet request finish without blocking a new session.
 function stopSession({ focus = true } = {}) {
+  focusSession?.sessionEnded();
   performer?.stop('세션 종료 · 다시 시작할 수 있어요.', true);
   startupRequest++;
   soundRequest++;
@@ -289,6 +294,7 @@ function stopSession({ focus = true } = {}) {
   notice('');
   renderLoopHud();
   performer?.render();
+  focusSession?.render();
   if (focus) $('start-pointer').focus();
 }
 
@@ -471,6 +477,14 @@ function toStage(mapper, W, H, p) {
   return { x: x / W, y: y / H };
 }
 
+function displayGesture() {
+  if (performer.legacy) return gesture;
+  const state = performer.state;
+  return { present: state.product === 'choir' && state.armed, fist: !state.armed,
+    preset: state.current.choir ?? 0, fingers: 0, level: .65, brightness: .6,
+    hand: null, pinch: false };
+}
+
 function drawOverlay() {
   const [W, H] = fitCanvas(overlay, og);
   const video = $('video');
@@ -498,7 +512,7 @@ function drawOverlay() {
     audio.setMetronome(metronomeWanted || recording, transport);
     loops = { station, transport, now, pinchAt: screen?.pinchPoint, selectedId: selectedOrbId, reducedMotion: motionPreference.matches };
   }
-  drawStage(og, W, H, { mapper, gesture, stats, theme, loops });
+  drawStage(og, W, H, { mapper, gesture: displayGesture(), stats, theme, loops });
 }
 
 let center = 64;
@@ -551,6 +565,7 @@ function drawTrace() {
 }
 
 function renderHud() {
+  const shown = displayGesture();
   const on = stats && stats.midi != null;
   const note = $('hud-note');
   note.textContent = on ? midiName(stats.midi) : '—';
@@ -558,17 +573,17 @@ function renderHud() {
 
   const chips = $('hud-chips');
   let html;
-  if (!gesture.present) html = `<span class="chip idle">${mode === 'pointer' ? '무대 위에서 움직여 보세요' : mode ? '손을 보여 주세요' : '시작 전'}</span>`;
-  else if (gesture.fist) html = '<span class="chip idle">정지</span>';
+  if (!shown.present) html = `<span class="chip idle">${performer.state.input === 'manual' ? '휠에서 화음을 선택하세요' : mode === 'pointer' ? '무대 위에서 움직여 보세요' : mode ? '손을 보여 주세요' : '시작 전'}</span>`;
+  else if (shown.fist) html = '<span class="chip idle">정지</span>';
   else if (on && stats.targets.length) html = stats.targets.map((m, i) => `<span class="chip v${i}">${midiName(m)}</span>`).join('');
   else html = '<span class="chip idle">노래를 기다리는 중</span>';
   if (chips.innerHTML !== html) chips.innerHTML = html;
 
-  $('hud-preset').textContent = !gesture.present
+  $('hud-preset').textContent = !shown.present
     ? '—'
-    : gesture.fist
+    : shown.fist
       ? '주먹 · 정지'
-      : `${gesture.fingers}개 · ${PRESETS[gesture.preset].name}`;
+      : `${performer.state.input === 'manual' ? '프리셋' : `${shown.fingers}개`} · ${PRESETS[shown.preset].name}`;
 
   const g = !gesture.present ? 'none' : gesture.fist ? 'fist' : String(Math.min(4, gesture.fingers));
   document.querySelectorAll('#guide li[data-g]').forEach((li) => li.classList.toggle('now', li.dataset.g === g));
@@ -658,6 +673,7 @@ function frame(now) {
   // the earlier rAF frame timestamp, which can precede a video observation.
   performer.tick(performance.now(), mode === 'camera');
   drawOverlay();
+  focusSession.tick(performance.now());
   if (now - lastHud > 70) {
     lastHud = now;
     renderHud();
@@ -678,7 +694,8 @@ window.addEventListener('pageshow', () => {
   frameId = requestAnimationFrame(frame);
 });
 
-function pausePerformance() {
+function pausePerformance({ preservePreview = false } = {}) {
+  if (!preservePreview) focusSession?.ui.pausePreview();
   manualRecording = false;
   station.cancelRecording();
   station.prev = { pinch: false, fist: false };
@@ -703,6 +720,7 @@ performer = new Performance({
   hasCamera: () => mode === 'camera',
   notify: text => notice(text),
   onStop: pausePerformance,
+  onInterrupt: reason => focusSession?.boundary(reason),
   onTransition: async (product, field) => {
     if (starting) { stopSession({ focus: false }); return; }
     if (field !== 'product') return;
@@ -715,8 +733,28 @@ performer = new Performance({
 });
 window.airchoir.performance = performer.state;
 window.airchoir.performanceController = performer;
-window.addEventListener('blur', () => performer.stop('창을 벗어나 전체 정지했어요.', true));
-document.addEventListener('visibilitychange', () => { if (document.hidden) performer.stop('화면이 숨겨져 전체 정지했어요.', true); });
+focusSession = new FocusSession({
+  video: $('video'), overlay, stage: $('stage'), getAudio: () => audio,
+  getPerformance: () => ({ ...performer.state, ready: sessionActive && audio.ready }),
+  getWheelGeometry: () => performer.ui.getWheelGeometry(),
+  getTheme: () => theme,
+  isReady: () => sessionActive && audio.ready,
+  isCameraReady: () => mode === 'camera' && cam.running,
+  onStop: () => performer.stop('전체 정지 · 다시 선택하거나 손을 내렸다 올리세요.', true),
+  onPreviewPlay: () => performer.stop('영상 미리보기 중 · 다시 선택하면 연주합니다.', true, { preservePreview: true }),
+  onSettings: () => performer.ui.openSettings(), notify: text => notice(text),
+});
+window.airchoir.focus = focusSession;
+window.addEventListener('blur', () => {
+  focusSession.boundary('blur');
+  performer.stop('창을 벗어나 전체 정지했어요.', true);
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    focusSession.boundary('hidden');
+    performer.stop('화면이 숨겨져 전체 정지했어요.', true);
+  }
+});
 bindControls();
 bindPointer();
 renderLoopHud();

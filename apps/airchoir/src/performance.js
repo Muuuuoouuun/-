@@ -8,9 +8,10 @@ const quietGesture = () => ({ present: false, fist: true, pinch: false, preset: 
 // Product, hand count and input ownership are separate from the media session.
 // Only wheel lists are persisted; live notes, streams and device choices are not.
 export class Performance {
-  constructor({ getAudio, isReady, hasCamera, onTransition, onStop, notify }) {
+  constructor({ getAudio, isReady, hasCamera, onTransition, onStop, onInterrupt, notify }) {
     this.getAudio = getAudio; this.isReady = isReady; this.onTransition = onTransition;
     this.hasCamera = hasCamera;
+    this.onInterrupt = onInterrupt;
     this.onStop = onStop; this.notify = notify;
     let storage;
     try { storage = window.localStorage; } catch { storage = null; }
@@ -28,7 +29,7 @@ export class Performance {
       onSelection: selection => this.select(selection),
       onOff: () => this.stop('OFF · 다시 선택하면 연주합니다.'),
       onStop: () => this.stop('전체 정지 · 다시 선택하거나 손을 내렸다 올리세요.', true),
-      onSettingsOpen: () => this.stop('설정 중 · 연주가 정지됐어요.', true),
+      onSettingsOpen: () => { this.onInterrupt?.('settings'); this.stop('설정 중 · 연주가 정지됐어요.', true); },
       onApply: config => this.apply(config),
       onPointerLeave: () => { if (this.state.input === 'manual') this.stop('휠을 벗어나 연주를 멈췄어요.'); },
     });
@@ -48,7 +49,7 @@ export class Performance {
     document.getElementById('start-demo').textContent = chord ? '카메라로 코드 연주' : '데모 + 카메라로 손동작 체험';
   }
 
-  stop(message = '연주 정지', all = false) {
+  stop(message = '연주 정지', all = false, options = {}) {
     this.blocked = true;
     this.controller.reset();
     this.state.current = emptySelection();
@@ -59,7 +60,7 @@ export class Performance {
     audio.setGesture(quietGesture());
     // Center OFF owns this instrument only. Existing loops keep their transport;
     // global stop separately silences the master and pauses those loops.
-    if (all) { audio.setOutputMuted?.(true); this.onStop(); }
+    if (all) { audio.setOutputMuted?.(true); this.onStop(options); }
     this.render();
   }
 
@@ -81,6 +82,7 @@ export class Performance {
       this.render(); return;
     }
     if (this.state[field] === value) return;
+    this.onInterrupt?.('mode-change');
     this.stop('모드가 바뀌었어요. 다시 선택해 연주하세요.', true);
     this.state[field] = value;
     if (field === 'product') {
@@ -95,6 +97,7 @@ export class Performance {
   apply(input) {
     const result = validateConfig(input);
     if (!result.ok) { this.notify(result.errors.join(' ')); return false; }
+    this.onInterrupt?.('settings');
     this.stop('설정 적용 완료 · 다시 선택해 연주하세요.', true);
     this.state.config = cloneConfig(result.value);
     const saved = saveConfig(this.storage, this.state.config);

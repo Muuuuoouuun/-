@@ -8,6 +8,7 @@
 // 내 목소리는 워클릿을 거치지 않아 추가 지연이 없다.
 // 녹음 버스에는 선택한 제품의 소리만 들어간다: 목소리+화음 또는 독립 코드 신스.
 // 목소리 녹음은 모니터 볼륨과 무관하며, 오브와 메트로놈은 두 녹음 경로에서 모두 빠진다.
+// 영상 녹화용 MediaStream은 마스터 뒤에서 별도로 분기해 실제 출력과 음소거를 그대로 담는다.
 import { renderDemo } from '../core/dsp.js';
 import { Accompaniment } from './accompaniment.js';
 import { orbMix } from './orbs.js';
@@ -36,6 +37,8 @@ export class ChoirAudio {
     this.onStats = null;
     this.product = 'choir';
     this.accompaniment = null;
+    this.recordDestination = null;
+    this.recordingContext = null;
     this.outputMuted = false;
     this.dryLevel = 0;
     this.params = { engine: 'psola', preset: 0, tonic: 0, scale: 'major', lock: true, dryGain: 0, harmGain: 1, windowMs: 40 };
@@ -187,6 +190,29 @@ export class ChoirAudio {
     this.master.gain.cancelScheduledValues(now);
     if (this.outputMuted) this.master.gain.setValueAtTime(0, now);
     else this.master.gain.setTargetAtTime(0.75, now, 0.015);
+  }
+
+  // Session video captures the same post-mix signal as the speaker, including
+  // voice/chords, loops, metronome and master mute. This never requests a device
+  // or resumes/creates a context. The audio session owns these original tracks;
+  // a recorder must clone them and stop only its own clones.
+  getRecordingStream() {
+    const ctx = this.ctx;
+    if (!this.ready || !ctx || ctx.state === 'closed' || !this.master) {
+      throw new Error('오디오 세션을 먼저 시작해 주세요.');
+    }
+    if (this.recordDestination && this.recordingContext === ctx) return this.recordDestination.stream;
+    const destination = ctx.createMediaStreamDestination();
+    try {
+      this.master.connect(destination);
+    } catch (error) {
+      destination.stream.getTracks().forEach((track) => track.stop());
+      destination.disconnect();
+      throw error;
+    }
+    this.recordDestination = destination;
+    this.recordingContext = ctx;
+    return destination.stream;
   }
 
   panic() {
@@ -407,7 +433,11 @@ export class ChoirAudio {
     this.orbNodes.clear();
     this.accompaniment?.dispose();
     this.accompaniment = null;
-    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'recBus', 'voiceRecord', 'accompRecord', 'recorder', 'orbBus', 'click']) {
+    // Do this synchronously, before close() awaits, so a canceled session cannot
+    // leave a live recording source attached while a replacement session starts.
+    this.recordDestination?.stream.getTracks().forEach((track) => track.stop());
+    this.recordingContext = null;
+    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'recordDestination', 'recBus', 'voiceRecord', 'accompRecord', 'recorder', 'orbBus', 'click']) {
       const node = this[key];
       if (node?.port) { node.port.onmessage = null; node.port.close(); }
       node?.disconnect();

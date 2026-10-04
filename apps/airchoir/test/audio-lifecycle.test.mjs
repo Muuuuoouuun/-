@@ -37,6 +37,7 @@ function fakeWebAudio(t, load = async () => {}) {
       this.destination = new Node();
       this.audioWorklet = { addModule: load };
       this.oscillators = [];
+      this.mediaDestinations = [];
     }
     createGain() { return new Node(); }
     createBiquadFilter() { return new Node(); }
@@ -44,6 +45,18 @@ function fakeWebAudio(t, load = async () => {}) {
     createStereoPanner() { return new Node(); }
     createBufferSource() { return new Node(); }
     createMediaStreamSource() { return new Node(); }
+    createMediaStreamDestination() {
+      const track = () => ({
+        kind: 'audio', readyState: 'live', stops: 0,
+        stop() { this.stops++; this.readyState = 'ended'; },
+        clone() { return track(); },
+      });
+      const tracks = [track()];
+      const destination = new Node();
+      destination.stream = { getTracks: () => [...tracks], getAudioTracks: () => [...tracks] };
+      this.mediaDestinations.push(destination);
+      return destination;
+    }
     createOscillator() { const node = new Node(); this.oscillators.push(node); return node; }
     createBuffer(channels, len, sr) {
       const data = Array.from({ length: channels }, () => new Float32Array(len));
@@ -331,6 +344,152 @@ test('dispose closes accompaniment and disconnects both recording taps before th
   assert.equal(audio.voiceRecord, null);
   assert.equal(audio.accompRecord, null);
   assert.ok(ctx.oscillators.every((node) => node.disconnected));
+  await audio.dispose();
+});
+
+test('session recording requires a complete graph and creates its stream only on demand', async (t) => {
+  const load = deferred();
+  const contexts = fakeWebAudio(t, () => load.promise);
+  const audio = new ChoirAudio();
+  assert.throws(() => audio.getRecordingStream(), /먼저 시작/);
+  assert.equal(contexts.length, 0, 'reading a recording stream must not initialize audio');
+  const init = audio.init();
+  assert.throws(() => audio.getRecordingStream(), /먼저 시작/);
+  assert.equal(contexts[0].mediaDestinations.length, 0);
+  load.resolve();
+  await init;
+  assert.equal(contexts[0].mediaDestinations.length, 0, 'ordinary playback does not allocate a recording stream');
+  const stream = audio.getRecordingStream();
+  assert.equal(contexts[0].mediaDestinations.length, 1);
+  assert.equal(stream.getAudioTracks().length, 1);
+  assert.equal(stream.getTracks()[0].readyState, 'live');
+  await audio.dispose();
+});
+
+test('session recording reuses one post-master tap including every output bus and mute', async (t) => {
+  fakeWebAudio(t);
+  const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let requested = 0;
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: {
+    getUserMedia() { requested++; throw new Error('recording must not request input permission'); },
+  } } });
+  t.after(() => Object.defineProperty(globalThis, 'navigator', oldNavigator));
+  const audio = new ChoirAudio();
+  await audio.init();
+  const ctx = audio.ctx;
+  const stream = audio.getRecordingStream();
+  const tap = ctx.mediaDestinations[0];
+  for (let i = 0; i < 5; i++) assert.equal(audio.getRecordingStream(), stream);
+  assert.equal(ctx.mediaDestinations.length, 1);
+  assert.deepEqual(audio.master.connections, [ctx.destination, tap]);
+  for (const bus of [audio.dry, audio.harmGain, audio.reverb, audio.accompaniment.output, audio.orbBus, audio.click]) {
+    assert.ok(bus.connections.includes(audio.master), 'each audible bus flows through the master');
+    assert.ok(!bus.connections.includes(tap), 'no bus can bypass master mute into the recording');
+  }
+  assert.ok(!audio.recBus.connections.includes(tap), 'orb recording remains a separate bus');
+  audio.setOutputMuted(true);
+  assert.equal(audio.master.gain.value, 0);
+  assert.equal(audio.getRecordingStream(), stream);
+  audio.setOutputMuted(false);
+  assert.equal(audio.master.gain.value, 0.75);
+  ctx.state = 'suspended';
+  assert.equal(audio.getRecordingStream(), stream);
+  assert.equal(ctx.state, 'suspended', 'retrieving the stream must not resume audio');
+  assert.equal(requested, 0);
+  await audio.dispose();
+});
+
+test('session recording keeps the same tap across products without owning recorder clones', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  const stream = audio.getRecordingStream();
+  const original = stream.getAudioTracks()[0];
+  const recorderClone = original.clone();
+  recorderClone.stop();
+  assert.equal(original.readyState, 'live', 'a recorder stops only its clone');
+  for (const product of ['chord', 'choir', 'chord']) {
+    audio.setProduct(product);
+    assert.equal(audio.getRecordingStream(), stream);
+    assert.equal(original.stops, 0);
+  }
+  await audio.dispose();
+  assert.equal(original.stops, 1);
+  assert.equal(recorderClone.stops, 1, 'audio disposal must not stop tracks owned by recorders');
+});
+
+test('session disposal stops original recording tracks and disconnects before context close resolves', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  const ctx = audio.ctx, master = audio.master;
+  const stream = audio.getRecordingStream();
+  const original = stream.getTracks()[0], tap = audio.recordDestination;
+  const close = deferred();
+  t.mock.method(ctx, 'close', async () => {
+    assert.equal(original.readyState, 'ended');
+    assert.equal(tap.disconnected, true);
+    assert.equal(master.disconnected, true);
+    await close.promise;
+    ctx.state = 'closed';
+  });
+  const disposal = audio.dispose();
+  assert.equal(audio.recordDestination, null);
+  assert.equal(audio.recordingContext, null);
+  assert.equal(audio.ctx, null);
+  assert.equal(audio.ready, false);
+  assert.throws(() => audio.getRecordingStream(), /먼저 시작/);
+  close.resolve();
+  await disposal;
+  await audio.dispose();
+  assert.equal(original.stops, 1);
+});
+
+test('a new session receives a fresh recording stream even while the old context is closing', async (t) => {
+  const contexts = fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  const oldStream = audio.getRecordingStream();
+  const oldTap = audio.recordDestination;
+  const closing = deferred();
+  t.mock.method(contexts[0], 'close', async () => { await closing.promise; contexts[0].state = 'closed'; });
+  const disposal = audio.dispose();
+  await audio.init();
+  const newStream = audio.getRecordingStream();
+  const newTap = audio.recordDestination;
+  assert.notEqual(newStream, oldStream);
+  assert.notEqual(newTap, oldTap);
+  assert.equal(audio.recordingContext, contexts[1]);
+  assert.deepEqual(audio.master.connections, [contexts[1].destination, newTap]);
+  closing.resolve();
+  await disposal;
+  assert.equal(audio.getRecordingStream(), newStream, 'late old close cannot reset the new session tap');
+  assert.equal(oldStream.getTracks()[0].stops, 1);
+  assert.equal(newStream.getTracks()[0].stops, 0);
+  await audio.dispose();
+});
+
+test('a failed recording tap connection releases its stream and allows a clean retry', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  const connect = audio.master.connect.bind(audio.master);
+  let failed = false;
+  t.mock.method(audio.master, 'connect', target => {
+    if (!failed) { failed = true; throw new Error('connection failed'); }
+    return connect(target);
+  });
+  assert.throws(() => audio.getRecordingStream(), /connection failed/);
+  assert.equal(audio.recordDestination, null);
+  assert.equal(audio.recordingContext, null);
+  assert.equal(audio.ctx.mediaDestinations[0].disconnected, true);
+  assert.equal(audio.ctx.mediaDestinations[0].stream.getTracks()[0].stops, 1);
+  const stream = audio.getRecordingStream();
+  assert.equal(audio.ctx.mediaDestinations.length, 2);
+  assert.equal(stream.getTracks()[0].readyState, 'live');
+  assert.equal(audio.master.connections.length, 2);
+  audio.ctx.state = 'closed';
+  assert.throws(() => audio.getRecordingStream(), /먼저 시작/);
   await audio.dispose();
 });
 
