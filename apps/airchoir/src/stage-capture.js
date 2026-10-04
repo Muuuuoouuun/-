@@ -6,6 +6,11 @@ const BASE_THEME = {
   colors: { label: '#f2f1e9', muted: '#abb2ab', voice: '#f3dfb4', line: '#383e39' },
   fonts: { body: '"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif', data: 'ui-monospace,monospace' },
 };
+const WHEEL_COLORS = {
+  backdrop: '#17231b', sector: '#26372d', line: '#819484', selected: '#566947',
+  sounding: '#697b43', 'selected-line': '#ffe4ae', label: '#fff8e5',
+  'selected-label': '#192117', 'label-chip': '#f3dfb4', center: '#17231b',
+};
 
 export function recordingSize(width, height) {
   if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) {
@@ -79,12 +84,40 @@ function roundedBox(g, x, y, width, height, radius) {
   else g.rect(x, y, width, height);
 }
 
-function text(g, value, x, y, width, size, color, font, align = 'left') {
+function text(g, value, x, y, width, size, color, font, align = 'left', weight = '400') {
   g.fillStyle = color;
-  g.font = `${size}px ${font}`;
+  g.font = `${weight} ${size}px ${font}`;
   g.textAlign = align;
   g.textBaseline = 'middle';
   g.fillText(value, x, y, Math.max(1, width));
+}
+
+// Match overflow-wrap:anywhere without canvas fillText's horizontal compression.
+function labelLines(g, value, width) {
+  const lines = [];
+  let line = '';
+  for (const word of value.split(/\s+/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (g.measureText(candidate).width <= width) { line = candidate; continue; }
+    if (line) { lines.push(line); line = ''; }
+    for (const character of word) {
+      if (line && g.measureText(line + character).width > width) { lines.push(line); line = ''; }
+      line += character;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+const pixels = (value, fallback) => Number.parseFloat(value) || fallback;
+
+function wheelLabel(g, value, x, y, width, size, color, family, weight, lineHeight) {
+  g.font = `${weight} ${size}px ${family}`;
+  g.fillStyle = color;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const lines = labelLines(g, value, width);
+  lines.forEach((line, index) => g.fillText(line, x, y + (index - (lines.length - 1) / 2) * lineHeight));
 }
 
 /**
@@ -162,7 +195,42 @@ export class StageCapture {
     }
   }
 
-  _drawWheel(g, wheel, geometry, rect, state, theme) {
+  _style(element) {
+    return element ? this.stage.ownerDocument?.defaultView?.getComputedStyle(element) : null;
+  }
+
+  _drawWheelHeading(g, wheel, panel, geometry, rect, state, theme, colors) {
+    const title = wheel.title + (state.input === 'hands' ? ' · 손동작' : '');
+    const selected = wheel.choices.find((choice) => choice.selected);
+    const selection = selected ? `${selected.label} · ${state.armed ? '연주 중' : '선택'}` : '선택 대기';
+    const heading = panel?.querySelector('.wheel-heading');
+    if (!heading) {
+      text(g, `${title} · ${selection}`, geometry.center.x - rect.left,
+        geometry.center.y - rect.top - geometry.radius / .96 - 13,
+        geometry.radius * 2, 12, colors.label, theme.fonts.body, 'center', '600');
+      return;
+    }
+    for (const [element, value, badge] of [
+      [heading, '', false], [heading.querySelector('.wheel-title'), title, false],
+      [heading.querySelector('.wheel-selection'), selection, true],
+    ]) {
+      if (!element) continue;
+      const box = element.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      const style = this._style(element);
+      const x = box.left - rect.left, y = box.top - rect.top;
+      roundedBox(g, x, y, box.width, box.height, pixels(style?.borderRadius, badge ? 20 : 0));
+      g.fillStyle = style?.backgroundColor || 'transparent'; g.fill();
+      if (badge && pixels(style?.borderTopWidth, 0) > 0) {
+        g.strokeStyle = style.borderTopColor; g.lineWidth = pixels(style.borderTopWidth, 1); g.stroke();
+      }
+      if (value) text(g, value, x + box.width / 2, y + box.height / 2, box.width,
+        pixels(style?.fontSize, badge ? 12 : 13), style?.color || colors.label,
+        style?.fontFamily || theme.fonts.body, 'center', style?.fontWeight || '600');
+    }
+  }
+
+  _drawWheel(g, wheel, geometry, rect, state, theme, colors, panel) {
     const x = geometry.center.x - rect.left, y = geometry.center.y - rect.top;
     const radius = geometry.radius;
     const count = wheel.choices.length;
@@ -170,6 +238,10 @@ export class StageCapture {
     const labelRadius = radius * (dense ? 40 : 36.5) / 48;
     const inner = radius * 25 / 48;
     const gap = 0.7 * Math.PI / 180;
+    const buttons = panel?.querySelectorAll('.wheel-choice') || [];
+    // The opaque circle matches .wheel-circle::before, including the inner gap.
+    g.beginPath(); g.arc(x, y, radius, 0, TAU);
+    g.fillStyle = colors.backdrop; g.fill();
     wheel.choices.forEach((choice, index) => {
       const middle = index * TAU / count - Math.PI / 2;
       const start = middle - Math.PI / count + gap;
@@ -179,31 +251,46 @@ export class StageCapture {
       g.lineTo(x + Math.cos(end) * inner, y + Math.sin(end) * inner);
       g.arc(x, y, inner, end, start, true);
       g.closePath();
-      g.fillStyle = choice.selected ? state.armed ? '#4c5138' : '#3e4636' : '#252d27';
-      g.strokeStyle = choice.selected ? theme.colors.voice : '#465249';
-      g.lineWidth = radius / 48 * (choice.selected ? 0.6 : 0.35);
+      g.fillStyle = choice.selected ? state.armed ? colors.sounding : colors.selected : colors.sector;
+      g.strokeStyle = choice.selected ? colors['selected-line'] : colors.line;
+      g.lineWidth = radius / 48 * (choice.selected ? 0.85 : 0.35);
       g.fill(); g.stroke();
       const lx = x + Math.cos(middle) * labelRadius, ly = y + Math.sin(middle) * labelRadius;
       const quality = wheel.type === 'quality';
-      const width = quality ? 78 : dense ? 52 : 60;
+      const style = this._style(buttons[index]);
+      const box = buttons[index]?.getBoundingClientRect();
+      const size = pixels(style?.fontSize, dense ? 14 : quality
+        ? Math.max(14, Math.min(17, radius / .48 * .032)) : Math.max(16, Math.min(24, radius / .48 * .044)));
+      const width = box?.width || (quality ? 78 : dense ? 44 : 60);
+      const height = box?.height || 44;
       if (choice.selected) {
-        roundedBox(g, lx - width / 2, ly - 22, width, 44, 7);
-        g.fillStyle = '#424731'; g.fill();
-        g.strokeStyle = theme.colors.voice; g.lineWidth = 1; g.stroke();
+        roundedBox(g, lx - width / 2, ly - height / 2, width, height, pixels(style?.borderRadius, 8));
+        g.fillStyle = colors['label-chip']; g.fill();
+        g.strokeStyle = colors['selected-line']; g.lineWidth = 1; g.stroke();
       }
-      text(g, choice.label, lx, ly, width - 8, quality || dense ? 12 : 15,
-        choice.selected ? theme.colors.voice : state.input === 'hands' ? theme.colors.muted : theme.colors.label,
-        quality ? theme.fonts.body : theme.fonts.data, 'center');
+      const horizontalInset = pixels(style?.paddingLeft, dense ? 3 : 8) + pixels(style?.paddingRight, dense ? 3 : 8) + 2;
+      wheelLabel(g, choice.label, lx, ly, Math.max(1, width - horizontalInset), size,
+        choice.selected ? colors['selected-label'] : colors.label,
+        style?.fontFamily || (quality ? theme.fonts.body : theme.fonts.data),
+        style?.fontWeight || '700', pixels(style?.lineHeight, size * 1.15));
     });
+    const off = panel?.querySelector('.wheel-off');
+    const offStyle = this._style(off), smallStyle = this._style(off?.querySelector('small'));
+    const offSize = pixels(offStyle?.fontSize, Math.max(18, Math.min(23, radius / .48 * .044)));
+    const smallSize = pixels(smallStyle?.fontSize, 12);
+    const offLine = pixels(offStyle?.lineHeight, offSize * 1.15);
+    const smallLine = pixels(smallStyle?.lineHeight, smallSize * 1.5);
+    const gapSize = pixels(offStyle?.gap, 4);
     g.beginPath();
     g.arc(x, y, radius * 19.5 / 48, 0, TAU);
-    g.fillStyle = '#171d19'; g.fill();
-    g.strokeStyle = state.armed ? theme.colors.voice : '#536257';
+    g.fillStyle = colors.center; g.fill();
+    g.strokeStyle = state.armed ? colors['selected-line'] : colors.line;
     g.lineWidth = 1; g.stroke();
-    text(g, 'OFF', x, y - 8, radius * .7, 20, theme.colors.label, theme.fonts.data, 'center');
-    text(g, '소리 끄기', x, y + 13, radius * .7, 11, theme.colors.muted, theme.fonts.body, 'center');
-    text(g, wheel.title + (state.input === 'hands' ? ' · 손동작' : ''), x, y - radius / .96 - 13,
-      radius * 2, 12, theme.colors.muted, theme.fonts.body, 'center');
+    text(g, 'OFF', x, y - (smallLine + gapSize) / 2, radius * .7, offSize,
+      offStyle?.color || theme.colors.label, offStyle?.fontFamily || theme.fonts.data, 'center', offStyle?.fontWeight || '600');
+    text(g, '소리 끄기', x, y + (offLine + gapSize) / 2, radius * .7, smallSize,
+      smallStyle?.color || '#c5d0c3', smallStyle?.fontFamily || theme.fonts.body, 'center');
+    this._drawWheelHeading(g, wheel, panel, geometry, rect, state, theme, colors);
   }
 
   draw() {
@@ -238,10 +325,14 @@ export class StageCapture {
       }
       if (presentation.showWheels) {
         const geometry = this.getWheelGeometry() || [];
+        const style = this._style(this.stage);
+        const colors = Object.fromEntries(Object.entries(WHEEL_COLORS).map(([name, fallback]) =>
+          [name, style?.getPropertyValue?.(`--wheel-${name}`).trim() || fallback]));
+        const panels = this.stage.querySelectorAll?.('.wheel-panel') || [];
         presentation.wheels.forEach((wheel, index) => {
           const shape = geometry[index];
           if (shape && Number.isFinite(shape.center?.x) && Number.isFinite(shape.center?.y) && Number.isFinite(shape.radius) && shape.radius > 0) {
-            this._drawWheel(g, wheel, shape, rect, state, theme);
+            this._drawWheel(g, wheel, shape, rect, state, theme, colors, panels[index]);
           }
         });
       }

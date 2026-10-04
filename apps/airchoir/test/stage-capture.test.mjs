@@ -14,7 +14,8 @@ class DrawingContext {
     if (image.error) throw image.error;
     this.events.push({ type: 'image', image, args, matrix: [...this.matrix] });
   }
-  fillText(value, x, y, width) { this.events.push({ type: 'text', value, x, y, width, color: this.fillStyle, matrix: [...this.matrix] }); }
+  fillText(value, x, y, width) { this.events.push({ type: 'text', value, x, y, width, color: this.fillStyle, font: this.font, matrix: [...this.matrix] }); }
+  measureText(value) { return { width: value.length * 7 }; }
   arc(x, y, radius, ...angles) { this.events.push({ type: 'arc', x, y, radius, angles, matrix: [...this.matrix] }); }
   fill() { this.events.push({ type: 'fill', color: this.fillStyle }); }
   beginPath() {}
@@ -31,10 +32,14 @@ function setup({ width = 800, height = 450, product = 'choir', input = 'hands', 
   const context = new DrawingContext();
   const canvas = { getContext: () => context, width: 0, height: 0 };
   const hud = [];
+  const panels = [];
   const stage = {
     clientWidth: width, clientHeight: height, clientLeft: 1, clientTop: 1,
     getBoundingClientRect: () => ({ left: 100, top: 200, width: stage.clientWidth + 2, height: stage.clientHeight + 2 }),
-    querySelectorAll: (selector) => { assert.ok(selector.startsWith('.hud-card')); return hud; },
+    querySelectorAll: (selector) => {
+      if (selector === '.wheel-panel') return panels;
+      assert.ok(selector.startsWith('.hud-card')); return hud;
+    },
     ownerDocument: {
       createElement: (tag) => { assert.equal(tag, 'canvas'); return canvas; },
       defaultView: { getComputedStyle: (el) => el.style || {} },
@@ -46,7 +51,7 @@ function setup({ width = 800, height = 450, product = 'choir', input = 'hands', 
   const geometry = [{ center: { x: 301, y: 426 }, radius: 150 }, { center: { x: 701, y: 426 }, radius: 150 }];
   const capture = new StageCapture({ video: source, overlay, stage,
     getPerformance: () => state, getWheelGeometry: () => geometry });
-  return { capture, context, canvas, stage, source, overlay, state, geometry, hud };
+  return { capture, context, canvas, stage, source, overlay, state, geometry, hud, panels };
 }
 
 const texts = (context) => context.events.filter((event) => event.type === 'text').map((event) => event.value);
@@ -191,4 +196,52 @@ test('session-not-ready hides wheels and disposal touches neither video nor the 
   assert.equal(source.srcObject.active, true);
   assert.equal(overlay.width, 1600);
   assert.throws(() => capture.resizeForRecording(), /종료/);
+});
+
+test('wheel paint follows inherited CSS tokens and opaque backing while retaining selected state', () => {
+  const { capture, context, stage, state } = setup({ product: 'chord', input: 'hands' });
+  const tokens = { '--wheel-backdrop': '#010101', '--wheel-sector': '#020202', '--wheel-label': '#fafafa',
+    '--wheel-sounding': '#030303', '--wheel-selected-label': '#040404', '--wheel-label-chip': '#eeeeee' };
+  stage.style = { getPropertyValue: (key) => tokens[key] || '' };
+  state.current = { chord: state.config.chords[0] }; state.armed = true;
+  capture.draw();
+  assert.equal(context.events.find((event) => event.type === 'fill').color, '#010101');
+  for (const color of ['#020202', '#030303', '#eeeeee']) {
+    assert.ok(context.events.some((event) => event.type === 'fill' && event.color === color));
+  }
+  assert.ok(context.events.some((event) => event.type === 'text' && event.value === 'C' && event.color === '#040404'));
+  assert.ok(context.events.some((event) => event.type === 'text' && event.value === 'G' && event.color === '#fafafa'));
+  tokens['--wheel-selected-label'] = '#050505'; context.events = [];
+  capture.draw();
+  assert.ok(context.events.some((event) => event.type === 'text' && event.value === 'C' && event.color === '#050505'));
+});
+
+test('responsive label typography wraps at its DOM content width without squeezing text', () => {
+  const { capture, context, state, panels } = setup({ product: 'chord', input: 'manual' });
+  state.config.chords = [{ root: 1, quality: 'maj7' }];
+  const choice = { style: { fontSize: '19px', fontWeight: '700', fontFamily: 'test-font', lineHeight: '22px',
+    paddingLeft: '3px', paddingRight: '3px' }, getBoundingClientRect: () => ({ width: 44, height: 54 }) };
+  panels.push({ querySelectorAll: () => [choice], querySelector: () => null });
+  capture.draw();
+  const labels = context.events.filter((event) => event.type === 'text' && event.font === '700 19px test-font');
+  assert.deepEqual(labels.map((event) => event.value), ['Dbmaj', '7']);
+  assert.ok(labels.every((event) => event.width === undefined));
+  assert.equal(labels[1].y - labels[0].y, 22);
+});
+
+test('wheel title and selection badge follow stage DOM positions in compact layouts', () => {
+  const { capture, context, state, panels } = setup({ product: 'chord', hands: 'one', input: 'hands' });
+  state.current = { chord: state.config.chords[0] }; state.armed = true;
+  const element = (left, width, style = {}) => ({ style,
+    getBoundingClientRect: () => ({ left, top: 251, width, height: 24 }) });
+  const title = element(231, 100, { fontSize: '12px', fontWeight: '600', color: '#fafafa' });
+  const badge = element(341, 110, { fontSize: '11px', fontWeight: '700', color: '#192117', backgroundColor: '#f3dfb4' });
+  const heading = element(221, 240, { backgroundColor: '#17231b' });
+  heading.querySelector = (selector) => selector === '.wheel-title' ? title : badge;
+  panels.push({ querySelectorAll: () => [], querySelector: (selector) => selector === '.wheel-heading' ? heading : null });
+  capture.draw();
+  const selected = context.events.find((event) => event.type === 'text' && event.value === 'C · 연주 중');
+  assert.equal(selected.x, 295); assert.equal(selected.y, 62);
+  assert.equal(selected.color, '#192117'); assert.match(selected.font, /^700 11px/);
+  assert.ok(texts(context).includes('코드 · 손동작'));
 });

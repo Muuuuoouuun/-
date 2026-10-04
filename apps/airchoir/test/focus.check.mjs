@@ -326,6 +326,17 @@ try {
     await shot(page, 'desktop-live');
   });
 
+  await check('Space on the focused stage never starts the hidden loop recorder', async () => {
+    await page.focus('#stage');
+    assert.equal(await page.locator('#stage').evaluate(element => document.activeElement === element), true);
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(100);
+    assert.deepEqual(await page.evaluate(() => ({
+      mode: window.airchoir.station.mode, loops: window.airchoir.station.count,
+      video: window.airchoir.focus.recorder.state.status,
+    })), { mode: 'idle', loops: 0, video: 'idle' });
+  });
+
   await check('native recorder continues through hand loss, then yields an explicit downloadable audiovisual result', async () => {
     await beginRecording(page);
     await selectChord(page);
@@ -395,6 +406,91 @@ try {
         document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'));
       });
     }
+  });
+
+  await check('Space on the native video preview toggles playback without recording a loop', async () => {
+    await page.evaluate(() => { const video = document.getElementById('focus-result-video'); video.pause(); video.currentTime = 0; });
+    await page.focus('#focus-result-video');
+    assert.equal(await page.locator('#focus-result-video').evaluate(element => document.activeElement === element), true);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => !document.getElementById('focus-result-video').paused, null, { timeout: 2000 });
+    assert.deepEqual(await page.evaluate(() => ({ mode: window.airchoir.station.mode, count: window.airchoir.station.count })),
+      { mode: 'idle', count: 0 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => document.getElementById('focus-result-video').paused, null, { timeout: 2000 });
+    await discard(page);
+  });
+
+  await check('visible quick mode buttons finalize recording, retain the clip, and keep choir one-hand with its demo source named', async () => {
+    await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
+    await activate(page, '#focus-mode-chord-two');
+    await recorderStatus(page, 'ready');
+    const clip = await state(page);
+    assert.ok(clip.blobSize > 0);
+    assert.equal(clip.reason, 'mode-change');
+    assert.equal(clip.handCount, 'two');
+    assert.equal(clip.armed, false);
+    assert.equal(await page.locator('#focus-mode-chord-two').getAttribute('aria-pressed'), 'true');
+    await activate(page, '#focus-mode-choir');
+    await page.waitForFunction(() => window.airchoir.audio.source?.kind === 'demo'
+      && document.getElementById('focus-source').textContent.includes('목소리 데모'));
+    assert.deepEqual(await page.evaluate(() => ({
+      product: window.airchoir.performance.product, hands: window.airchoir.performance.hands,
+      twoDisabled: document.querySelector('#performance-hands option[value="two"]').disabled,
+    })), { product: 'choir', hands: 'one', twoDisabled: true });
+    assert.equal(await page.locator('#focus-mode-choir').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#focus-source').isVisible(), true);
+    assert.equal((await state(page)).blobSize, clip.blobSize);
+    assert.equal((await state(page)).url, clip.url);
+    await shot(page, 'desktop-choir-source');
+    assert.equal(downloads.length, 1);
+    await discard(page);
+
+    // Choir -> two-hand chord performs two ordinary Performance.change calls.
+    // Observe the real callback after UI rendering to verify one final result
+    // and disabled controls while the native recorder supplies its last chunk.
+    await page.evaluate(() => {
+      const recorder = window.airchoir.focus.recorder;
+      window.__focusTransitions = [];
+      window.__originalRecorderOnChange = recorder.onChange;
+      recorder.onChange = state => {
+        window.__originalRecorderOnChange(state);
+        window.__focusTransitions.push({ status: state.status,
+          modeDisabled: [...document.querySelectorAll('.focus-mode-switch button')].every(button => button.disabled),
+          inputDisabled: document.getElementById('focus-input').disabled });
+      };
+    });
+    await beginRecording(page); await page.waitForTimeout(650);
+    await activate(page, '#focus-mode-chord-two');
+    await recorderStatus(page, 'ready');
+    const transition = await page.evaluate(() => {
+      window.airchoir.focus.recorder.onChange = window.__originalRecorderOnChange;
+      return window.__focusTransitions;
+    });
+    assert.equal(transition.filter(item => item.status === 'ready').length, 1);
+    assert.ok(transition.some(item => item.status === 'stopping' && item.modeDisabled && item.inputDisabled));
+    assert.equal((await state(page)).handCount, 'two');
+    assert.ok((await state(page)).blobSize > 0);
+    await discard(page);
+    await activate(page, '#focus-mode-chord-one');
+    await page.selectOption('#focus-input', 'hands');
+    assert.equal((await state(page)).handCount, 'one');
+  });
+
+  await check('the visible focus input selector finalizes recording and keeps its clip through subsequent input changes', async () => {
+    await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
+    await page.selectOption('#focus-input', 'manual');
+    await recorderStatus(page, 'ready');
+    const clip = await state(page);
+    assert.ok(clip.blobSize > 0);
+    assert.equal(clip.input, 'manual'); assert.equal(clip.armed, false);
+    assert.equal(clip.reason, 'mode-change');
+    assert.equal(await page.locator('#focus-input').inputValue(), 'manual');
+    await page.selectOption('#focus-input', 'hands');
+    assert.equal((await state(page)).input, 'hands');
+    assert.equal((await state(page)).blobSize, clip.blobSize);
+    assert.equal((await state(page)).url, clip.url);
+    assert.equal(downloads.length, 1);
     await discard(page);
   });
 
@@ -442,12 +538,7 @@ try {
       await activate(page, '#focus-settings');
       await page.waitForFunction(() => document.getElementById('wheel-dialog').open);
     }],
-    ['mode change', () => page.evaluate(() => {
-      // Focus hides workspace mode controls; dispatch their ordinary change event
-      // to exercise the application's interruption boundary without exiting first.
-      const select = document.getElementById('performance-hands');
-      select.value = 'two'; select.dispatchEvent(new Event('change', { bubbles: true }));
-    })],
+    ['mode change', () => activate(page, '#focus-mode-chord-two')],
     ['window blur', () => page.evaluate(() => window.dispatchEvent(new Event('blur')))],
     ['hidden document', () => page.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, value: true });
@@ -457,10 +548,8 @@ try {
   ];
   for (const [label, action] of boundaries) {
     await check(`${label} stops recording, preserves its result and keeps session source tracks alive`, async () => {
-      await page.evaluate(() => {
-        const select = document.getElementById('performance-hands');
-        select.value = 'one'; select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await enterFocus(page);
+      await activate(page, '#focus-mode-chord-one');
       await beginRecording(page);
       await selectChord(page);
       await page.waitForTimeout(650);
@@ -484,10 +573,7 @@ try {
   }
 
   await check('camera track loss finalizes the recording without downloading or discarding it', async () => {
-    await page.evaluate(() => {
-      const select = document.getElementById('performance-hands');
-      select.value = 'one'; select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await activate(page, '#focus-mode-chord-one');
     await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
     await page.evaluate(() => document.getElementById('video').srcObject.getVideoTracks().forEach(track => track.stop()));
     await recorderStatus(page, 'ready');
@@ -518,7 +604,8 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
     await startCamera(page);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    for (const selector of ['#focus-settings', '#focus-exit', '#focus-record', '#focus-all-stop']) {
+    for (const selector of ['#focus-mode-chord-one', '#focus-mode-chord-two', '#focus-mode-choir', '#focus-input',
+      '#focus-settings', '#focus-exit', '#focus-record', '#focus-all-stop']) {
       assert.equal(await page.locator(selector).evaluate(button => {
         const r = button.getBoundingClientRect(); return r.width > 0 && r.height > 0
           && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
