@@ -49,7 +49,8 @@ def test_fetch_video_and_audio(video_url, tmp_path):
     from band2sheet.audio_io import fetch
 
     steps = []
-    res = fetch(video_url, tmp_path / "out", audio_format="wav", progress=lambda f, m: steps.append(m))
+    res = fetch(video_url, tmp_path / "out", audio_format="wav", keep_video=True,
+                progress=lambda f, m: steps.append(m))
     assert res.video and res.video.suffix == ".mp4" and res.video.exists()
     assert res.audio.name == "live_clip.wav"
     assert abs(_duration(res.audio) - 4.0) < 0.3
@@ -59,12 +60,31 @@ def test_fetch_video_and_audio(video_url, tmp_path):
     assert not (tmp_path / "out" / ".download").exists()  # 임시 폴더 정리
 
 
-def test_fetch_audio_only_with_cut(video_url, tmp_path):
+def _bitrate(path) -> int:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                          "stream=bit_rate", "-of", "default=nw=1:nk=1", str(path)],
+                         capture_output=True, text=True)
+    return int(out.stdout.strip())
+
+
+def test_fetch_default_audio_only(video_url, tmp_path):
     from band2sheet.audio_io import fetch
 
-    res = fetch(video_url, tmp_path, audio_format="m4a", keep_video=False, start=1, duration=2)
+    res = fetch(video_url, tmp_path, audio_format="m4a")  # 기본: 영상 없이 음성만
     assert res.video is None and not list(tmp_path.glob("*.mp4"))
-    assert res.audio.suffix == ".m4a" and abs(_duration(res.audio) - 2.0) < 0.3
+    assert res.audio.suffix == ".m4a" and abs(_duration(res.audio) - 4.0) < 0.3
+    assert res.meta["section"] is None
+    # 원본이 AAC 라 다시 인코딩(256k)하지 않고 그대로 복사됨
+    assert _bitrate(res.audio) < 200_000
+
+
+def test_fetch_section_download(video_url, tmp_path):
+    """구간을 주면 그 구간만 내려받는다 (다시 자르지 않음)."""
+    from band2sheet.audio_io import fetch
+
+    res = fetch(video_url, tmp_path, audio_format="wav", start=1, duration=2)
+    assert res.meta["section"] == [1.0, 3.0]
+    assert abs(_duration(res.audio) - 2.0) < 0.3
 
 
 def test_extract_audio_from_local_video(video_url, tmp_path):
@@ -72,7 +92,7 @@ def test_extract_audio_from_local_video(video_url, tmp_path):
 
     with pytest.raises(ValueError):
         extract_audio(tmp_path / "x.mp4", tmp_path / "x.ogg")
-    res = fetch(video_url, tmp_path / "dl", audio_format="wav")
+    res = fetch(video_url, tmp_path / "dl", audio_format="wav", keep_video=True)
     local = fetch(str(res.video), tmp_path / "local", audio_format="flac")  # 링크 대신 영상 파일
     assert local.video is None and local.audio.suffix == ".flac" and local.audio.exists()
 
@@ -81,7 +101,9 @@ def test_cli_fetch(video_url, tmp_path, capsys):
     from band2sheet.cli import main
 
     assert main(["fetch", video_url, "-o", str(tmp_path), "-a", "wav"]) == 0
-    assert (tmp_path / "live_clip.mp4").exists() and (tmp_path / "live_clip.wav").exists()
+    assert (tmp_path / "live_clip.wav").exists() and not (tmp_path / "live_clip.mp4").exists()
+    assert main(["fetch", video_url, "-o", str(tmp_path / "v"), "--video", "-a", "mp3"]) == 0
+    assert (tmp_path / "v" / "live_clip.mp4").exists() and (tmp_path / "v" / "live_clip.mp3").exists()
     assert "band2sheet run" in capsys.readouterr().out
     assert main(["fetch", "http://127.0.0.1:1/none.mp4", "-o", str(tmp_path / "bad")]) == 1
 
@@ -168,7 +190,8 @@ def test_app_url_job_default_audio_only_then_analyze(video_url, tmp_path, monkey
     assert job["source"]["video"] is None and job["source"]["audio"] == "source_audio.mp3"
     assert any("음성 받기" in line for line in job["log"])
     src, start, _ = seen[0]
-    assert "input." in src and start == 1.0
+    assert "input." in src and start is None  # 1초부터만 받았으니 분석에서 다시 자르지 않음
+    assert any("구간만 받음" in line for line in job["log"])
     assert client.get(f"/api/jobs/{job['id']}/source/video").status_code == 404
     assert client.get(f"/api/jobs/{job['id']}/source/audio").status_code == 200
 

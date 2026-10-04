@@ -135,7 +135,7 @@ band2sheet app            # 브라우저에서 http://127.0.0.1:8765 이 열립�
 ## 명령줄 사용법
 
 ```bash
-band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 영상(mp4) + 음성(wav) 만 받기
+band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 음성(wav)만 받기 (--video: 영상도)
 band2sheet run 예배실황.mp4 --key A --lyrics               # 파일 → 악보 (+A키 악보, 가사)
 band2sheet run 곡.mp3 -q high                              # 고품질 분리
 band2sheet run --stems-dir 멀티트랙폴더/                    # 멀티트랙 (분리 없이)
@@ -156,15 +156,16 @@ band2sheet engines                                         # 엔진 설치 상�
 | `--vocal-engine crepe/pyin/basic_pitch` | 보컬 채보 방식 |
 | `--pdf` | MuseScore 가 있으면 PDF 도 생성 |
 
-### 유튜브 영상 받기 · 음성 추출 (`fetch`)
+### 유튜브 음성 받기 (`fetch`)
 
-악보 없이 **영상 다운로드 → 음성 추출** 까지만 합니다. 결과는 `output/<영상ID>/` 에 저장됩니다.
+악보 없이 **음성 다운로드 → 추출** 까지만 합니다. 기본은 **음성만** 받습니다 (영상보다 훨씬 작고 빠름).
+결과는 `output/<영상ID>/` 에 저장됩니다.
 
 ```bash
-band2sheet fetch "https://www.youtube.com/watch?v=..."               # 제목.mp4 + 제목.wav + info.json
+band2sheet fetch "https://www.youtube.com/watch?v=..."               # 제목.wav + info.json
 band2sheet fetch "https://youtu.be/..." -a mp3 -o 받은곡/              # 음성을 MP3 로
-band2sheet fetch "https://youtu.be/..." --audio-only -a m4a           # 영상 없이 음성만 (더 빠름)
-band2sheet fetch "https://youtu.be/..." --start 754 --duration 300    # 12:34 부터 5분만 음성 추출
+band2sheet fetch "https://youtu.be/..." --start 754 --duration 300    # 12:34 부터 5분 '만' 다운로드
+band2sheet fetch "https://youtu.be/..." --video                       # 영상(mp4)도 저장
 band2sheet fetch 예배실황.mp4 -a wav                                   # 가지고 있는 영상에서 소리만 뽑기
 band2sheet run 받은곡/제목.wav --key A                                 # 그다음 악보 만들기
 ```
@@ -172,10 +173,12 @@ band2sheet run 받은곡/제목.wav --key A                                 # �
 | 옵션 | 설명 |
 |---|---|
 | `-a wav/mp3/m4a/flac` | 음성 형식 (기본 wav — 악보 만들기에 가장 좋은 무손실) |
-| `--audio-only` | 영상은 저장하지 않음 |
-| `--max-height 720` | 영상 최대 화질 (기본 1080p, MP4(H.264+AAC) 우선) |
-| `--start`, `--duration` | 음성 추출 구간(초). 영상은 전체를 저장합니다 |
+| `--start`, `--duration` | 구간(초). 음성만 받을 때는 **그 구간만 다운로드**해서 긴 실황도 금방 받습니다 |
+| `--video` | 영상도 저장 (`--max-height 720` 으로 화질 제한, 기본 1080p). 이때 구간은 음성에만 적용 |
 | `--cookies 파일`, `--cookies-from-browser chrome` | 로그인·연령 확인·"봇이 아님을 확인" 이 필요한 영상 |
+
+받기 최적화: 구간만 받기, `-a m4a` 이면 원본 AAC 스트림을 골라 **다시 인코딩 없이 복사**, 조각 병렬 다운로드.
+구간 받기가 안 되는 사이트면 자동으로 전체를 받은 뒤 자릅니다.
 
 - 유튜브가 자주 바뀌므로 받기가 실패하면 먼저 `pip install -U yt-dlp` 로 최신 버전을 쓰세요.
   yt-dlp 가 JavaScript 런타임(deno 등)을 요구하는 경고를 내면 [yt-dlp 안내](https://github.com/yt-dlp/yt-dlp#dependencies)대로 설치합니다.

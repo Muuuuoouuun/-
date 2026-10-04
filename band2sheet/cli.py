@@ -1,6 +1,6 @@
 """명령줄 인터페이스.
 
-  band2sheet fetch "https://youtu.be/..."                   # 유튜브 -> 영상(mp4) + 음성(wav)
+  band2sheet fetch "https://youtu.be/..."                   # 유튜브 -> 음성(wav) (--video: 영상도)
   band2sheet run "https://youtu.be/..." -o out/song         # 유튜브 -> 악보
   band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
   band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
@@ -73,15 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
     _add_render_args(r)
 
-    f = sub.add_parser("fetch", help="유튜브 영상 다운로드 + 음성 추출 (악보는 만들지 않음)")
+    f = sub.add_parser("fetch", help="유튜브 음성 다운로드(선택: 영상도) + 음성 추출 (악보는 만들지 않음)")
     f.add_argument("source", help="유튜브 URL (또는 소리만 뽑을 영상 파일)")
     f.add_argument("-o", "--out", type=Path, default=None, help="저장 폴더 (기본: output/<제목>)")
     f.add_argument("-a", "--audio-format", choices=["wav", "mp3", "m4a", "flac"], default="wav",
                    help="음성 파일 형식 (기본 wav: 악보 만들기에 가장 좋음)")
-    f.add_argument("--audio-only", action="store_true", help="영상은 저장하지 않고 음성만 (더 빠름)")
-    f.add_argument("--max-height", type=int, default=1080, help="영상 최대 화질 (기본 1080p)")
-    f.add_argument("--start", type=float, help="이 시각(초)부터만 음성 추출")
-    f.add_argument("--duration", type=float, help="이 길이(초)만 음성 추출")
+    f.add_argument("--video", action="store_true", help="영상(mp4)도 받기 (기본: 음성만, 훨씬 빠름)")
+    f.add_argument("--audio-only", action="store_true", help=argparse.SUPPRESS)  # 예전 옵션 (이제 기본)
+    f.add_argument("--max-height", type=int, default=1080, help="--video 일 때 영상 최대 화질 (기본 1080p)")
+    f.add_argument("--start", type=float, help="이 시각(초)부터만 (음성만 받을 때는 이 구간만 다운로드)")
+    f.add_argument("--duration", type=float, help="이 길이(초)만")
     f.add_argument("--cookies", help="쿠키 파일 (로그인·연령 확인이 필요한 영상)")
     f.add_argument("--cookies-from-browser", help="이 브라우저의 쿠키 사용 (예: chrome, firefox, edge)")
 
@@ -157,7 +158,7 @@ def cmd_fetch(args) -> int:
             last[0] = msg
             print(f"\r  {msg:<50}", end="", flush=True)
 
-    res = fetch(args.source, out, audio_format=args.audio_format, keep_video=not args.audio_only,
+    res = fetch(args.source, out, audio_format=args.audio_format, keep_video=args.video,
                 max_height=args.max_height, start=args.start, duration=args.duration,
                 progress=progress, cookies=args.cookies, cookies_from_browser=args.cookies_from_browser)
     print()

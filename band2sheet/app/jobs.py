@@ -221,7 +221,15 @@ class JobManager(EditMixin):
             raw, meta = download_video(job.url, d / "download",
                                        max_height=int(opts.get("max_height") or 720), progress=report)
         else:
-            raw, meta = download_audio(job.url, d / "download", progress=report)
+            fmt = str(opts.get("audio_format") or "mp3").lower()
+            cut = not opts.get("fetch_only")  # 받기만 할 때는 나중에 구간을 바꿀 수 있게 전체를 받음
+            raw, meta = download_audio(
+                job.url, d / "download", progress=report, prefer_ext="m4a" if fmt == "m4a" else None,
+                start=float(opts["start"]) if cut and opts.get("start") else None,
+                duration=float(opts["duration"]) if cut and opts.get("duration") else None)
+            if meta.get("section"):  # 구간만 받았으므로 분석할 때 다시 자르지 않음
+                log(f"구간만 받음: {meta['section'][0]:.0f}초부터")
+                opts["start"] = opts["duration"] = None
         src = d / f"input{raw.suffix.lower()}"
         shutil.move(str(raw), src)
         shutil.rmtree(d / "download", ignore_errors=True)
