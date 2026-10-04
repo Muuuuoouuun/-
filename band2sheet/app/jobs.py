@@ -178,7 +178,7 @@ class JobManager(EditMixin):
         if ext not in ALLOWED_EXT or ext == ".zip":
             raise ValueError(f"영상 또는 음원 파일을 올려 주세요: {ext or '(확장자 없음)'}")
         if options.get("style", "harmony") not in STYLES:
-            raise ValueError("스타일은 harmony / orchestra / full 중 하나입니다.")
+            raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
         job_id = uuid.uuid4().hex[:12]
         d = self.job_dir(job_id)
         d.mkdir(parents=True)
@@ -202,6 +202,7 @@ class JobManager(EditMixin):
             autotune=bool(o.get("autotune")),
             autotune_strength=float(min(max(float(o.get("autotune_strength") or 0.7), 0.0), 1.0)),
             hard_tune=bool(o.get("hard_tune")), key=o.get("key") or None,
+            with_harmony=o.get("with_harmony") if o.get("with_harmony") in (True, False) else None,
             keep_backing=o.get("keep_backing") if o.get("keep_backing") in (True, False) else None,
             bpm=float(o["bpm"]) if o.get("bpm") else None,
         )

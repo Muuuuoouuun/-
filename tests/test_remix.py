@@ -93,27 +93,98 @@ def test_harmony_diatonic_and_chord_aware(voice):
     assert m == 76 and round(float(np.nanmedian(tr.midi[k - 3:k + 3] + shift[k - 3:k + 3]))) == 72
 
 
-def test_orchestra_arrangement_follows_chords():
-    from band2sheet.orchestra import ChordSpan, arrange, synthesize
+def _progression():
+    from band2sheet.backing import ChordSpan
 
-    beats = list(np.arange(0, 16.5, 0.5))
+    beats = list(np.arange(0, 16.5, 0.5))  # 120 BPM, 4/4, 8마디
     spans = [ChordSpan(0, 4, 7), ChordSpan(4, 8, 0), ChordSpan(8, 12, 2), ChordSpan(12, 16, 4, "m")]
-    notes = arrange(spans, beats, 4, 0, 16)
-    parts = {n.part for n in notes}
-    assert {"strings", "cello", "contrabass", "harp", "timpani"} <= parts
+    return beats, spans
+
+
+NAMES = "C C# D Eb E F F# G Ab A Bb B".split()
+SEGMENTS = ((0.5, 3.5), (4.5, 7.5), (8.5, 11.5), (12.5, 15.5))
+TRIADS = [{"G", "B", "D"}, {"C", "E", "G"}, {"D", "F#", "A"}, {"E", "G", "B"}]
+SEVENTHS = [{"G", "B", "D", "F#"}, {"C", "E", "G", "B"}, {"D", "F#", "A", "C"}, {"E", "G", "B", "D"}]
+
+
+def _top_pcs(y, k):
+    chroma = librosa.feature.chroma_cqt(y=y.mean(axis=1), sr=SR)
+    out = []
+    for a, b in SEGMENTS:
+        seg = chroma[:, int(a * SR / 512):int(b * SR / 512)].mean(axis=1)
+        out.append({NAMES[i] for i in np.argsort(seg)[-k:]})
+    return out
+
+
+@pytest.mark.parametrize("style", ["orchestra", "pad", "piano", "guitar"])
+def test_backing_styles_play_the_chords(style):
+    from band2sheet.backing import STYLE_REVERB, arrange, synthesize
+
+    beats, spans = _progression()
+    notes = arrange(style, spans, beats, 4, 0, 16, Key.parse("G"))
+    assert notes and all(n.end > n.start for n in notes)
+    wet, secs = STYLE_REVERB[style]
+    y = synthesize(notes, 17, reverb=wet, reverb_seconds=secs)
+    assert np.isfinite(y).all() and y.shape[1] == 2
+    assert _top_pcs(y, 3) == TRIADS
+
+
+def test_orchestra_voice_leading():
+    from band2sheet.backing import arrange
+
+    beats, spans = _progression()
+    notes = arrange("orchestra", spans, beats, 4, 0, 16)
+    assert {"strings", "cello", "contrabass", "harp", "timpani"} <= {n.part for n in notes}
     strings = [n for n in notes if n.part == "strings"]
     assert all(55 <= n.pitch <= 76 for n in strings)
-    for a, b in zip(spans, spans[1:]):  # 성부 진행: 화음이 바뀔 때 크게 뛰지 않음
+    for a, b in zip(spans, spans[1:]):  # 화음이 바뀔 때 성부가 크게 뛰지 않음
         va = sorted(n.pitch for n in strings if n.start == a.start)
         vb = sorted(n.pitch for n in strings if n.start == b.start)
         assert sum(abs(p - q) for p, q in zip(va, vb)) <= 12
-    y = synthesize(notes, 17)
-    chroma = librosa.feature.chroma_cqt(y=y.mean(axis=1), sr=SR)
-    names = "C C# D Eb E F F# G Ab A Bb B".split()
-    for (a, b), want in (((0.5, 3.5), {"G", "B", "D"}), ((4.5, 7.5), {"C", "E", "G"}),
-                         ((8.5, 11.5), {"D", "F#", "A"}), ((12.5, 15.5), {"E", "G", "B"})):
-        seg = chroma[:, int(a * SR / 512):int(b * SR / 512)].mean(axis=1)
-        assert {names[i] for i in np.argsort(seg)[-3:]} == want
+
+
+def test_jazz_trio():
+    from band2sheet.backing import arrange, synthesize
+
+    beats, spans = _progression()
+    notes = arrange("jazz", spans, beats, 4, 0, 16, Key.parse("G"))
+    bass = [n for n in notes if n.part == "upright_bass"]
+    assert len(bass) == 32  # 워킹 베이스: 박마다 한 음
+    assert [n.pitch % 12 for n in bass if n.start in (0.0, 4.0, 8.0, 12.0)] == [7, 0, 2, 4]  # 코드 첫 박 = 근음
+    assert bass[7].pitch % 12 in (11, 1)  # 다음 코드(C) 근음으로 반음 접근 (B 또는 C#)
+    rides = sorted(n.start for n in notes if n.part == "ride")
+    assert any(abs(t - (0.5 + 2 / 3 * 0.5)) < 1e-6 for t in rides)  # 스윙 8분음표 (2박의 2/3 지점)
+    assert {"brush", "hihat", "kick", "piano"} <= {n.part for n in notes}
+    y = synthesize(notes, 17, reverb=0.14, reverb_seconds=1.2)
+    assert _top_pcs(y, 4) == SEVENTHS  # 장3화음 -> maj7, 딸림화음 D -> D7, 단3화음 -> m7
+
+
+def test_acappella_bass_and_beatbox():
+    from band2sheet.backing import arrange, synthesize
+
+    beats, spans = _progression()
+    notes = arrange("acappella", spans, beats, 4, 0, 16)
+    vox = [n for n in notes if n.part == "bass_vox"]
+    assert vox and all(40 <= n.pitch <= 57 for n in vox)
+    assert [n.pitch % 12 for n in vox if n.start in (0.0, 4.0, 8.0, 12.0)] == [7, 0, 2, 4]
+    kicks = {n.start for n in notes if n.part == "bb_kick"}
+    snares = {n.start for n in notes if n.part == "bb_snare"}
+    assert 0.0 in kicks and 1.0 in kicks and 0.5 in snares and 1.5 in snares  # 킥 1·3박, 스네어 2·4박
+    assert np.isfinite(synthesize(notes, 17)).all()
+
+
+def test_arrangement_midi(tmp_path):
+    import pretty_midi
+
+    from band2sheet.backing import arrange, write_arrangement_midi
+
+    beats, spans = _progression()
+    path = write_arrangement_midi(arrange("jazz", spans, beats, 4, 0, 16), tmp_path / "jazz.mid", 120)
+    pm = pretty_midi.PrettyMIDI(str(path))
+    progs = {(i.program, i.is_drum) for i in pm.instruments}
+    assert (0, False) in progs and (32, False) in progs and any(d for _, d in progs)
+    drums = next(i for i in pm.instruments if i.is_drum)
+    assert {51, 44, 40, 36} <= {n.pitch for n in drums.notes}  # 라이드, 하이햇 페달, 브러시, 킥
 
 
 def _probe(path) -> dict:
@@ -198,7 +269,7 @@ def test_remix_with_separated_backing(tmp_path, monkeypatch):
     res = rm.remix(wav, tmp_path / "o", rm.RemixOptions(style="orchestra"), log=logs.append)
     y, _ = sf.read(res.audio)
     stems = {p.name for p in res.files}
-    assert "orchestra.wav" in stems and "harmony_up.wav" not in stems
+    assert "orchestra.wav" in stems and "harmony_up.wav" not in stems  # 반주 스타일은 기본 화음 없음
 
 
 @pytest.mark.slow
@@ -250,3 +321,19 @@ def test_app_remix_job(tmp_path):
     assert client.get(f"/api/jobs/{job_id}/remix/stems/harmony_up.wav").status_code == 200
     assert client.get(f"/api/jobs/{job_id}/remix/../job.json").status_code in (400, 404)
     assert client.get(f"/api/jobs/{job_id}/remix/nothing.wav").status_code == 404
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("style,harmony", [("jazz", False), ("acappella", True), ("piano", True)])
+def test_remix_new_styles(tmp_path, style, harmony):
+    from band2sheet.remix import RemixOptions, remix
+
+    wav = tmp_path / "v.wav"
+    sf.write(wav, sing(), SR)
+    opts = RemixOptions(style=style, separate=False, key="G", with_harmony=True if style == "piano" else None)
+    res = remix(wav, tmp_path / style, opts, log=lambda m: None)
+    names = {f.name for f in res.files}
+    assert f"{style}.mid" in names and f"{style}.wav" in names
+    assert ("harmony_up.wav" in names) == harmony
+    y, _ = sf.read(res.audio)
+    assert np.isfinite(y).all() and np.abs(y).max() < 1.0 and np.sqrt(np.mean(y ** 2)) > 0.03

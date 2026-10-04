@@ -87,11 +87,19 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--cookies", help="쿠키 파일 (로그인·연령 확인이 필요한 영상)")
     f.add_argument("--cookies-from-browser", help="이 브라우저의 쿠키 사용 (예: chrome, firefox, edge)")
 
-    m = sub.add_parser("remix", help="내 노래 영상 후보정: 화음 넣기(기본) / 오케스트라 반주 / 오토튠")
+    m = sub.add_parser("remix", help="내 노래 영상 후보정: 화음(기본)·오케스트라·재즈·아카펠라·패드·피아노·기타 + 오토튠")
     m.add_argument("source", type=Path, help="녹화한 영상 또는 음원 파일")
     m.add_argument("-o", "--out", type=Path, default=None, help="결과 폴더 (기본: output/<이름>_remix)")
-    m.add_argument("--style", choices=["harmony", "orchestra", "full"], default="harmony",
-                   help="harmony: 화음 넣기(기본) | orchestra: 오케스트라 반주 | full: 둘 다")
+    m.add_argument("--style", default="harmony",
+                   choices=["harmony", "orchestra", "full", "jazz", "acappella", "pad", "piano", "guitar"],
+                   help="harmony: 화음 넣기(기본) | orchestra: 오케스트라 | full: 오케스트라+화음 | "
+                        "jazz: 재즈 트리오 | acappella: 아카펠라 | pad: 워십 패드 | piano: 피아노 | "
+                        "guitar: 어쿠스틱 기타")
+    hg = m.add_mutually_exclusive_group()
+    hg.add_argument("--with-harmony", dest="with_harmony", action="store_true", default=None,
+                    help="반주 스타일에도 내 목소리 화음 넣기")
+    hg.add_argument("--no-harmony", dest="with_harmony", action="store_false",
+                    help="화음 없이 (아카펠라·풀 스타일에서 화음 빼기)")
     m.add_argument("--harmony", choices=["both", "up", "down"], default="both",
                    help="화음 성부: 3도 위+아래(기본) | 위만 | 아래만")
     m.add_argument("--autotune", nargs="?", type=float, const=0.7, default=None, metavar="강도",
@@ -106,8 +114,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--drop-backing", dest="keep_backing", action="store_false",
                    help="원래 반주 빼기 (보컬만 남기고 새로 입힘)")
     m.add_argument("--harmony-level", type=float, default=0.5, help="화음 음량 (리드 대비, 기본 0.5)")
-    m.add_argument("--orchestra-level", type=float, default=0.55, help="오케스트라 음량 (리드 대비, 기본 0.55)")
-    m.add_argument("--soundfont", help="오케스트라 음색 .sf2 (fluidsynth 필요, 없으면 내장 합성기)")
+    m.add_argument("--backing-level", "--orchestra-level", dest="backing_level", type=float, default=0.55,
+                   help="새 반주 음량 (리드 대비, 기본 0.55)")
+    m.add_argument("--soundfont", help="반주 음색 .sf2 (fluidsynth 필요, 없으면 내장 합성기)")
     m.add_argument("--device", help="cpu | cuda | mps (분리용, 기본 자동)")
 
     t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
@@ -204,8 +213,8 @@ def cmd_remix(args) -> int:
         style=args.style, harmony=args.harmony, autotune=args.autotune is not None,
         autotune_strength=float(min(max(args.autotune if args.autotune is not None else 0.7, 0.0), 1.0)),
         hard_tune=args.hard_tune, key=args.key, separate=not args.no_separate,
-        keep_backing=args.keep_backing, harmony_level=args.harmony_level,
-        orchestra_level=args.orchestra_level, bpm=args.bpm, soundfont=args.soundfont,
+        keep_backing=args.keep_backing, harmony_level=args.harmony_level, with_harmony=args.with_harmony,
+        backing_level=args.backing_level, bpm=args.bpm, soundfont=args.soundfont,
         device=args.device,
     )
     if args.hard_tune and args.autotune is None:

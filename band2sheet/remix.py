@@ -3,6 +3,7 @@
   band2sheet remix 내노래.mp4                          # 화음 넣기 (기본: 3도 위 + 아래)
   band2sheet remix 내노래.mp4 --style orchestra        # 오케스트라 반주
   band2sheet remix 내노래.mp4 --style full --autotune  # 오케스트라 + 화음 + 오토튠
+  band2sheet remix 내노래.mp4 --style jazz             # 재즈 트리오 (acappella/pad/piano/guitar 도)
 
 흐름: 음성 추출 -> (Demucs 있으면) 보컬/반주 분리 -> 음높이·박·키·코드 분석
      -> 오토튠 / 화음(PSOLA) / 오케스트라 편곡·합성 -> 믹스 -> 원래 영상에 새 소리를 입힘
@@ -33,7 +34,19 @@ STYLES = {
     "harmony": "화음 넣기 (기본)",
     "orchestra": "오케스트라 반주",
     "full": "오케스트라 + 화음",
+    "jazz": "재즈 트리오",
+    "acappella": "아카펠라",
+    "pad": "워십 패드",
+    "piano": "피아노 반주",
+    "guitar": "어쿠스틱 기타",
 }
+# 스타일 -> 반주 편곡 스타일 (backing.py). harmony 는 반주 없이 화음만.
+BACKING_OF = {"orchestra": "orchestra", "full": "orchestra", "jazz": "jazz", "acappella": "acappella",
+              "pad": "pad", "piano": "piano", "guitar": "guitar"}
+# 기본으로 내 목소리 화음을 넣는 스타일 (나머지는 with_harmony=True 로 추가)
+HARMONY_BY_DEFAULT = {"harmony", "full", "acappella"}
+# 스타일별 반주 음량 보정 (패드는 뒤에 은은하게)
+LEVEL_OF = {"pad": 0.8}
 SR = 44100
 
 Log = Callable[[str], None]
@@ -42,16 +55,17 @@ Progress = Callable[[float, str], None]
 
 @dataclass
 class RemixOptions:
-    style: str = "harmony"  # harmony | orchestra | full
+    style: str = "harmony"  # STYLES 중 하나
     harmony: str = "both"  # both | up | down
+    with_harmony: bool | None = None  # 내 목소리 화음 넣기 (기본: 화음·풀·아카펠라 스타일만)
     autotune: bool = False
     autotune_strength: float = 0.7  # 0~1
     hard_tune: bool = False  # 비브라토까지 펴는 '로봇 보이스'
     key: str | None = None  # 키 직접 지정 (기본 자동)
     separate: bool = True  # Demucs 가 있으면 보컬/반주 분리
-    keep_backing: bool | None = None  # 원래 반주 유지 (기본: 화음=유지, 오케스트라=빼고 바꿈)
+    keep_backing: bool | None = None  # 원래 반주 유지 (기본: 화음=유지, 반주 스타일=빼고 바꿈)
     harmony_level: float = 0.5  # 화음 성부 음량 (리드 대비)
-    orchestra_level: float = 0.55  # 오케스트라 음량 (리드 대비)
+    backing_level: float = 0.55  # 새 반주 음량 (리드 대비)
     bpm: float | None = None
     beats_per_bar: int = 4
     soundfont: str | None = None  # .sf2 (fluidsynth 필요) — 없으면 내장 합성기
@@ -258,7 +272,7 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
     if downbeat is None:
         downbeat = estimate_downbeat(tracks, timemap, bpb)
     events = detect_chords(tracks, timemap, key, bpb, downbeat)
-    from .orchestra import ChordSpan
+    from .backing import ChordSpan
 
     spans = [ChordSpan(float(timemap.to_seconds(e.start + downbeat)),
                        float(timemap.to_seconds(e.end + downbeat)), e.root, e.quality) for e in events]
@@ -289,7 +303,8 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
 
     # 5) 화음
     harmonies: list[np.ndarray] = []
-    if opts.style in ("harmony", "full"):
+    with_harmony = opts.with_harmony if opts.with_harmony is not None else opts.style in HARMONY_BY_DEFAULT
+    if with_harmony:
         step(0.62, "⑤ 화음 만드는 중")
         dirs = {"both": (1, -1), "up": (1,), "down": (-1,)}[opts.harmony]
         for i, d in enumerate(dirs):
@@ -301,27 +316,31 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
         note("화음: " + {"both": "3도 위 + 아래", "up": "3도 위", "down": "3도 아래"}[opts.harmony]
              + " (코드 구성음에 맞춤)")
 
-    # 6) 오케스트라
+    # 6) 새 반주
     orch = None
-    if opts.style in ("orchestra", "full"):
-        step(0.72, "⑥ 오케스트라 편곡·연주 중")
-        from .orchestra import arrange, render_soundfont, synthesize, write_arrangement_midi
+    bstyle = BACKING_OF.get(opts.style)
+    if bstyle:
+        label = STYLES[bstyle] if bstyle != "orchestra" else "오케스트라"
+        step(0.72, f"⑥ {label} 편곡·연주 중")
+        from .backing import (STYLE_DESC, STYLE_REVERB, arrange, render_soundfont, synthesize,
+                              write_arrangement_midi)
 
-        onotes = arrange(spans, beats, bpb, downbeat, duration)
+        onotes = arrange(bstyle, spans, beats, bpb, downbeat, duration, key)
         if not onotes:
-            note("코드를 찾지 못해 오케스트라를 만들지 못했습니다")
+            note("코드를 찾지 못해 반주를 만들지 못했습니다")
         else:
-            midi_path = write_arrangement_midi(onotes, out_dir / "orchestra.mid", tempo)
+            midi_path = write_arrangement_midi(onotes, out_dir / f"{bstyle}.mid", tempo)
             files.append(midi_path)
-            sf_wav = render_soundfont(midi_path, work / "orchestra_sf.wav", opts.soundfont, SR)
+            wet, secs = STYLE_REVERB[bstyle]
+            sf_wav = render_soundfont(midi_path, work / f"{bstyle}_sf.wav", opts.soundfont, SR)
             if sf_wav:
                 orch, _ = sf.read(str(sf_wav), always_2d=True)
-                orch = add_reverb(orch, SR, wet=0.2)
-                note("오케스트라 음색: 사운드폰트")
+                orch = add_reverb(orch, SR, wet=wet * 0.7, seconds=secs)
+                note(f"반주: {label} — {STYLE_DESC[bstyle]} (사운드폰트)")
             else:
-                orch = synthesize(onotes, duration, SR)
-                note("오케스트라 음색: 내장 합성기 (사운드폰트를 쓰면 더 실감 납니다: --soundfont)")
-            files.append(_write(stems_dir / "orchestra.wav", orch))
+                orch = synthesize(onotes, duration, SR, reverb=wet, reverb_seconds=secs)
+                note(f"반주: {label} — {STYLE_DESC[bstyle]} (내장 합성기, --soundfont 로 더 실감 나게)")
+            files.append(_write(stems_dir / f"{bstyle}.wav", orch))
 
     # 7) 믹스
     step(0.88, "⑦ 믹스·마스터링 중")
@@ -338,7 +357,8 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
         out = out + add_reverb(hbus, SR, wet=0.3, seconds=2.0)
     if orch is not None:
         orch = _fit(orch, n)
-        out = out + orch * (opts.orchestra_level * voiced_rms / (_rms(orch) or 1.0))
+        level = opts.backing_level * LEVEL_OF.get(opts.style, 1.0)
+        out = out + orch * (level * voiced_rms / (_rms(orch) or 1.0))
     out = _master(out)
     audio = _write(out_dir / "remix.wav", out)
     files.insert(0, audio)

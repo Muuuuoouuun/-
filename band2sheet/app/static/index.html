@@ -29,7 +29,7 @@
     <section id="view-new" class="view">
       <div class="seg mode-tabs" id="mode-tabs">
         <button data-mode="score" class="on">🎼 악보 만들기<small>링크·영상·음원 → 악보</small></button>
-        <button data-mode="remix">🎤 내 영상 후보정<small>화음 · 오케스트라 · 오토튠</small></button>
+        <button data-mode="remix">🎤 내 영상 후보정<small>화음 · 반주 7가지 · 오토튠</small></button>
       </div>
       <div id="mode-score">
       <h1>유튜브 링크·영상·음원으로 악보 만들기</h1>
@@ -117,8 +117,8 @@
       <!-- 내 영상 후보정 -->
       <div id="mode-remix" class="hidden">
         <h1>내 노래 영상 후보정</h1>
-        <p class="muted">직접 녹화한 노래 영상(또는 음원)에 화음을 넣거나, 오케스트라 반주를 입히거나, 오토튠으로 음정을 다듬어
-          다시 영상으로 만들어 드려요. 화면은 그대로 두고 소리만 바꿉니다.</p>
+        <p class="muted">직접 녹화한 노래 영상(또는 음원)에 화음을 넣거나, 오케스트라·재즈·피아노·기타·워십 패드 반주를 입히거나,
+          아카펠라로 바꾸고, 오토튠으로 음정을 다듬어 다시 영상으로 만들어 드려요. 화면은 그대로 두고 소리만 바꿉니다.</p>
         <label id="rm-drop" class="drop">
           <input id="rm-file" type="file" hidden accept="video/*,audio/*">
           <div class="drop-icon">🎤</div>
@@ -127,13 +127,19 @@
           <div id="rm-file-name" class="file-name"></div>
         </label>
         <div class="grid2">
-          <div class="card">
+          <div class="card span-all">
             <h3>스타일</h3>
-            <div class="seg" id="rm-style">
-              <button data-v="harmony" class="on">화음 넣기<small>기본 · 3도 위/아래</small></button>
-              <button data-v="orchestra">오케스트라<small>현악·호른·하프</small></button>
-              <button data-v="full">오케스트라 + 화음<small>풀 버전</small></button>
+            <div class="seg style-grid" id="rm-style">
+              <button data-v="harmony" class="on">🎤 화음 넣기<small>기본 · 3도 위/아래</small></button>
+              <button data-v="orchestra">🎻 오케스트라<small>현악·호른·하프</small></button>
+              <button data-v="jazz">🎷 재즈 트리오<small>피아노·워킹 베이스·브러시</small></button>
+              <button data-v="acappella">👥 아카펠라<small>내 목소리 화음·베이스 보컬·비트박스</small></button>
+              <button data-v="pad">🌫 워십 패드<small>잔잔한 패드 + 서브 베이스</small></button>
+              <button data-v="piano">🎹 피아노<small>분산화음 → 화음 반주</small></button>
+              <button data-v="guitar">🎸 어쿠스틱 기타<small>핑거피킹 → 스트로크</small></button>
             </div>
+            <label class="check" id="rm-with-harmony-row"><input type="checkbox" id="rm-with-harmony">
+              내 목소리 화음도 넣기</label>
             <div class="row" id="rm-harmony-row">
               <label>화음 성부<select id="rm-harmony">
                 <option value="both" selected>3도 위 + 아래 (3성부)</option>

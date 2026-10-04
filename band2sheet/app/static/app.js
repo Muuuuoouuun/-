@@ -199,13 +199,22 @@ function setRemixFile(f) {
   $("#rm-start").disabled = !f;
 }
 
+function updateHarmonyRow() {
+  const style = state.rmStyle;
+  const voices = style === "harmony" || $("#rm-with-harmony").checked;
+  $("#rm-harmony-row").classList.toggle("hidden", !voices);
+}
+
 function setRemixStyle(style) {
   state.rmStyle = style;
   $$("#rm-style button").forEach((b) => b.classList.toggle("on", b.dataset.v === style));
-  $("#rm-harmony-row").classList.toggle("hidden", style === "orchestra");
+  // 반주 스타일에서 내 목소리 화음을 더할지 (아카펠라는 기본으로 넣음)
+  $("#rm-with-harmony-row").classList.toggle("hidden", style === "harmony");
+  $("#rm-with-harmony").checked = style === "acappella";
+  updateHarmonyRow();
   // 화음만 넣을 때는 원래 반주를 살리고, 오케스트라를 입힐 때는 원래 반주를 빼고 바꾸는 게 기본
   $("#rm-keep-backing").checked = style === "harmony";
-  $("#rm-keep-label").textContent = style === "harmony" ? "원래 반주 유지" : "원래 반주도 남기기 (끄면 오케스트라로 바꿈)";
+  $("#rm-keep-label").textContent = style === "harmony" ? "원래 반주 유지" : "원래 반주도 남기기 (끄면 새 반주로 바꿈)";
 }
 
 function initRemix() {
@@ -221,6 +230,8 @@ function initRemix() {
     if (e.dataTransfer.files.length) setRemixFile(e.dataTransfer.files[0]);
   });
   $$("#rm-style button").forEach((b) => b.addEventListener("click", () => setRemixStyle(b.dataset.v)));
+  $("#rm-with-harmony").addEventListener("change", updateHarmonyRow);
+  setRemixStyle("harmony");
   $("#rm-autotune").addEventListener("change", () => {
     $("#rm-strength").disabled = $("#rm-hard").disabled = !$("#rm-autotune").checked;
   });
@@ -241,6 +252,7 @@ async function startRemix() {
   const options = {
     style: state.rmStyle,
     harmony: $("#rm-harmony").value,
+    with_harmony: state.rmStyle === "harmony" ? null : $("#rm-with-harmony").checked,
     keep_backing: $("#rm-keep-backing").checked,
     autotune: $("#rm-autotune").checked,
     autotune_strength: Number($("#rm-strength").value) / 100,
@@ -316,9 +328,9 @@ function showRemix() {
     const a = document.createElement("a");
     a.href = remixUrl(f);
     a.textContent = f === "original" ? "원본 파일" : f === r.video ? "🎬 후보정 영상" :
-      f === r.audio ? "🎵 후보정 음원 (WAV)" : f === "orchestra.mid" ? "🎻 오케스트라 편곡 (MIDI)" :
-      { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음", "stems/harmony_down.wav": "아래 화음",
-        "stems/orchestra.wav": "오케스트라 반주" }[f] || f;
+      f === r.audio ? "🎵 후보정 음원 (WAV)" : f.endsWith(".mid") ? `🎼 반주 편곡 (MIDI · ${f})` :
+      { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음",
+        "stems/harmony_down.wav": "아래 화음" }[f] || (f.startsWith("stems/") ? `반주 트랙 (${f.slice(6)})` : f);
     a.download = "";
     li.appendChild(a);
     $("#x-files").appendChild(li);
