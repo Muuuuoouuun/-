@@ -105,7 +105,8 @@ test('wheel geometry uses viewport-to-content coordinates including stage border
   near(rootLabel.y, 225 - 150 * 36.5 / 48); // index 0 is at twelve o'clock
   assert.ok(texts(context).includes('Cm · 연주 중'));
   assert.ok(texts(context).includes('마이너'));
-  assert.equal(texts(context).filter((value) => value === 'OFF').length, 2);
+  assert.equal(texts(context).filter((value) => value === '핀치').length, 2);
+  assert.equal(texts(context).some((value) => value.includes('OFF')), false);
 });
 
 test('mode composition matches live visibility for camera and manual control modes', () => {
@@ -116,7 +117,8 @@ test('mode composition matches live visibility for camera and manual control mod
     const { capture, context, overlay } = setup({ product, input, hands });
     capture.draw();
     assert.equal(context.events.some((event) => event.type === 'image' && event.image === overlay), expectedOverlay);
-    assert.equal(texts(context).filter((value) => value === 'OFF').length, expectedWheels);
+    const centerLabel = product === 'chord' && input === 'hands' ? '핀치' : 'OFF';
+    assert.equal(texts(context).filter((value) => value === centerLabel).length, expectedWheels);
   }
 });
 
@@ -133,6 +135,33 @@ test('custom order, flat chord names and partial root zero selection match visib
   assert.match(presentation.selection, /C · 코드 종류 대기/);
   assert.deepEqual(presentation.wheels[1].choices.map((choice) => choice.label), ['디미니시', '메이저 7']);
   assert.equal(capturePresentation({ product: 'choir', current: { choir: 3 }, armed: true }).selection, '합창 3명 · 지휘 중');
+});
+
+test('hand-input resting captions explain pinch while manual captions keep OFF', () => {
+  for (const hands of ['one', 'two']) {
+    const state = { product: 'chord', input: 'hands', hands, ready: true, armed: false };
+    assert.equal(capturePresentation(state).selection, '핀치 대기 · 선택 대기');
+    state.current = { chord: { root: 0, quality: 'maj' } };
+    assert.equal(capturePresentation(state).selection, '핀치 대기 · C');
+    assert.match(capturePresentation(state).input, /핀치 유지/);
+    state.armed = true;
+    assert.equal(capturePresentation(state).selection, 'C · 연주 중');
+    state.armed = false; state.input = 'manual';
+    assert.equal(capturePresentation(state).selection, 'OFF · C');
+  }
+  assert.equal(capturePresentation({ product: 'choir', input: 'hands' }).selection.includes('OFF'), false);
+});
+
+test('recorded wheel centers update with input mode without retaining stale OFF or pinch guidance', () => {
+  const { capture, context, state } = setup({ product: 'chord', hands: 'two', input: 'manual' });
+  for (const input of ['manual', 'hands', 'manual']) {
+    context.events = []; state.input = input;
+    capture.draw();
+    const held = input === 'hands';
+    assert.equal(texts(context).filter((value) => value === (held ? '핀치' : 'OFF')).length, 2);
+    assert.equal(texts(context).filter((value) => value === (held ? '놓으면 쉼' : '소리 끄기')).length, 2);
+    assert.equal(texts(context).filter((value) => value === (held ? 'OFF' : '핀치')).length, 0);
+  }
 });
 
 test('not-ready or hidden video has an explicit fallback, including manual control with live camera', () => {

@@ -145,3 +145,28 @@ test('추적기: 손 속도 (던지기 판정용)', () => {
   assert.ok(s.velocity.x > 1.2 && s.velocity.x < 1.7, `속도 ${s.velocity.x}`);
   assert.ok(Math.abs(s.velocity.y) < 0.01);
 });
+
+test('camera immediate release clears a missing hand and never carries its fingers into reacquisition', () => {
+  const t = new GestureTracker({ lostMs: 250 });
+  const options = { immediateRelease: true };
+  t.update([fake(4)], 0, options);
+  const gone = t.update([], 1, options);
+  assert.equal(gone.present, false);
+  assert.equal(gone.preset, 0);
+  assert.equal(gone.pinch, false);
+  assert.equal(gone.hand, null);
+  const returned = t.update([fake(1)], 2, options);
+  assert.equal(returned.fingers, 1);
+  assert.equal(returned.preset, 1);
+});
+
+test('camera closing the selected fingers releases immediately despite the normal dwell and pinch debounce', () => {
+  const t = new GestureTracker();
+  const options = { immediateRelease: true };
+  t.update([{ ...fake(3), pinch: true, pinchShape: true, pinchDist: .1 }], 0, options);
+  const closed = t.update([fake(0)], 1, options);
+  assert.equal(closed.fist, true);
+  assert.equal(closed.fingers, 0);
+  assert.equal(closed.pinch, false);
+  assert.equal(closed.preset, 0);
+});

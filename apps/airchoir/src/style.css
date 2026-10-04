@@ -1281,7 +1281,7 @@ button.wheel-choice[aria-pressed=true] { color:var(--wheel-selected-label); back
 button.wheel-choice:disabled { opacity:1; cursor:default; color:var(--wheel-label); }
 button.wheel-choice:disabled[aria-pressed=true] { color:var(--wheel-selected-label); }
 button.wheel-choice:focus-visible { outline-offset:1px; }
-button.wheel-off {
+button.wheel-off,.wheel-center-hint {
   position:absolute;
   top:50%;
   left:50%;
@@ -1300,8 +1300,9 @@ button.wheel-off {
   color:var(--fg);
   font:600 clamp(18px,4.4cqi,23px)/1.15 var(--font-data);
 }
-button.wheel-off small { font:12px var(--font-body); color:#c5d0c3; }
-button.wheel-off[data-armed=true] { border-color:var(--wheel-selected-line); }
+button.wheel-off small,.wheel-center-hint small { font:12px var(--font-body); color:#c5d0c3; }
+button.wheel-off[data-armed=true],.wheel-center-hint[data-armed=true] { border-color:var(--wheel-selected-line); }
+.wheel-center-hint { pointer-events:none; font-family:var(--font-body); }
 button.wheel-off:hover:not(:disabled) { background:#342a25; border-color:var(--bad); }
 .performance-wheels[data-input=hands] .wheel-title::after { content:" · 손동작"; }
 

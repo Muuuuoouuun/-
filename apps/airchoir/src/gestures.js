@@ -142,9 +142,12 @@ export class GestureTracker {
   }
 
   // hands: analyzeHand 결과 배열. mirrored=true면 화면이 거울처럼 보인다고 보고 좌우를 뒤집는다.
-  update(hands, now, { mirrored = true } = {}) {
+  update(hands, now, { mirrored = true, immediateRelease = false } = {}) {
     const hand = hands.length ? hands.reduce((a, b) => (b.size > a.size ? b : a)) : null;
     if (!hand) {
+      // Camera performance must not sustain an old preset through a missing hand.
+      // Pointer/orb callers may still opt into the existing loss grace period.
+      if (immediateRelease) { this.reset(); return this.state(); }
       if (now - this.lastSeen > this.lostMs) {
         this.present = false;
         this.hand = null;
@@ -162,7 +165,12 @@ export class GestureTracker {
     this.present = true;
 
     this.updatePinch(hand, now, fresh);
-    if (fresh) {
+    if (immediateRelease && hand.fist) {
+      this.fingers = 0;
+      this.pinch = false;
+      this.pinchFlipSince = null;
+      this.candidate = null;
+    } else if (fresh) {
       // 손이 새로 들어오면 첫 판정을 바로 쓴다
       this.fingers = hand.fingers;
       this.candidate = null;

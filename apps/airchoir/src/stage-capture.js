@@ -58,12 +58,13 @@ export function capturePresentation(state = {}) {
     else if (current.root != null) selected = `${labelFor('roots', current.root)} · 코드 종류 대기`;
     else if (current.quality != null) selected = `${labelFor('qualities', current.quality)} · 근음 대기`;
   } else if (current.choir != null) selected = `합창 ${labelFor('choir', current.choir)}`;
+  const waiting = state.input === 'hands' ? chordMode ? '핀치 대기' : '손동작 대기' : 'OFF';
   return {
     title: `AirChoir · ${chordMode ? '코드 악기' : '목소리 합창'}`,
     selection: state.ready === false ? '세션 시작 전' : state.armed
       ? `${selected || '선택됨'} · ${chordMode ? '연주 중' : '지휘 중'}`
-      : selected ? `OFF · ${selected}` : 'OFF · 선택 대기',
-    input: state.input === 'manual' ? '클릭 · 키보드' : chordMode ? '손동작 · 휠 선택' : '손동작 · 합창 지휘',
+      : selected ? `${waiting} · ${selected}` : `${waiting} · 선택 대기`,
+    input: state.input === 'manual' ? '클릭 · 키보드' : chordMode ? `손동작 · ${state.hands === 'two' ? '양손 핀치' : '핀치'} 유지` : '손동작 · 합창 지휘',
     showOverlay: !chordMode,
     showWheels: state.ready !== false && (chordMode || state.input === 'manual'),
     wheels,
@@ -274,7 +275,8 @@ export class StageCapture {
         style?.fontFamily || (quality ? theme.fonts.body : theme.fonts.data),
         style?.fontWeight || '700', pixels(style?.lineHeight, size * 1.15));
     });
-    const off = panel?.querySelector('.wheel-off');
+    const holdInput = state.product === 'chord' && state.input === 'hands';
+    const off = panel?.querySelector(holdInput ? '.wheel-center-hint' : '.wheel-off');
     const offStyle = this._style(off), smallStyle = this._style(off?.querySelector('small'));
     const offSize = pixels(offStyle?.fontSize, Math.max(18, Math.min(23, radius / .48 * .044)));
     const smallSize = pixels(smallStyle?.fontSize, 12);
@@ -286,9 +288,9 @@ export class StageCapture {
     g.fillStyle = colors.center; g.fill();
     g.strokeStyle = state.armed ? colors['selected-line'] : colors.line;
     g.lineWidth = 1; g.stroke();
-    text(g, 'OFF', x, y - (smallLine + gapSize) / 2, radius * .7, offSize,
-      offStyle?.color || theme.colors.label, offStyle?.fontFamily || theme.fonts.data, 'center', offStyle?.fontWeight || '600');
-    text(g, '소리 끄기', x, y + (offLine + gapSize) / 2, radius * .7, smallSize,
+    text(g, holdInput ? '핀치' : 'OFF', x, y - (smallLine + gapSize) / 2, radius * .7, offSize,
+      offStyle?.color || theme.colors.label, offStyle?.fontFamily || (holdInput ? theme.fonts.body : theme.fonts.data), 'center', offStyle?.fontWeight || '600');
+    text(g, holdInput ? '놓으면 쉼' : '소리 끄기', x, y + (offLine + gapSize) / 2, radius * .7, smallSize,
       smallStyle?.color || '#c5d0c3', smallStyle?.fontFamily || theme.fonts.body, 'center');
     this._drawWheelHeading(g, wheel, panel, geometry, rect, state, theme, colors);
   }

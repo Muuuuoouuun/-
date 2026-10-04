@@ -179,7 +179,7 @@ async function startCamera(request) {
   mode = 'camera';
   cam.onResult = (list, aspect) => {
     const hands = list.map((lm) => ({ ...analyzeHand(lm, aspect), landmarks: lm }));
-    gesture = tracker.update(hands, performance.now());
+    gesture = tracker.update(hands, performance.now(), { immediateRelease: true });
     const r = $('stage').getBoundingClientRect();
     const video = $('video');
     const mapper = coverMapper(r.width, r.height, video.videoWidth, video.videoHeight);
@@ -721,7 +721,8 @@ function updateProductControls() {
 performer = new Performance({
   getAudio: () => audio,
   isReady: () => sessionActive && audio.ready,
-  hasCamera: () => mode === 'camera',
+  hasCamera: () => mode === 'camera' && cam.running
+    && !!cam.stream?.getVideoTracks().some(track => track.readyState === 'live' && !track.muted),
   notify: text => notice(text),
   onStop: pausePerformance,
   onInterrupt: reason => focusSession?.boundary(reason),

@@ -229,7 +229,8 @@ test('ended camera stops recording but missing hand landmarks alone do not', t =
   const performer = Object.create(Performance.prototype);
   performer.state = { product: 'chord', input: 'hands', armed: true };
   performer.lastCameraFrame = 0;
-  performer.controller = { tick() {} };
+  performer.hasCamera = () => track.readyState === 'live' && !track.muted;
+  performer.controller = { tick: () => ({ active: false }) };
   performer.stop = () => { performer.state.armed = false; events.push(['hand-sound-stop']); };
   performer.onInterrupt = reason => focus.boundary(reason);
   performer.tick(400, true);

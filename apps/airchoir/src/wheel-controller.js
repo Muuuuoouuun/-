@@ -1,6 +1,8 @@
 // Camera-independent wheel selection. The caller supplies mirrored, aspect-correct
 // Euclidean coordinates (for example x * stageAspect, y). This module never
 // transforms coordinates, opens devices, or starts audio.
+import { THRESHOLDS } from './gestures.js';
+
 const TAU = Math.PI * 2;
 const finitePoint = (p) => !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
 const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -31,16 +33,30 @@ function handLabel(hand) {
   return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null;
 }
 
+// Distance hysteresis belongs to each assigned hand. Opening the pinch has no
+// time debounce; the old choir/orb tracker's 120 ms release delay is not used.
+function pinchHeld(hand, wasHeld) {
+  if (hand.pinchShape === false) return false;
+  if (hand.pinchDist !== undefined) {
+    return Number.isFinite(hand.pinchDist) && hand.pinchDist >= 0 && hand.pinchShape === true
+      && hand.pinchDist < (wasHeld ? THRESHOLDS.pinchOff : THRESHOLDS.pinchOn);
+  }
+  // Strict booleans support non-landmark adapters without turning missing input
+  // into permission to sustain a note.
+  return hand.pinch === true;
+}
+
 /**
  * configure({ hands: 'one'|'two', counts: [n, ...], centers: [{x,y}, ...], radius, aspect? })
- * update([{ palm: {x,y}, handedness?: 'Left'|'Right' }, ...], monotonicMilliseconds)
+ * update([{ palm: {x,y}, pinch, pinchDist?, pinchShape?, handedness? }, ...], monotonicMilliseconds)
  * tick(monotonicMilliseconds) must run even when the camera stops calling back.
  *
  * Every method returns an independent snapshot:
  * { indices, candidates, points, active, pending, reason }.
  * indices are the last committed selection (all null when stopped). A new pair
  * commits atomically after 150 ms of stable camera observations; valid boundary
- * jitter holds the previous pair. OFF, hand loss and invalid input stop at once.
+ * jitter holds the previous pair while every assigned hand holds its pinch.
+ * Pinch release, OFF, hand loss and invalid input stop at once and clear dwell.
  * Ambiguous tracking latches OFF until all hands leave or reset() is called.
  * Optional aspect is configuration metadata only; coordinates are already scaled.
  */
@@ -190,15 +206,22 @@ export class WheelController {
     if (hands.length > 2) return this._ambiguous();
     if (this._count === 2 && hands.length !== 2) {
       // Retain the old identities during an occlusion, but never the old sound.
+      // Reappearance must meet the stricter pinch-on threshold, not an old hold.
+      this._roles?.forEach(role => { role.pinched = false; });
       return this._stop('hand-loss', { forgetRoles: false });
     }
-    const analyzed = hands.map((hand) => ({ palm: copyPoint(hand.palm), label: handLabel(hand) }));
+    const analyzed = hands.map((hand) => ({ palm: copyPoint(hand.palm), label: handLabel(hand),
+      pinch: hand.pinch, pinchDist: hand.pinchDist, pinchShape: hand.pinchShape }));
     const assigned = this._assign(analyzed);
     if (!assigned) return this._ambiguous();
     this._roles = assigned.map((hand, i) => ({
       palm: copyPoint(hand.palm), label: hand.label ?? this._roles?.[i]?.label ?? null,
+      pinched: pinchHeld(hand, this._roles?.[i]?.pinched === true),
     }));
     this._points = assigned.map((hand) => copyPoint(hand.palm));
+    if (this._roles.some(role => !role.pinched)) {
+      return this._stop('released', { forgetRoles: false, points: this._points });
+    }
     const candidate = assigned.map((hand, i) => wheelHit(hand.palm, this.config.centers[i], this.config.radius, this.config.counts[i]));
     if (candidate.some((index) => index === null)) {
       return this._stop('off', { forgetRoles: false, points: this._points });

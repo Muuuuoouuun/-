@@ -156,7 +156,7 @@ export class WheelUI {
     const mode = product === 'choir' ? '목소리 합창' : '코드 악기';
     const instruction = input === 'manual'
       ? (product === 'chord' && hands === 'two' ? '근음과 코드 종류를 하나씩 클릭하세요. 중앙 OFF로 멈춥니다.' : '항목을 클릭하거나 키보드로 선택하세요. 중앙 OFF로 멈춥니다.')
-      : (product === 'choir' ? '손가락 수로 화음을 지휘하세요.' : '휠 안으로 손을 움직여 선택하세요. 중앙은 OFF입니다.');
+      : (product === 'choir' ? '손가락 수로 화음을 지휘하세요.' : `${hands === 'two' ? '양손 핀치' : '핀치'}를 유지하며 휠에서 선택하세요. 놓으면 소리가 멈춥니다.`);
     const text = status || `${mode} · ${ready ? (armed ? '연주 중' : '선택 대기') : '세션 시작 전'} · ${instruction}`;
     if (this.modeStatus.textContent !== text) this.modeStatus.textContent = text;
     const visible = ready && (product === 'chord' || input === 'manual');
@@ -165,7 +165,7 @@ export class WheelUI {
     if (this.stageHost.parentElement) this.stageHost.parentElement.dataset.product = product;
     this.stageHost.dataset.input = input;
     this.stageHost.dataset.product = product;
-    const signature = JSON.stringify([product, hands, this.config]);
+    const signature = JSON.stringify([product, hands, input, this.config]);
     if (signature !== this.signature) {
       this.signature = signature;
       this.buildWheels();
@@ -177,9 +177,9 @@ export class WheelUI {
       entry.path?.classList.toggle('selected', selected);
       entry.path?.classList.toggle('sounding', selected && armed);
     }
-    for (const off of this.stageHost.querySelectorAll('.wheel-off')) {
-      off.disabled = !ready;
-      off.dataset.armed = String(armed);
+    for (const center of this.stageHost.querySelectorAll('.wheel-off, .wheel-center-hint')) {
+      if (center.tagName === 'BUTTON') center.disabled = !ready;
+      center.dataset.armed = String(armed);
     }
     for (const panel of this.panels) {
       const value = current[panel.type];
@@ -193,7 +193,8 @@ export class WheelUI {
   }
 
   buildWheels() {
-    const { product, hands } = this.state;
+    const { product, hands, input } = this.state;
+    const holdInput = product === 'chord' && input === 'hands';
     const specifications = product === 'choir'
       ? [['choir', '합창', 'choir']]
       : hands === 'two' ? [['root', '근음', 'roots'], ['quality', '코드 종류', 'qualities']] : [['chord', '코드', 'chords']];
@@ -230,11 +231,13 @@ export class WheelUI {
         circle.append(el);
         this.choices.push({ type, value, button: el, path: svg.querySelector(`path[data-index="${i}"]`) });
       });
-      const off = button('OFF', null, 'wheel-off');
-      off.setAttribute('aria-label', `${title} 휠 소리 끄기`);
-      off.append(node('small', '', '소리 끄기'));
-      off.addEventListener('click', () => this.call('onOff'));
-      circle.append(off);
+      const center = holdInput ? node('div', 'wheel-center-hint', '핀치') : button('OFF', null, 'wheel-off');
+      center.append(node('small', '', holdInput ? '놓으면 쉼' : '소리 끄기'));
+      if (!holdInput) {
+        center.setAttribute('aria-label', `${title} 휠 소리 끄기`);
+        center.addEventListener('click', () => this.call('onOff'));
+      }
+      circle.append(center);
       panel.append(header, circle);
       this.stageHost.append(panel);
     }
@@ -274,7 +277,7 @@ export class WheelUI {
     const items = node('div', 'wheel-editor-items');
     items.append(this.list, this.addFields, this.addButton, this.error);
     const previewWrap = node('aside', 'wheel-preview-wrap');
-    previewWrap.append(node('h3', '', '적용 후 미리보기'), this.preview, node('p', 'muted', '위에서 시작해 시계 방향으로 배치됩니다. 중앙 OFF는 항상 유지됩니다.'));
+    previewWrap.append(node('h3', '', '적용 후 미리보기'), this.preview, node('p', 'muted', '위에서 시작해 시계 방향으로 배치됩니다. 클릭·키보드는 중앙 OFF, 코드 손동작은 핀치를 놓아 멈춥니다.'));
     editor.append(items, previewWrap);
     const privacy = node('p', 'wheel-storage-note', '이 기기에 목록과 순서만 저장합니다. 이미지·오디오·카메라 영상은 저장하지 않습니다.');
     const footer = node('div', 'wheel-dialog-footer');
@@ -350,8 +353,9 @@ export class WheelUI {
       const add = field(label, `wheel-add-${id}`, options.map((item) => [item.id, item.label]));
       this.addFields.append(add.wrap);
     }
-    this.preview.replaceChildren(ring(items.length, items.map((value) => labelFor(group, value))), node('span', 'wheel-preview-off', 'OFF'));
-    this.preview.setAttribute('aria-label', `${GROUPS[group]} 미리보기: ${items.map((value) => labelFor(group, value)).join(', ') || '비어 있음'}. 중앙 OFF.`);
+    const holdPreview = this.state.input === 'hands' && group !== 'choir';
+    this.preview.replaceChildren(ring(items.length, items.map((value) => labelFor(group, value))), node('span', 'wheel-preview-off', holdPreview ? '핀치' : 'OFF'));
+    this.preview.setAttribute('aria-label', `${GROUPS[group]} 미리보기: ${items.map((value) => labelFor(group, value)).join(', ') || '비어 있음'}. ${holdPreview ? '핀치를 놓으면 쉼.' : '클릭·키보드에서 중앙 OFF.'}`);
     this.updateValidation();
     if (focus) {
       const target = this.list.querySelector(`[data-index="${focus.index}"] [data-action="${focus.action}"]:not(:disabled)`)

@@ -136,13 +136,14 @@ export class Performance {
     if (!chord) { this.state.status = '근음과 코드 종류를 모두 선택하세요.'; return; }
     const audio = this.getAudio();
     this.state.armed = !!audio.accompaniment?.setChord(chordNotes(chord));
-    this.state.status = this.state.armed ? `${chordLabel(chord)} 연주 중 · OFF로 정지` : '연주를 시작할 수 없어요. 세션을 다시 시작해 주세요.';
+    const release = this.state.input === 'hands' ? '핀치를 놓으면 쉼' : 'OFF로 정지';
+    this.state.status = this.state.armed ? `${chordLabel(chord)} 연주 중 · ${release}` : '연주를 시작할 수 없어요. 세션을 다시 시작해 주세요.';
   }
 
   rearmLegacy() { if (this.legacy && !this.settingsOpen) this.resume(); }
 
   routeLegacy(gesture) {
-    if (!this.legacy || this.blocked || this.settingsOpen || document.hidden) return quietGesture();
+    if (!this.legacy || this.blocked || this.settingsOpen || document.hidden || !document.hasFocus()) return quietGesture();
     const mapped = { ...gesture };
     if (gesture.present && !gesture.fist) {
       const index = Math.min(Math.max(gesture.preset - 1, 0), this.state.config.choir.length - 1);
@@ -157,7 +158,12 @@ export class Performance {
   cameraHands(hands, mapPoint, now) {
     this.lastCameraFrame = now;
     if (document.hidden || !document.hasFocus()) return;
-    if (!hands.length) this.blocked = false;
+    if (this.state.input === 'hands' && !this.hasCamera()) {
+      if (this.state.armed) this.stop('카메라 입력이 끊겨 연주를 멈췄어요.');
+      this.blocked = true;
+      return;
+    }
+    if (!hands.length || (this.legacy && hands.every(hand => hand.fist))) this.blocked = false;
     if (this.state.product !== 'chord' || this.state.input !== 'hands' || !this.isReady() || this.settingsOpen) return;
     const geometry = this.ui.getWheelGeometry();
     if (!geometry.length) return;
@@ -167,11 +173,19 @@ export class Performance {
     });
     const points = hands.map(h => ({ ...h, palm: mapPoint(h.palm) }));
     const result = this.controller.update(points, now);
-    if (this.blocked) return;
+    if (this.blocked) {
+      // A visible release is fresh intent after a blur/watchdog/global stop.
+      // Do not reuse dwell accumulated while the performer was blocked.
+      if (result.reason === 'released') { this.blocked = false; this.controller.reset(); }
+      return;
+    }
     if (!result.active) {
       this.getAudio().accompaniment?.release(); this.state.armed = false;
       this.state.current = emptySelection();
-      this.state.status = result.reason === 'ambiguous' ? '손을 내렸다 다시 올려 역할을 맞추세요.' : '휠의 항목 위에서 손을 잠시 유지하세요.';
+      this.state.status = result.reason === 'ambiguous' ? '손을 내렸다 다시 올려 역할을 맞추세요.'
+        : result.reason === 'released' ? '핀치를 놓아 쉬는 중 · 다시 맞대면 연주합니다.'
+          : result.reason === 'hand-loss' ? '손이 보이지 않아 쉬는 중 · 다시 선택하세요.'
+            : `${this.state.hands === 'two' ? '양손의' : '엄지·검지'} 핀치를 유지하며 휠 항목을 선택하세요.`;
       return;
     }
     const [a, b] = result.indices;
@@ -183,7 +197,11 @@ export class Performance {
   }
 
   tick(now, cameraMode) {
-    if (cameraMode && this.state.input === 'hands' && now - this.lastCameraFrame > 300 && this.state.armed) this.stop('손 입력이 끊겨 연주를 멈췄어요.');
-    if (this.state.product === 'chord' && this.state.input === 'hands') this.controller.tick(now);
+    if (cameraMode && this.state.input === 'hands' && this.state.armed
+      && (!this.hasCamera() || now - this.lastCameraFrame > 300)) this.stop('손 입력이 끊겨 연주를 멈췄어요.');
+    if (this.state.product === 'chord' && this.state.input === 'hands') {
+      const result = this.controller.tick(now);
+      if (this.state.armed && !result.active) this.stop('손 입력이 끊겨 연주를 멈췄어요.');
+    }
   }
 }
