@@ -1,11 +1,14 @@
-"""입력 처리: 유튜브 링크 다운로드, 로컬 오디오/영상 파일을 WAV 로 변환."""
+"""입력 처리: 유튜브 링크 다운로드(영상/오디오), 음성 추출, 로컬 오디오/영상 파일을 WAV 로 변환."""
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -26,35 +29,210 @@ def require_ffmpeg() -> str:
     return exe
 
 
-def download_youtube(url: str, out_dir: Path) -> tuple[Path, str]:
-    """yt-dlp 로 오디오만 내려받는다. 반환: (오디오 파일 경로, 영상 제목)."""
+YTDLP_HINT = ("yt-dlp 를 최신으로 올려 보세요: pip install -U yt-dlp  "
+              "(로그인/봇 확인이 필요한 영상은 --cookies-from-browser chrome 같은 쿠키 옵션을 쓰세요)")
+
+
+def _ytdlp():
     try:
         import yt_dlp
     except ImportError as e:  # pragma: no cover - 설치 안내
         raise RuntimeError("유튜브 다운로드에는 yt-dlp 가 필요합니다: pip install yt-dlp") from e
+    return yt_dlp
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    opts = {
-        "format": "bestaudio/best",
-        "outtmpl": str(out_dir / "source.%(ext)s"),
+
+def _ytdlp_opts(out_dir: Path, stem: str, progress: Callable[[float, str], None] | None,
+                cookies: str | None, cookies_from_browser: str | None,
+                first_label: str = "영상") -> dict:
+    opts: dict = {
+        "outtmpl": str(out_dir / f"{stem}.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
+        "noprogress": True,
     }
+    if cookies:
+        opts["cookiefile"] = str(Path(cookies).expanduser())
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
+    if progress:
+        state = {"n": 0, "file": None}
+
+        def hook(d: dict) -> None:
+            # 영상+음성 따로 받는 형식이면 파일 두 개를 차례로 받는다.
+            if d.get("filename") != state["file"]:
+                state["file"] = d.get("filename")
+                state["n"] += 1
+            what = first_label if state["n"] == 1 else "음성 트랙"
+            if d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                frac = min(1.0, d.get("downloaded_bytes", 0) / total) if total else 0.0
+                mb = d.get("downloaded_bytes", 0) / 1048576
+                progress(frac, f"{what} 받는 중 {frac * 100:.0f}% ({mb:.1f} MB)")
+            elif d.get("status") == "finished":
+                progress(1.0, f"{what} 받기 완료")
+
+        opts["progress_hooks"] = [hook]
+    return opts
+
+
+def _downloaded_path(info: dict, out_dir: Path, stem: str) -> Path:
+    for d in info.get("requested_downloads") or []:
+        f = d.get("filepath")
+        if f and Path(f).exists():
+            return Path(f)
+    candidates = sorted(p for p in out_dir.glob(f"{stem}.*") if p.suffix not in (".part", ".ytdl"))
+    if not candidates:
+        raise RuntimeError("다운로드한 파일을 찾지 못했습니다.")
+    return candidates[0]
+
+
+def _meta(info: dict, url: str) -> dict:
+    return {
+        "title": info.get("title") or "youtube",
+        "url": info.get("webpage_url") or url,
+        "id": info.get("id"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration"),
+        "width": info.get("width"),
+        "height": info.get("height"),
+    }
+
+
+def download_video(url: str, out_dir: Path, max_height: int = 1080, stem: str = "video",
+                   progress: Callable[[float, str], None] | None = None,
+                   cookies: str | None = None,
+                   cookies_from_browser: str | None = None) -> tuple[Path, dict]:
+    """yt-dlp 로 영상(화면+소리)을 MP4 로 내려받는다. 반환: (영상 파일, 영상 정보)."""
+    yt_dlp = _ytdlp()
+    require_ffmpeg()  # 화면/소리 합치기에 필요
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = _ytdlp_opts(out_dir, stem, progress, cookies, cookies_from_browser)
+    h = int(max_height)
+    # MP4(H.264+AAC) 우선 -> 어디서나 재생. 없으면 아무 형식이나 받아 MP4 컨테이너로 합친다.
+    opts["format"] = (f"bv*[height<=?{h}][ext=mp4]+ba[ext=m4a]/b[height<=?{h}][ext=mp4]/"
+                      f"bv*[height<=?{h}]+ba/b[height<=?{h}]/bv*+ba/b")
+    opts["merge_output_format"] = "mp4"
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as e:
-        raise RuntimeError(f"유튜브에서 오디오를 받지 못했습니다: {e}") from e
-    title = info.get("title") or "youtube"
-    wav = out_dir / "source.wav"
-    if not wav.exists():
-        candidates = sorted(out_dir.glob("source.*"))
-        if not candidates:
-            raise RuntimeError("유튜브 오디오 다운로드에 실패했습니다.")
-        wav = candidates[0]
-    return wav, title
+        raise RuntimeError(f"영상을 받지 못했습니다: {e}\n{YTDLP_HINT}") from e
+    return _downloaded_path(info, out_dir, stem), _meta(info, url)
+
+
+def download_audio(url: str, out_dir: Path, stem: str = "source",
+                   progress: Callable[[float, str], None] | None = None,
+                   cookies: str | None = None,
+                   cookies_from_browser: str | None = None) -> tuple[Path, dict]:
+    """yt-dlp 로 소리만 내려받는다 (영상보다 훨씬 작고 빠름). 반환: (오디오 파일, 영상 정보)."""
+    yt_dlp = _ytdlp()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    opts = _ytdlp_opts(out_dir, stem, progress, cookies, cookies_from_browser, first_label="음성")
+    opts["format"] = "bestaudio/best"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        raise RuntimeError(f"유튜브에서 오디오를 받지 못했습니다: {e}\n{YTDLP_HINT}") from e
+    return _downloaded_path(info, out_dir, stem), _meta(info, url)
+
+
+def download_youtube(url: str, out_dir: Path,
+                     progress: Callable[[float, str], None] | None = None,
+                     cookies: str | None = None,
+                     cookies_from_browser: str | None = None) -> tuple[Path, str]:
+    """오디오만 내려받기. 반환: (오디오 파일, 영상 제목)."""
+    raw, meta = download_audio(url, out_dir, "source", progress, cookies, cookies_from_browser)
+    return raw, meta["title"]
+
+
+AUDIO_CODECS = {
+    # 확장자: ffmpeg 인코딩 옵션
+    "wav": ["-c:a", "pcm_s16le"],
+    "flac": ["-c:a", "flac"],
+    "mp3": ["-c:a", "libmp3lame", "-q:a", "0"],
+    "m4a": ["-c:a", "aac", "-b:a", "256k"],
+}
+
+
+def extract_audio(src: Path, dst: Path, sr: int = 44100, start: float | None = None,
+                  duration: float | None = None) -> Path:
+    """영상/음원 파일에서 소리만 뽑아 dst 확장자(wav/flac/mp3/m4a) 형식으로 저장한다."""
+    fmt = dst.suffix.lower().lstrip(".")
+    if fmt not in AUDIO_CODECS:
+        raise ValueError(f"지원하지 않는 음성 형식입니다: {fmt} (가능: {', '.join(AUDIO_CODECS)})")
+    if not Path(src).exists():
+        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {src}")
+    ffmpeg = require_ffmpeg()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [ffmpeg, "-y", "-loglevel", "error"]
+    if start:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", str(src)]
+    if duration:
+        cmd += ["-t", str(duration)]
+    cmd += ["-vn", "-ac", "2", "-ar", str(sr), *AUDIO_CODECS[fmt], str(dst)]
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    if done.returncode != 0:
+        msg = (done.stderr or "").strip().splitlines()
+        if fmt == "mp3" and any("libmp3lame" in m or "Unknown encoder" in m for m in msg):
+            raise RuntimeError("이 ffmpeg 에는 MP3 인코더가 없습니다. wav/m4a 로 받아 주세요.")
+        raise RuntimeError("음성 추출에 실패했습니다: " + (msg[-1] if msg else f"ffmpeg 오류 {done.returncode}"))
+    if not dst.exists() or dst.stat().st_size == 0:
+        raise RuntimeError("음성 추출 결과가 비어 있습니다 (소리 트랙이 없는 영상일 수 있어요).")
+    return dst
+
+
+@dataclass
+class FetchResult:
+    title: str
+    audio: Path
+    video: Path | None = None
+    meta: dict = field(default_factory=dict)
+
+
+def fetch(source: str, out_dir: Path, audio_format: str = "wav", keep_video: bool = True,
+          max_height: int = 1080, start: float | None = None, duration: float | None = None,
+          progress: Callable[[float, str], None] | None = None, cookies: str | None = None,
+          cookies_from_browser: str | None = None) -> FetchResult:
+    """유튜브 링크(또는 영상 파일) -> 영상 다운로드 -> 음성 추출.
+
+    결과: out_dir/<제목>.mp4 (영상), out_dir/<제목>.<audio_format> (음성), out_dir/info.json
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fmt = audio_format.lower().lstrip(".")
+    if fmt not in AUDIO_CODECS:
+        raise ValueError(f"지원하지 않는 음성 형식입니다: {fmt} (가능: {', '.join(AUDIO_CODECS)})")
+    report = progress or (lambda f, m: None)
+    if is_url(source):
+        tmp = out_dir / ".download"
+        if keep_video:
+            raw, meta = download_video(source, tmp, max_height, progress=report, cookies=cookies,
+                                       cookies_from_browser=cookies_from_browser)
+        else:
+            raw, meta = download_audio(source, tmp, progress=report, cookies=cookies,
+                                       cookies_from_browser=cookies_from_browser)
+    else:
+        raw = Path(source).expanduser()
+        if not raw.exists():
+            raise FileNotFoundError(f"파일을 찾을 수 없습니다: {raw}")
+        meta, tmp = {"title": raw.stem, "file": str(raw)}, None
+    name = safe_name(meta["title"])
+    video = None
+    if is_url(source) and keep_video:
+        video = out_dir / f"{name}{raw.suffix.lower()}"
+        video.unlink(missing_ok=True)  # 같은 영상을 다시 받을 때 (Windows 는 덮어쓰기 이동 불가)
+        shutil.move(str(raw), video)
+        raw = video
+    report(1.0, "음성 추출 중")
+    audio = extract_audio(raw, out_dir / f"{name}.{fmt}", start=start, duration=duration)
+    if tmp is not None:
+        shutil.rmtree(tmp, ignore_errors=True)
+    meta = dict(meta, start=start, duration_cut=duration, video=video.name if video else None,
+                audio=audio.name)
+    (out_dir / "info.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    return FetchResult(title=meta["title"], audio=audio, video=video, meta=meta)
 
 
 def to_wav(src: Path, dst: Path, sr: int = 44100, start: float | None = None,

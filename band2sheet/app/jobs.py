@@ -13,7 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ..audio_io import require_ffmpeg
+from ..audio_io import (AUDIO_CODECS, download_audio, download_video, extract_audio, is_url,
+                        require_ffmpeg)
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
 from ..project import Project
 from ..view import measure_times
@@ -30,13 +31,15 @@ class Job:
     filename: str
     created: float
     options: dict
-    status: str = "queued"  # queued | running | done | error
+    status: str = "queued"  # queued | running | ready(영상·음성만 받음) | done | error
     progress: float = 0.0
     stage: str = "대기 중"
     log: list[str] = field(default_factory=list)
     error: str | None = None
     result: dict | None = None  # 최근 렌더링 결과
     renders: dict[str, dict] = field(default_factory=dict)  # 키 -> 렌더링 결과
+    url: str | None = None  # 링크로 만든 작업 (유튜브 등)
+    source: dict | None = None  # 받은 영상·추출한 음성 정보 (파일 이름, 길이, 올린 사람 …)
 
 
 class EditMixin:
@@ -166,10 +169,79 @@ class JobManager(EditMixin):
         self.pool.submit(self._run, job_id)
         return job
 
+    def create_from_url(self, url: str, options: dict) -> Job:
+        """유튜브 등 영상 링크로 작업 만들기: 음성만 받아 바로 악보 (기본).
+
+        keep_video: 영상도 받기, fetch_only: 받기·추출까지만 하고 '준비됨' 에서 멈춤.
+        """
+        url = (url or "").strip()
+        if not is_url(url) or len(url) > 2000 or any(c.isspace() for c in url):
+            raise ValueError("http:// 또는 https:// 로 시작하는 영상 링크를 넣어 주세요.")
+        fmt = str(options.get("audio_format") or "mp3").lower()
+        if fmt not in AUDIO_CODECS:
+            raise ValueError(f"지원하지 않는 음성 형식입니다: {fmt}")
+        job_id = uuid.uuid4().hex[:12]
+        self.job_dir(job_id).mkdir(parents=True)
+        title = (options.get("title") or "").strip()[:120] or "링크에서 받는 중…"
+        job = Job(id=job_id, title=title, filename=url, created=time.time(), options=options, url=url)
+        with self.lock:
+            self.jobs[job_id] = job
+        self._save(job)
+        self.pool.submit(self._run, job_id)
+        return job
+
+    def start_analysis(self, job_id: str, options: dict) -> Job:
+        """영상·음성만 받아 둔 작업(ready)이나 실패한 작업을 이어서 악보까지 만들기."""
+        job = self.get(job_id)
+        has_input = any(self.job_dir(job_id).glob("input.*"))
+        if job.status not in ("ready", "error") or not (has_input or job.url):
+            raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
+        with self.lock:
+            job.options = {**job.options, **options, "fetch_only": False}
+            job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+        self._save(job)
+        self.pool.submit(self._run, job_id)
+        return job
+
+    def source_file(self, job_id: str, kind: str) -> Path:
+        job = self.get(job_id)
+        name = (job.source or {}).get(kind)
+        if kind not in ("video", "audio") or not name:
+            raise KeyError(kind)
+        return self.job_dir(job_id) / name
+
+    def _fetch(self, job: Job, d: Path, log, progress) -> None:
+        """링크 작업: 음성만(기본) 또는 영상 다운로드 -> input.<ext> 로 저장 -> 음성 추출."""
+        opts = job.options
+        keep_video = bool(opts.get("keep_video"))
+        progress(0.0, "링크 정보 확인 중")
+        log(f"{'영상' if keep_video else '음성'} 받기: {job.url}")
+        report = lambda f, m: progress(0.08 * f, m)  # noqa: E731
+        if keep_video:
+            raw, meta = download_video(job.url, d / "download",
+                                       max_height=int(opts.get("max_height") or 720), progress=report)
+        else:
+            raw, meta = download_audio(job.url, d / "download", progress=report)
+        src = d / f"input{raw.suffix.lower()}"
+        shutil.move(str(raw), src)
+        shutil.rmtree(d / "download", ignore_errors=True)
+        log(f"{'영상' if keep_video else '음성'} 저장: {meta['title']} ({src.stat().st_size / 1048576:.1f} MB)")
+        if not (opts.get("title") or "").strip():
+            job.title = meta["title"][:120]
+        fmt = str(opts.get("audio_format") or "mp3").lower()
+        progress(0.09, "음성 추출 중")
+        try:
+            audio = extract_audio(src, d / f"source_audio.{fmt}")
+        except RuntimeError:
+            if fmt != "mp3":
+                raise
+            audio = extract_audio(src, d / "source_audio.m4a")  # MP3 인코더 없는 ffmpeg
+        log(f"음성 추출: {audio.name} ({audio.stat().st_size / 1048576:.1f} MB)")
+        job.source = dict(meta, video=src.name if keep_video else None, audio=audio.name)
+
     def _run(self, job_id: str) -> None:
         job = self.get(job_id)
         d = self.job_dir(job_id)
-        src = next(d.glob("input.*"))
         opts = job.options
         last_save = [0.0]
 
@@ -186,6 +258,12 @@ class JobManager(EditMixin):
         job.status = "running"
         self._save(job)
         try:
+            if job.url and not job.source:
+                self._fetch(job, d, log, progress)
+                if opts.get("fetch_only"):
+                    job.status, job.progress, job.stage = "ready", 0.1, "영상·음성 준비 완료"
+                    return
+            src = next(d.glob("input.*"))
             a = AnalyzeOptions(
                 quality=opts.get("quality", "standard"),
                 split_vocals=bool(opts.get("split_vocals", True)),
