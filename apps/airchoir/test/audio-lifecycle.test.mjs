@@ -14,13 +14,19 @@ function fakeWebAudio(t, load = async () => {}) {
   class Node {
     constructor() {
       this.disconnected = false;
+      this.connections = [];
       this.gain = this.frequency = this.Q = this.pan = {
-        value: 0, setTargetAtTime() {}, setValueAtTime() {}, exponentialRampToValueAtTime() {},
+        value: 0,
+        setTargetAtTime(value) { this.value = value; },
+        setValueAtTime(value) { this.value = value; },
+        exponentialRampToValueAtTime(value) { this.value = value; },
+        linearRampToValueAtTime(value) { this.value = value; },
+        cancelScheduledValues() {},
       };
       this.port = { messages: [], postMessage(m) { this.messages.push(m); }, close() {} };
     }
-    connect(node) { return node; }
-    disconnect() { this.disconnected = true; }
+    connect(node) { this.connections.push(node); return node; }
+    disconnect() { this.disconnected = true; this.connections = []; }
     start() {}
     stop() { this.stopped = true; }
   }
@@ -30,6 +36,7 @@ function fakeWebAudio(t, load = async () => {}) {
       this.state = 'running'; this.currentTime = 5; this.sampleRate = 8000;
       this.destination = new Node();
       this.audioWorklet = { addModule: load };
+      this.oscillators = [];
     }
     createGain() { return new Node(); }
     createBiquadFilter() { return new Node(); }
@@ -37,6 +44,7 @@ function fakeWebAudio(t, load = async () => {}) {
     createStereoPanner() { return new Node(); }
     createBufferSource() { return new Node(); }
     createMediaStreamSource() { return new Node(); }
+    createOscillator() { const node = new Node(); this.oscillators.push(node); return node; }
     createBuffer(channels, len, sr) {
       const data = Array.from({ length: channels }, () => new Float32Array(len));
       return { length: len, sampleRate: sr, getChannelData: (c) => data[c], copyToChannel: (ch, c) => data[c].set(ch) };
@@ -168,6 +176,162 @@ test('dispose during worklet loading prevents a late graph from becoming ready',
   assert.equal(audio.ready, false);
   assert.equal(audio.ctx, null);
   assert.equal(contexts[0].state, 'closed');
+});
+
+test('product and output mute selected before init survive graph creation without starting tones', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  audio.setProduct('chord');
+  audio.setOutputMuted(true);
+  await audio.init();
+  assert.equal(audio.product, 'chord');
+  assert.equal(audio.voiceRecord.gain.value, 0);
+  assert.equal(audio.accompRecord.gain.value, 1);
+  assert.equal(audio.master.gain.value, 0);
+  assert.equal(audio.ctx.oscillators.length, 0);
+  assert.deepEqual(audio.accompaniment.output.connections, [audio.master, audio.accompRecord]);
+  assert.deepEqual(audio.accompRecord.connections, [audio.recBus]);
+  audio.setOutputMuted(false);
+  assert.ok(audio.master.gain.value > 0 && audio.master.gain.value <= 1);
+  assert.throws(() => audio.setProduct('unknown'), TypeError);
+  assert.equal(audio.product, 'chord');
+  await audio.dispose();
+});
+
+test('product switches choose one recording bus, stop mic tracks, and release chord tones', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  assert.equal(audio.product, 'choir');
+  assert.equal(audio.voiceRecord.gain.value, 1);
+  assert.equal(audio.accompRecord.gain.value, 0);
+  const input = audio.ctx.createMediaStreamSource();
+  let stopped = 0;
+  audio.connectSource(input, 'mic', { stream: { getTracks: () => [{ stop: () => stopped++ }] } });
+  assert.deepEqual(input.connections, [audio.node, audio.dry, audio.voiceRecord]);
+  assert.ok(audio.harmGain.connections.includes(audio.voiceRecord));
+  assert.ok(audio.reverb.connections.includes(audio.voiceRecord));
+  assert.deepEqual(audio.voiceRecord.connections, [audio.recBus]);
+  audio.setDry(0.4);
+  audio.setGesture({ present: true, fist: false, level: 0.5, brightness: 0.5, preset: 2 });
+  assert.ok(audio.harmGain.gain.value > 0);
+  audio.setProduct('chord');
+  assert.equal(stopped, 1);
+  assert.equal(audio.source, null);
+  assert.equal(input.disconnected, true);
+  assert.equal(audio.voiceRecord.gain.value, 0);
+  assert.equal(audio.accompRecord.gain.value, 1);
+  assert.equal(audio.dry.gain.value, 0);
+  assert.equal(audio.harmGain.gain.value, 0);
+  audio.setGesture({ present: true, fist: false, level: 1, brightness: 1, preset: 4 });
+  assert.equal(audio.harmGain.gain.value, 0);
+  audio.accompaniment.setChord([48, 52, 55]);
+  assert.equal(audio.accompaniment.count, 3);
+  audio.setProduct('choir');
+  assert.equal(audio.accompaniment.count, 0);
+  assert.ok(audio.ctx.oscillators.every((node) => node.disconnected));
+  assert.equal(audio.voiceRecord.gain.value, 1);
+  assert.equal(audio.accompRecord.gain.value, 0);
+  assert.equal(audio.dry.gain.value, 0.4);
+  assert.equal(audio.source, null, 'switching back must not reopen the microphone');
+  await audio.dispose();
+});
+
+test('switching to chords cancels a pending microphone grant and rejects further voice inputs', async (t) => {
+  fakeWebAudio(t);
+  const permission = deferred();
+  let requested = 0;
+  const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: {
+    mediaDevices: { getUserMedia() { requested++; return permission.promise; } },
+  } });
+  t.after(() => Object.defineProperty(globalThis, 'navigator', oldNavigator));
+  const audio = new ChoirAudio();
+  await audio.init();
+  const mic = audio.useMic();
+  const rejected = assert.rejects(mic, { name: 'AbortError' });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(requested, 1);
+  audio.setProduct('chord');
+  let stopped = 0;
+  permission.resolve({ getTracks: () => [{ stop: () => stopped++ }] });
+  await rejected;
+  assert.equal(stopped, 1);
+  assert.equal(audio.source, null);
+  await assert.rejects(audio.useMic(), { name: 'AbortError' });
+  await assert.rejects(audio.useDemo(), { name: 'AbortError' });
+  await assert.rejects(audio.useFile({ arrayBuffer() { throw new Error('file must not be read'); } }), { name: 'AbortError' });
+  assert.equal(requested, 1);
+  await audio.dispose();
+});
+
+test('capture uses the recorded product snapshot to bypass microphone latency for chords', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  t.mock.method(audio, 'roundTripSec', () => 0.1);
+  for (const [product, recordProduct, shift] of [
+    ['choir', 'chord', 0], ['chord', 'choir', 0.1], ['chord', undefined, 0],
+    ['choir', undefined, 0.1],
+  ]) {
+    audio.setProduct(product);
+    const orb = { id: 1, begin: 2, len: 2, recordProduct };
+    const rejected = assert.rejects(audio.capture(orb), { name: 'AbortError' });
+    const request = audio.recorder.port.messages.at(-1);
+    assert.equal(request.from, Math.round((2 + shift) * audio.ctx.sampleRate));
+    assert.equal(request.to - request.from, 2 * audio.ctx.sampleRate);
+    audio.stop(orb);
+    await rejected;
+  }
+  await audio.dispose();
+});
+
+test('panic silences output and chord voices while retaining recorded loops for the app', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  audio.setProduct('chord');
+  audio.accompaniment.setChord([48, 52, 55]);
+  const buffer = audio.ctx.createBuffer(2, 16000, 8000);
+  const orb = { id: 1, begin: 2, len: 2, x: 0.5, y: 0.5, buffer };
+  audio.play(orb);
+  audio.panic();
+  assert.equal(audio.outputMuted, true);
+  assert.equal(audio.master.gain.value, 0);
+  assert.equal(audio.harmGain.gain.value, 0);
+  assert.equal(audio.dry.gain.value, 0);
+  assert.equal(audio.accompaniment.count, 0);
+  assert.ok(audio.ctx.oscillators.every((node) => node.stopped && node.disconnected));
+  assert.equal(orb.buffer, buffer);
+  assert.equal(audio.orbNodes.size, 1, 'loop muting/state is owned by the app');
+  audio.setOutputMuted(false);
+  assert.ok(audio.master.gain.value > 0);
+  await audio.dispose();
+});
+
+test('dispose closes accompaniment and disconnects both recording taps before the context', async (t) => {
+  fakeWebAudio(t);
+  const audio = new ChoirAudio();
+  await audio.init();
+  audio.setProduct('chord');
+  audio.accompaniment.setChord([48, 52, 55]);
+  const synth = audio.accompaniment;
+  const ctx = audio.ctx;
+  const taps = [audio.voiceRecord, audio.accompRecord];
+  const close = ctx.close.bind(ctx);
+  t.mock.method(ctx, 'close', async () => {
+    assert.equal(synth.disposed, true);
+    assert.equal(synth.output.disconnected, true);
+    assert.ok(taps.every((node) => node.disconnected));
+    await close();
+  });
+  await audio.dispose();
+  assert.equal(ctx.state, 'closed');
+  assert.equal(audio.accompaniment, null);
+  assert.equal(audio.voiceRecord, null);
+  assert.equal(audio.accompRecord, null);
+  assert.ok(ctx.oscillators.every((node) => node.disconnected));
+  await audio.dispose();
 });
 
 test('recorder worklet drops a canceled future read', async (t) => {

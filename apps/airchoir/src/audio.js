@@ -6,8 +6,10 @@
 //         └──────────── 녹음 버스 ← (합창단 볼륨, 리버브)   오브들 ─┤
 //                         └→ 녹음기(worklet, 최근 40초)       메트로놈 ─┘
 // 내 목소리는 워클릿을 거치지 않아 추가 지연이 없다.
-// 녹음 버스에는 목소리(모니터 볼륨과 무관)와 화음만 들어가고, 오브와 메트로놈은 빠진다.
+// 녹음 버스에는 선택한 제품의 소리만 들어간다: 목소리+화음 또는 독립 코드 신스.
+// 목소리 녹음은 모니터 볼륨과 무관하며, 오브와 메트로놈은 두 녹음 경로에서 모두 빠진다.
 import { renderDemo } from '../core/dsp.js';
+import { Accompaniment } from './accompaniment.js';
 import { orbMix } from './orbs.js';
 
 const canceled = () => new DOMException('Canceled', 'AbortError');
@@ -32,6 +34,10 @@ export class ChoirAudio {
     this.reqs = new Map();
     this.orbNodes = new Map();
     this.onStats = null;
+    this.product = 'choir';
+    this.accompaniment = null;
+    this.outputMuted = false;
+    this.dryLevel = 0;
     this.params = { engine: 'psola', preset: 0, tonic: 0, scale: 'major', lock: true, dryGain: 0, harmGain: 1, windowMs: 40 };
     this.control = { gain: 0, cutoff: 0, reverb: 0 };
   }
@@ -76,7 +82,7 @@ export class ChoirAudio {
       this.dry = ctx.createGain();
       this.dry.gain.value = 0;
       this.master = ctx.createGain();
-      this.master.gain.value = 0.9;
+      this.master.gain.value = this.outputMuted ? 0 : 0.75;
 
       this.node.connect(this.filter).connect(this.harmGain).connect(this.master);
       this.harmGain.connect(this.reverbSend).connect(this.reverb).connect(this.master);
@@ -87,6 +93,13 @@ export class ChoirAudio {
       await ctx.audioWorklet.addModule(new URL('../core/recorder-worklet.js', import.meta.url));
       if (this.ctx !== ctx) throw canceled();
       this.recBus = ctx.createGain();
+      this.voiceRecord = ctx.createGain();
+      this.accompRecord = ctx.createGain();
+      this.voiceRecord.connect(this.recBus);
+      this.accompRecord.connect(this.recBus);
+      this.accompaniment = new Accompaniment(ctx, {
+        destination: this.master, recordDestination: this.accompRecord,
+      });
       this.recorder = new AudioWorkletNode(ctx, 'airchoir-recorder', {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -97,8 +110,8 @@ export class ChoirAudio {
       const sink = ctx.createGain();
       sink.gain.value = 0; // 녹음기가 계속 돌도록 그래프에 연결만 해 둔다
       this.recBus.connect(this.recorder).connect(sink).connect(ctx.destination);
-      this.harmGain.connect(this.recBus);
-      this.reverb.connect(this.recBus);
+      this.harmGain.connect(this.voiceRecord);
+      this.reverb.connect(this.voiceRecord);
       this.reqs = new Map();
       this.reqId = 1;
       this.recorder.port.onmessage = (e) => {
@@ -116,6 +129,7 @@ export class ChoirAudio {
       this.click.gain.value = 0.35;
       this.click.connect(this.master);
       this.metronome = { on: false, next: 0, timer: null };
+      this.setProduct(this.product);
       this.post();
       this.ready = true;
     } catch (err) {
@@ -140,12 +154,55 @@ export class ChoirAudio {
   }
 
   setDry(v) {
-    this.dry?.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
+    this.dryLevel = v;
+    this.dry?.gain.setTargetAtTime(this.product === 'choir' ? v : 0, this.ctx.currentTime, 0.03);
+  }
+
+  setProduct(product) {
+    if (product !== 'choir' && product !== 'chord') throw new TypeError('Unknown audio product');
+    if (product !== this.product) this.sourceRequest++;
+    this.product = product;
+    if (product === 'chord') {
+      this.stopSource();
+      if (this.harmGain) {
+        this.harmGain.gain.cancelScheduledValues(this.ctx.currentTime);
+        this.harmGain.gain.setValueAtTime(0, this.ctx.currentTime);
+      }
+      this.control.gain = 0;
+    } else {
+      this.accompaniment?.release({ immediate: true });
+    }
+    this.setDry(this.dryLevel);
+    if (this.voiceRecord) {
+      const now = this.ctx.currentTime;
+      this.voiceRecord.gain.setValueAtTime(product === 'choir' ? 1 : 0, now);
+      this.accompRecord.gain.setValueAtTime(product === 'chord' ? 1 : 0, now);
+    }
+  }
+
+  setOutputMuted(muted) {
+    this.outputMuted = Boolean(muted);
+    if (!this.master) return;
+    const now = this.ctx.currentTime;
+    this.master.gain.cancelScheduledValues(now);
+    if (this.outputMuted) this.master.gain.setValueAtTime(0, now);
+    else this.master.gain.setTargetAtTime(0.75, now, 0.015);
+  }
+
+  panic() {
+    this.accompaniment?.release({ immediate: true });
+    for (const node of [this.harmGain, this.dry]) {
+      if (!node) continue;
+      node.gain.cancelScheduledValues(this.ctx.currentTime);
+      node.gain.setValueAtTime(0, this.ctx.currentTime);
+    }
+    this.control.gain = 0;
+    this.setOutputMuted(true);
   }
 
   // 손동작 상태 → 화음 구성, 합창단 볼륨, 밝기
   setGesture(s) {
-    if (!this.ready) return;
+    if (!this.ready || this.product !== 'choir') return;
     const now = this.ctx.currentTime;
     const silent = !s.present || s.fist;
     const gain = silent ? 0 : 0.12 + 1.0 * s.level;
@@ -179,11 +236,12 @@ export class ChoirAudio {
   connectSource(node, kind, extra = {}) {
     node.connect(this.node);
     node.connect(this.dry);
-    node.connect(this.recBus);
+    node.connect(this.voiceRecord);
     this.source = { node, kind, ...extra };
   }
 
   async useMic() {
+    if (this.product !== 'choir') throw canceled();
     const request = ++this.sourceRequest;
     await this.init();
     if (request !== this.sourceRequest) throw canceled();
@@ -215,6 +273,7 @@ export class ChoirAudio {
   }
 
   async useDemo() {
+    if (this.product !== 'choir') throw canceled();
     const request = ++this.sourceRequest;
     await this.init();
     if (request !== this.sourceRequest) throw canceled();
@@ -222,6 +281,7 @@ export class ChoirAudio {
   }
 
   async useFile(file) {
+    if (this.product !== 'choir') throw canceled();
     const request = ++this.sourceRequest;
     await this.init();
     if (request !== this.sourceRequest) throw canceled();
@@ -250,7 +310,7 @@ export class ChoirAudio {
     if (!this.ready) return Promise.reject(new Error('audio not ready'));
     const ctx = this.ctx;
     const sr = ctx.sampleRate;
-    const shift = this.roundTripSec();
+    const shift = (orb.recordProduct ?? this.product) === 'chord' ? 0 : this.roundTripSec();
     const from = Math.round((orb.begin + shift) * sr);
     const to = from + Math.round(orb.len * sr);
     return new Promise((resolve, reject) => {
@@ -345,7 +405,9 @@ export class ChoirAudio {
       n.src.disconnect(); n.gain.disconnect(); n.pan.disconnect();
     }
     this.orbNodes.clear();
-    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'recBus', 'recorder', 'orbBus', 'click']) {
+    this.accompaniment?.dispose();
+    this.accompaniment = null;
+    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'recBus', 'voiceRecord', 'accompRecord', 'recorder', 'orbBus', 'click']) {
       const node = this[key];
       if (node?.port) { node.port.onmessage = null; node.port.close(); }
       node?.disconnect();

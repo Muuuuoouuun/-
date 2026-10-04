@@ -5,6 +5,7 @@
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check": "node test/pointer.check.mjs && node test/phase0.check.mjs && node test/controls.check.mjs",
+    "check:performance": "node test/performance.check.mjs",
     "check:camera": "node test/app.check.mjs --allow-fixture-downloads",
     "start": "python3 -m http.server 8000 --bind 127.0.0.1"
   },

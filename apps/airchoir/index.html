@@ -42,6 +42,8 @@
    <div aria-live="polite" class="notice" hidden="" id="notice" role="status">
    </div>
    <main class="main">
+    <section aria-label="연주 모드" class="performance-controls" id="performance-controls">
+    </section>
     <section aria-label="녹음과 박자" class="transport">
      <div class="record-actions">
       <button aria-keyshortcuts="Space" class="record-btn" disabled="" id="record-toggle">
@@ -100,6 +102,8 @@
      </video>
      <canvas aria-hidden="true" id="overlay">
      </canvas>
+     <div class="performance-wheels" hidden="" id="performance-wheels">
+     </div>
      <div class="hud">
       <div class="hud-card">
        <small>
@@ -462,7 +466,7 @@
    </main>
    <footer class="footer">
     <span>
-     녹음에는 입력과 화음만 · 기존 루프와 클릭 소리는 제외
+     녹음에는 현재 악기만 · 기존 루프와 클릭 소리는 제외
     </span>
     <span>
      세션을 종료하면 오브가 지워집니다.

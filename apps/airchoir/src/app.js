@@ -4,6 +4,7 @@ import { HandCamera } from './hands.js';
 import { ChoirAudio } from './audio.js';
 import { drawStage, coverMapper } from './stage.js';
 import { Transport, OrbStation } from './orbs.js';
+import { Performance } from './performance.js';
 
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
@@ -43,6 +44,7 @@ let sessionActive = false;
 let manualRecording = false;
 let selectedOrbId = null;
 let loopSignature = '';
+let performer;
 const pointer = { inside: false, down: false, x: 0.5, y: 0.5, fingers: 2 };
 
 // 오브 모드: 마디 그리드 + 오브 상태. 녹음한 구간의 음 높이로 오브 색을 정한다.
@@ -55,7 +57,14 @@ function medianMidi(from, to) {
 const station = new OrbStation({
   transport,
   audio: {
-    capture: (orb) => audio.capture(orb).then(() => (orb.midi = medianMidi(orb.begin, orb.begin + orb.len))),
+    capture: (orb) => {
+      orb.recordProduct = performer?.state.product || 'choir';
+      const chord = performer?.state.current.chord;
+      if (orb.recordProduct === 'chord' && chord) orb.chord = { ...chord };
+      return audio.capture(orb).then(() => (orb.midi = orb.recordProduct === 'chord'
+        ? (orb.chord ? 48 + orb.chord.root : null)
+        : medianMidi(orb.begin, orb.begin + orb.len)));
+    },
     play: (orb) => audio.play(orb),
     stop: (orb) => audio.stop(orb),
     mix: (orb) => audio.mix(orb),
@@ -111,6 +120,7 @@ function watchAudio(instance) {
 watchAudio(audio);
 
 async function startSound(kind, file) {
+  if (performer?.state.product === 'chord') return false;
   const request = ++soundRequest;
   const controls = ['src-mic', 'src-demo', 'src-file'].map($);
   controls.forEach((control) => (control.disabled = true));
@@ -167,13 +177,23 @@ async function startCamera(request) {
   cam.onResult = (list, aspect) => {
     const hands = list.map((lm) => ({ ...analyzeHand(lm, aspect), landmarks: lm }));
     gesture = tracker.update(hands, performance.now());
-    audio.setGesture(gesture);
+    const r = $('stage').getBoundingClientRect();
+    const video = $('video');
+    const mapper = coverMapper(r.width, r.height, video.videoWidth, video.videoHeight);
+    performer.cameraHands(hands, p => {
+      const [x, y] = mapper.map(p.x, p.y); return { x: x + r.left, y: y + r.top };
+    }, performance.now());
+    if (performer.legacy) {
+      gesture = performer.routeLegacy(gesture);
+      audio.setGesture(gesture);
+    }
   };
   cam.run();
 }
 
 function usePointer(message) {
   mode = 'pointer';
+  if (performer?.state.product === 'chord') performer.state.input = 'manual';
   $('stage').classList.add('pointer');
   $('pointer-help').hidden = false;
   status('st-cam', '마우스 모드', 'on');
@@ -190,7 +210,16 @@ async function start(kind) {
   $('start-cancel').focus();
   notice('');
   const soundKind = kind === 'pointer' ? 'demo' : kind;
-  let ok = await startSound(soundKind);
+  let ok;
+  if (performer.state.product === 'chord') {
+    performer.state.input = kind === 'pointer' ? 'manual' : 'hands';
+    try {
+      audio.setProduct('chord');
+      await audio.init();
+      ok = true;
+      status('st-audio', '코드 악기 준비', 'on');
+    } catch { notice('코드 악기를 시작하지 못했어요. 다시 시도해 주세요.', 'error'); ok = false; }
+  } else ok = await startSound(soundKind);
   if (request !== startupRequest) return;
   if (!ok && soundKind === 'mic') ok = await startSound('demo');
   if (request !== startupRequest) return;
@@ -208,6 +237,9 @@ async function start(kind) {
   starting = false;
   sessionActive = true;
   $('start').hidden = true;
+  audio.setOutputMuted(false);
+  performer.sessionStarted();
+  updateProductControls();
   renderLoopHud();
   $('record-toggle').focus();
 }
@@ -215,6 +247,7 @@ async function start(kind) {
 // Session end and page exit share the same cleanup; a fresh engine lets a canceled
 // permission/worklet request finish without blocking a new session.
 function stopSession({ focus = true } = {}) {
+  performer?.stop('세션 종료 · 다시 시작할 수 있어요.', true);
   startupRequest++;
   soundRequest++;
   starting = sessionActive = manualRecording = false;
@@ -229,6 +262,7 @@ function stopSession({ focus = true } = {}) {
   void oldAudio.dispose().catch(() => {});
   audio = new ChoirAudio();
   audio.setParams({ ...oldAudio.params });
+  audio.setProduct(performer?.state.product || 'choir');
   watchAudio(audio);
   tracker = new GestureTracker();
   gesture = tracker.state();
@@ -254,6 +288,7 @@ function stopSession({ focus = true } = {}) {
   status('st-cam', '시작 전', 'off');
   notice('');
   renderLoopHud();
+  performer?.render();
   if (focus) $('start-pointer').focus();
 }
 
@@ -308,10 +343,11 @@ function bindPointer() {
     pointer.x = (e.clientX - r.left) / r.width;
     pointer.y = (e.clientY - r.top) / r.height;
     pointer.inside = true;
+    performer?.rearmLegacy();
   };
   stage.addEventListener('pointermove', move);
   stage.addEventListener('pointerdown', (e) => {
-    if (mode !== 'pointer') return;
+    if (mode !== 'pointer' || !performer.legacy || performer.settingsOpen) return;
     move(e);
     pointer.down = true;
     stage.setPointerCapture?.(e.pointerId);
@@ -367,7 +403,7 @@ function bindControls() {
   };
   $('orb-mute').onclick = () => {
     const orb = station.orbs.find((o) => o.id === selectedOrbId);
-    if (orb) { orb.muted = !orb.muted; audio.mix(orb); renderLoopHud(); }
+    if (orb) { orb.muted = !orb.muted; if (!orb.muted) { audio.setOutputMuted(false); audio.play(orb); } audio.mix(orb); renderLoopHud(); }
   };
   $('orb-delete').onclick = () => {
     const orb = station.orbs.find((o) => o.id === selectedOrbId);
@@ -384,11 +420,17 @@ function bindControls() {
   document.querySelectorAll('[data-engine]').forEach((b) => (b.onclick = () => setEngine(b.dataset.engine)));
 
   window.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || performer.settingsOpen) return;
     if (e.target.closest?.('input, select, textarea, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const k = e.key.toLowerCase();
     if (k === 'escape') {
       if (starting) { e.preventDefault(); stopSession(); }
-      else if (['countin', 'recording', 'finishing'].includes(station.mode)) { e.preventDefault(); cancelRecording(); }
+      else {
+        e.preventDefault();
+        const wasRecording = ['countin', 'recording', 'finishing'].includes(station.mode);
+        performer.stop('전체 정지 · 기존 오브는 보관했어요.', true);
+        if (wasRecording) $('record-toggle').focus();
+      }
     } else if (k === ' ' && !e.target.closest?.('button, a, summary')) { e.preventDefault(); recordAction(); }
     else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && e.target.closest?.('#stage, #loop-list')) {
       const orb = station.orbs.find((o) => o.id === selectedOrbId && o.state === 'placed');
@@ -399,8 +441,8 @@ function bindControls() {
       station.keepInside(orb);
       audio.mix(orb);
     }
-    else if (ENGINE_KEYS[k]) setEngine(ENGINE_KEYS[k]);
-    else if (mode === 'pointer' && k >= '0' && k <= '5') pointer.fingers = +k;
+    else if (ENGINE_KEYS[k] && performer.state.product === 'choir') setEngine(ENGINE_KEYS[k]);
+    else if (mode === 'pointer' && performer.legacy && k >= '0' && k <= '5') { pointer.fingers = +k; performer.rearmLegacy(); }
   });
 }
 
@@ -450,7 +492,8 @@ function drawOverlay() {
       y1: 1 - 52 / H,
     };
     const manual = manualRecording && ['countin', 'recording'].includes(station.mode);
-    station.update(manual ? { ...gesture, present: true, pinch: true, fist: false, screen } : { ...gesture, screen }, now);
+    const routed = performer.legacy && !performer.blocked && !performer.settingsOpen ? { ...gesture, screen } : { present: false, pinch: false, fist: false, screen: null };
+    station.update(manual ? { ...routed, present: true, pinch: true, fist: false, screen } : routed, now);
     const recording = ['countin', 'recording', 'finishing'].includes(station.mode);
     audio.setMetronome(metronomeWanted || recording, transport);
     loops = { station, transport, now, pinchAt: screen?.pinchPoint, selectedId: selectedOrbId, reducedMotion: motionPreference.matches };
@@ -557,12 +600,12 @@ function renderLoopHud() {
     holding: '던지거나 내려놓기로 반복 재생',
     drag: '좌우는 패닝 · 높이는 음량',
   };
-  $('record-detail').textContent = !sessionActive ? '데모나 마이크로 세션을 시작하세요.' : detail[mode] || 'Space로 녹음 · 최대 4마디';
+  $('record-detail').textContent = !sessionActive ? '악기를 고르고 세션을 시작하세요.' : detail[mode] || 'Space로 녹음 · 최대 4마디';
   $('record-toggle').dataset.state = mode;
   $('record-label').textContent = {countin:'대기 취소',recording:'녹음 마치기',finishing:'마디 마무리 중',holding:'오브 내려놓기',drag:'오브 이동 중'}[mode] || '녹음 시작';
   $('record-toggle').disabled = !sessionActive || !audio.ready || ['finishing','drag'].includes(mode) || (mode === 'idle' && station.count >= station.maxOrbs);
   $('record-cancel').hidden = !['recording', 'finishing'].includes(mode);
-  $('stage-empty').hidden = !sessionActive || station.count > 0 || mode !== 'idle' || gesture.present;
+  $('stage-empty').hidden = performer?.state.product === 'chord' || performer?.state.input === 'manual' || !sessionActive || station.count > 0 || mode !== 'idle' || gesture.present;
   $('orb-count').textContent = `${station.count} / ${station.maxOrbs}`;
   const busy = station.count > 0 || station.mode !== 'idle';
   $('bpm').disabled = busy;
@@ -606,15 +649,20 @@ let lastHud = 0;
 let frameId;
 function frame(now) {
   if (!active) return;
-  if (mode === 'pointer') {
+  if (mode === 'pointer' && performer.legacy) {
     gesture = tracker.update(pointerHand(), now);
+    gesture = performer.routeLegacy(gesture);
     audio.setGesture(gesture);
   }
+  // Video callbacks use performance.now(); use the same clock here rather than
+  // the earlier rAF frame timestamp, which can precede a video observation.
+  performer.tick(performance.now(), mode === 'camera');
   drawOverlay();
   if (now - lastHud > 70) {
     lastHud = now;
     renderHud();
     drawTrace();
+    performer.render();
   }
   frameId = requestAnimationFrame(frame);
 }
@@ -630,6 +678,45 @@ window.addEventListener('pageshow', () => {
   frameId = requestAnimationFrame(frame);
 });
 
+function pausePerformance() {
+  manualRecording = false;
+  station.cancelRecording();
+  station.prev = { pinch: false, fist: false };
+  pointer.down = pointer.inside = false;
+  for (const orb of station.orbs) { orb.muted = true; audio.stop(orb); }
+  metronomeWanted = false;
+  $('metronome').checked = false;
+  audio.setMetronome(false, transport);
+  renderLoopHud();
+}
+
+function updateProductControls() {
+  const chord = performer.state.product === 'chord';
+  for (const id of ['src-mic', 'src-demo', 'src-file', 'dry', 'key', 'scale', 'lock']) $(id).disabled = chord || !sessionActive;
+  document.querySelectorAll('[data-engine]').forEach(b => (b.disabled = chord));
+  $('source-name').textContent = chord ? '코드 악기 · 마이크 입력 없이 합성' : $('source-name').textContent;
+}
+
+performer = new Performance({
+  getAudio: () => audio,
+  isReady: () => sessionActive && audio.ready,
+  hasCamera: () => mode === 'camera',
+  notify: text => notice(text),
+  onStop: pausePerformance,
+  onTransition: async (product, field) => {
+    if (starting) { stopSession({ focus: false }); return; }
+    if (field !== 'product') return;
+    soundRequest++;
+    audio.setProduct(product);
+    if (sessionActive && product === 'choir' && !audio.source) await startSound('demo');
+    if (sessionActive && product === 'chord') status('st-audio', '코드 악기 준비', 'on');
+    updateProductControls();
+  },
+});
+window.airchoir.performance = performer.state;
+window.airchoir.performanceController = performer;
+window.addEventListener('blur', () => performer.stop('창을 벗어나 전체 정지했어요.', true));
+document.addEventListener('visibilitychange', () => { if (document.hidden) performer.stop('화면이 숨겨져 전체 정지했어요.', true); });
 bindControls();
 bindPointer();
 renderLoopHud();
