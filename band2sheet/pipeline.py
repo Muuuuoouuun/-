@@ -59,6 +59,16 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
 
     opts = opts or AnalyzeOptions()
     out_dir.mkdir(parents=True, exist_ok=True)
+    from .importer import import_symbolic, is_symbolic
+
+    if source and not opts.stems_dir and is_symbolic(source):
+        # MIDI·MusicXML: 소리 분석 없이 바로 프로젝트로 (변환 모드)
+        if progress:
+            progress(0.1, "① 악보 파일 불러오는 중")
+        project = import_symbolic(source, out_dir, None, log)
+        if progress:
+            progress(0.95, "분석 완료")
+        return project
     work = out_dir / "work"
     stems_out = out_dir / "stems"
 
@@ -189,12 +199,7 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         db = rhythm.downbeat_from_model(beats, beat_info.downbeats, project.beats_per_bar)
         project.downbeat = db if db is not None else rhythm.estimate_downbeat(
             {k: t.notes for k, t in tracks.items()}, TimeMap(beats), project.beats_per_bar)
-    # 전조: 마디별 음높이 분포로 구간별 키를 찾는다
-    segs = key_segments(bar_pitch_hists(tracks, TimeMap(beats), project.downbeat,
-                                        project.beats_per_bar))
-    if len(segs) > 1:  # 전조가 있을 때만 구간별 키를 쓴다 (없으면 곡 전체 추정이 더 안정적)
-        project.key = segs[0][1]
-        project.key_changes = [(float(bar * project.beats_per_bar), k) for bar, k in segs[1:]]
+    detect_modulations(project)
     key = project.key
     mods = "".join(f" → {k.short_name}({int(b // project.beats_per_bar) + 1}마디)"
                    for b, k in project.key_changes)
@@ -203,6 +208,16 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     project.save(out_dir / "project.json")
     step(0.95, "분석 완료")
     return project
+
+
+def detect_modulations(project: Project) -> None:
+    """전조: 마디별 음높이 분포로 구간별 키를 찾는다.
+    전조가 있을 때만 구간별 키를 쓴다 (없으면 곡 전체 추정이 더 안정적)."""
+    segs = key_segments(bar_pitch_hists(project.tracks, TimeMap(project.beat_times), project.downbeat,
+                                        project.beats_per_bar))
+    if len(segs) > 1:
+        project.key = segs[0][1]
+        project.key_changes = [(float(bar * project.beats_per_bar), k) for bar, k in segs[1:]]
 
 
 ACCOMPANIMENT = {"guitar", "piano", "other", "backing_vocals"}
@@ -522,12 +537,13 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
                             number_shift=number_shift)
         numbers = chord_chart(chord_events, key_map, grid, project, lyrics, sections=sections,
                               numbers=True, number_shift=number_shift)
-        for fname, text in (("chords.txt", chart), ("chords_nashville.txt", numbers)):
+        pro = chordpro_sheet(chord_events, key_map, grid, project, lyrics, sections=sections)
+        for fname, text in (("chords.txt", chart), ("chords_nashville.txt", numbers), ("song.chordpro", pro)):
             path = out_dir / fname
             path.write_text(text, encoding="utf-8")
             result.files.append(path)
         result.chord_chart, result.nashville_chart = chart, numbers
-        log("   ✓ 코드표 (chords.txt, 내슈빌 넘버 chords_nashville.txt)")
+        log("   ✓ 코드표 (chords.txt, 내슈빌 넘버 chords_nashville.txt, ChordPro song.chordpro)")
     return result
 
 
@@ -698,18 +714,11 @@ def _pad(text: str, width: int) -> str:
     return text + " " * max(0, width - _width(text))
 
 
-def chord_chart(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Project, lyrics=(),
-                bars_per_line: int = 4, sections=None, numbers: bool = False,
-                number_shift: int = 0) -> str:
-    """구간(섹션)별·마디별 코드 + (있으면) 가사를 적은 텍스트 코드표.
-
-    numbers=True 면 내슈빌 넘버(1, 4, 5, 6m …)로 적는다. 전조된 곳에는 새 키를 표시한다.
-    """
-    from .notation import capo_suggestion
-
-    km = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
+def _chart_bars(chords_: list[ChordEvent], km: KeyMap, grid, project: Project, lyrics=(),
+                numbers: bool = False) -> tuple[int, list[list[str]], list[list[str]]]:
+    """마디마다 (코드 이름들, 가사 낱말들) — 악보 마디 번호(못갖춘마디 반영) 기준."""
     bpb = grid.beats_per_bar
-    shift = grid.shift_beats  # 악보의 마디 번호와 맞춘다
+    shift = grid.shift_beats
     n_bars = int(np.ceil((max(c.end for c in chords_) + shift) / bpb)) if chords_ else 0
 
     def label(c: ChordEvent, bar: int) -> str:
@@ -735,6 +744,72 @@ def chord_chart(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Pro
         b = int(k) + shift // bpb
         if 0 <= b < n_bars:
             bar_words[b] = [text] if text else []
+    return n_bars, bars, bar_words
+
+
+CHORDPRO_ENV = {"verse": "verse", "chorus": "chorus", "bridge": "bridge"}
+
+
+def chordpro_sheet(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Project, lyrics=(),
+                   sections=None, bars_per_line: int = 4) -> str:
+    """ChordPro 형식 (OnSong · SongbookPro · Planning Center 등 예배 앱에서 바로 열림).
+
+    가사 앞에 [코드] 를 넣고, 절·후렴·브리지는 구간 블록으로, 전조는 {key:} 로 적는다."""
+    from .notation import capo_suggestion
+
+    km = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
+    bpb = grid.beats_per_bar
+    shift = grid.shift_beats
+    n_bars, bars, bar_words = _chart_bars(chords_, km, grid, project, lyrics)
+    first = km.first
+    out = [f"{{title: {project.title}}}", f"{{key: {first.short_name}}}",
+           f"{{tempo: {project.tempo_bpm:.0f}}}", f"{{time: {project.time_signature}}}"]
+    capo = capo_suggestion(first.tonic, first.mode)
+    if capo:
+        out.append(f"{{comment: Capo {capo[0]} ({capo[1]} shapes)}}")
+    out.append("")
+    secs = [(s.start_bar + shift // bpb, s.end_bar + shift // bpb, s) for s in (sections or [])]
+    if not secs:
+        secs = [(0, n_bars, None)]
+    changes = {int(off // grid.bar_ql): k for off, k in km.changes()}
+    for s0, s1, sec in secs:
+        s1 = min(s1, n_bars)
+        if s0 >= s1:
+            continue
+        for b, k in changes.items():
+            if s0 <= b < s1:
+                out.append(f"{{key: {k.short_name}}}")
+        env = CHORDPRO_ENV.get(sec.kind.lower()) if sec is not None else None
+        if env:
+            out.append(f"{{start_of_{env}: {sec.name}}}")
+        elif sec is not None:
+            out.append(f"{{comment: {sec.name}}}")
+        for start in range(s0, s1, bars_per_line):
+            cells = []
+            for b in range(start, min(start + bars_per_line, s1)):
+                words = " ".join(bar_words[b])
+                chords = " ".join(f"[{c}]" for c in bars[b]) or "[/]"
+                cells.append(f"{chords}{words}" if words else chords)
+            out.append(" | ".join(cells))
+        if env:
+            out.append(f"{{end_of_{env}}}")
+        out.append("")
+    return "\n".join(out)
+
+
+def chord_chart(chords_: list[ChordEvent], key: Key | KeyMap, grid, project: Project, lyrics=(),
+                bars_per_line: int = 4, sections=None, numbers: bool = False,
+                number_shift: int = 0) -> str:
+    """구간(섹션)별·마디별 코드 + (있으면) 가사를 적은 텍스트 코드표.
+
+    numbers=True 면 내슈빌 넘버(1, 4, 5, 6m …)로 적는다. 전조된 곳에는 새 키를 표시한다.
+    """
+    from .notation import capo_suggestion
+
+    km = key if isinstance(key, KeyMap) else KeyMap([(0.0, key)])
+    bpb = grid.beats_per_bar
+    shift = grid.shift_beats  # 악보의 마디 번호와 맞춘다
+    n_bars, bars, bar_words = _chart_bars(chords_, km, grid, project, lyrics, numbers)
 
     first = km.first
     head = f"Key: {first.short_name}   Tempo: {project.tempo_bpm:.0f} BPM   Time: {project.time_signature}"

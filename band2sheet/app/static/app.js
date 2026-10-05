@@ -647,10 +647,12 @@ function buildMixer() {
   stopAudio();
   state.mixerJob = state.job.id;
   box.innerHTML = "";
-  if (!stems.length) { box.innerHTML = '<p class="muted small">미리듣기 음원이 없습니다.</p>'; return; }
+  const synth = !!(state.info && state.info.synth);
+  if (!stems.length && !synth) { box.innerHTML = '<p class="muted small">미리듣기 음원이 없습니다.</p>'; return; }
   const order = stems.filter((s) => s !== "mix").concat(stems.includes("mix") ? ["mix"] : []);
   // 악보 소리: 채보한 음표를 실제 악기 음색으로 연주 (원곡과 같은 시간축 — 같이 들으며 채보 확인)
-  if (state.info && state.info.synth) order.push("score");
+  // MIDI·MusicXML 로 만든 작업은 원곡 음원이 없어 악보 소리만 있다
+  if (synth) order.push("score");
   for (const name of order) {
     const a = new Audio(audioUrl(name, 0));
     a.preload = "auto";
@@ -658,7 +660,7 @@ function buildMixer() {
     state.audios[name] = a;
     const row = document.createElement("div");
     row.className = "mix-row";
-    const off = name === "mix" || name === "score";
+    const off = name === "mix" || (name === "score" && order.length > 1);
     row.innerHTML = `<span></span><button class="m" title="음소거">M</button><button class="s" title="이 악기만">S</button><input type="range" min="0" max="100" value="${off ? 0 : 90}">`;
     row.firstChild.textContent = STEM_LABELS[name] || name;
     row.querySelector(".m").addEventListener("click", () => { toggleSet(state.mute, name); setPreset(null); applyMix(); });

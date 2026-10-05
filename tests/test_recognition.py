@@ -67,3 +67,56 @@ def test_truth_shape(live):
     _, truth = live
     assert isinstance(truth, Truth) and len(truth.beats) == 32 * 4 + 1
     assert {q for _, _, q, _ in truth.chords} >= {"", "m7", "sus4"}
+
+
+# ---------------------------------------------------------------------------
+# 변환: MIDI / MusicXML 입력, ChordPro
+# ---------------------------------------------------------------------------
+
+def _demo_midi(path, named_vocals=False):
+    import pretty_midi
+
+    from tests.song import LEAD_IN, truth_notes
+
+    pm = pretty_midi.PrettyMIDI(initial_tempo=100)
+    pm.time_signature_changes.append(pretty_midi.TimeSignature(4, 4, 0))
+    for stem, name, prog in (("vocals", "Lead Vocal" if named_vocals else "", 73), ("piano", "Piano", 0),
+                             ("bass", "", 33)):
+        inst = pretty_midi.Instrument(program=prog, name=name)
+        for t, p, d in truth_notes(stem):
+            inst.notes.append(pretty_midi.Note(90, p, t - LEAD_IN, t - LEAD_IN + d))
+        pm.instruments.append(inst)
+    pm.lyrics.append(pretty_midi.Lyric("Lord", 9.6))
+    pm.write(str(path))
+    return path
+
+
+def test_midi_import(tmp_path):
+    from band2sheet.importer import import_symbolic, stem_for
+
+    assert stem_for("Lead Vocal", 0, False) == "vocals" and stem_for("", 33, False) == "bass"
+    assert stem_for("코러스", 0, False) == "backing_vocals" and stem_for("", 0, True) == "drums"
+    p = import_symbolic(_demo_midi(tmp_path / "s.mid"), tmp_path / "out", log=lambda m: None)
+    assert set(p.tracks) == {"vocals", "piano", "bass"}  # 이름 없는 멜로디 트랙 -> 보컬
+    assert len(p.tracks["vocals"].notes) == 126 and p.tracks["vocals"].lyrics[0].text == "Lord"
+    assert abs(p.tempo_bpm - 100) < 1 and p.key.short_name == "G"
+    assert [(b, k.short_name) for b, k in p.key_changes] == [(144.0, "Ab")]  # 마지막 후렴 전조
+
+
+def test_convert_and_chordpro(tmp_path):
+    from band2sheet.pipeline import AnalyzeOptions, RenderOptions, render, run
+
+    res = run(str(_demo_midi(tmp_path / "s.mid", True)), tmp_path / "out", AnalyzeOptions(),
+              RenderOptions(target_key="A"), log=lambda m: None)
+    pro = (res.out_dir / "song.chordpro").read_text(encoding="utf-8")
+    assert "{key: A}" in pro and "{start_of_chorus: Chorus 1}" in pro and "{key: Bb}" in pro
+    assert "[A]Lord" in pro
+
+    # 만든 리드시트(MusicXML)를 다시 넣으면: 박 사선은 음표가 아니고, 코드 기호를 그대로 가져온다
+    from band2sheet.importer import import_symbolic
+
+    p2 = import_symbolic(res.out_dir / "lead_sheet.musicxml", tmp_path / "xml", log=lambda m: None)
+    assert len(p2.tracks["vocals"].notes) == 126
+    assert p2.chords and p2.engines.get("chords") == "악보의 코드 기호"
+    res2 = render(p2, tmp_path / "xml", RenderOptions(), log=lambda m: None)
+    assert res2.key.short_name == "A" and "Key: Bb" in res2.chord_chart

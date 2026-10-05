@@ -111,3 +111,27 @@ def test_full_job_flow(client, tmp_path):
     assert job_id in [j["id"] for j in client.get("/api/jobs").json()]
     assert client.delete(f"/api/jobs/{job_id}").status_code == 200
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_midi_job(client, tmp_path):
+    """MIDI 파일 올리기 -> 변환 (오디오 분석 없이)."""
+    from tests.test_recognition import _demo_midi
+
+    data = _demo_midi(tmp_path / "song.mid", True).read_bytes()
+    r = client.post("/api/jobs", files={"file": ("song.mid", data)}, data={"options": '{"title": "미디 곡"}'})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    for _ in range(300):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.3)
+    assert job["status"] == "done", job.get("error")
+    res = job["result"]
+    assert res["key_short"] == "G" and "song.chordpro" in res["files"]
+    assert {p["name"] for p in res["parts"]} >= {"vocals", "piano", "bass"}
+    v = client.get(f"/api/jobs/{job_id}/view").json()
+    assert v["bars"] and v["key_changes"]
+    info = client.get("/api/info").json()
+    if info["synth"]:  # 원곡 음원이 없어도 악보 소리는 들을 수 있다
+        assert client.get(f"/api/jobs/{job_id}/audio/score").status_code == 200

@@ -18,7 +18,8 @@ from ..view import measure_times
 
 ALLOWED_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".aif", ".aiff",
                ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v",
-               ".zip"}  # zip = 멀티트랙(스템) 묶음
+               ".zip",  # zip = 멀티트랙(스템) 묶음
+               ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 악보 파일 -> 변환
 
 
 @dataclass
@@ -276,6 +277,11 @@ class JobManager(EditMixin, PlaybackMixin):
             project.save(d / "project.json")
             progress(0.96, "미리듣기 음원 만드는 중")
             make_previews(project, d)
+            if not project.stems:  # MIDI·MusicXML: 들을 음원이 악보 소리뿐이라 미리 만들어 둔다
+                try:
+                    self.score_audio(job_id, 0)
+                except Exception as e:  # FluidSynth 오류는 작업을 막지 않는다
+                    log(f"   ! 악보 소리 생략: {e}")
             progress(0.98, "악보 만드는 중")
             res = render(project, d, RenderOptions(pdf=bool(opts.get("pdf"))), log)
             job.result = render_summary(res, project, d)
