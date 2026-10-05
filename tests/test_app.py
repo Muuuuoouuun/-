@@ -135,3 +135,36 @@ def test_midi_job(client, tmp_path):
     info = client.get("/api/info").json()
     if info["synth"]:  # 원곡 음원이 없어도 악보 소리는 들을 수 있다
         assert client.get(f"/api/jobs/{job_id}/audio/score").status_code == 200
+
+
+@pytest.mark.slow
+def test_split_songs_job(client, tmp_path):
+    """곡 나누기: 긴 실황 -> 곡 고르기(choose) -> 고른 곡마다 새 작업 (시작/길이 지정)."""
+    from tests.song import make_song
+    from tests.song_live import make_live_song
+    from tests.song_service import make_service
+
+    make_live_song(tmp_path / "a")
+    make_song(tmp_path / "b")
+    wav, truth = make_service(tmp_path / "service.wav", tmp_path / "a", tmp_path / "b")
+    r = client.post("/api/jobs", files={"file": ("service.wav", wav.read_bytes())},
+                    data={"options": '{"title": "예배", "split_songs": true, "stems": ["vocals"]}'})
+    job_id = r.json()["id"]
+    for _ in range(300):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("choose", "error", "done"):
+            break
+        time.sleep(0.5)
+    assert job["status"] == "choose", job.get("error")
+    assert len(job["songs"]) == 2 and job["duration"] > 150
+    assert client.get(f"/api/jobs/{job_id}/audio/full").status_code == 200
+    second = job["songs"][1]
+    # 새 작업은 만들기만 하고 실제 분석(분리 모델)은 돌리지 않는다
+    client.app.state.manager.pool.submit = lambda *a, **k: None
+    r = client.post(f"/api/jobs/{job_id}/songs", json={"songs": [{"start": second["start"], "end": second["end"],
+                                                                  "title": "둘째 곡", "index": 1}]})
+    child_id = r.json()["jobs"][0]
+    child = client.get(f"/api/jobs/{child_id}").json()
+    assert child["title"] == "둘째 곡" and child["parent"] == job_id
+    assert abs(child["options"]["start"] - (second["start"] - 1)) < 0.01
+    assert "split_songs" not in child["options"]

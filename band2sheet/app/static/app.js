@@ -40,7 +40,8 @@ async function api(path, opts = {}) {
 }
 
 function show(view) {
-  for (const v of ["new", "progress", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["new", "progress", "choose", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  if (view !== "choose" && state.chooseAudio) state.chooseAudio.pause();
 }
 
 function fmtTime(s) {
@@ -111,6 +112,8 @@ function initNewView() {
     state.quality = b.dataset.v;
   }));
   $("#btn-start").addEventListener("click", startJob);
+  $("#c-make").addEventListener("click", makeSongs);
+  $("#c-add").addEventListener("click", addManualSong);
 }
 
 async function startJob() {
@@ -130,6 +133,7 @@ async function startJob() {
     cleanup: $("#cleanup").checked,
     pdf: $("#pdf").checked,
     language: $("#language").value,
+    split_songs: $("#split-songs").checked,
   };
   const fd = new FormData();
   fd.append("file", state.file);
@@ -160,6 +164,7 @@ async function loadJobs() {
     const li = document.createElement("li");
     li.classList.toggle("active", j.id === state.jobId);
     const st = j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
+      j.status === "choose" ? `곡 고르기 · ${j.songs}곡` :
       j.status === "queued" ? "대기 중" : `${Math.round(j.progress * 100)}% · ${j.stage}`;
     li.innerHTML = `<span class="t"></span><span class="s ${j.status}">${st}</span>`;
     li.querySelector(".t").textContent = j.title;
@@ -186,6 +191,11 @@ async function refreshJob() {
     loadJobs();
     return;
   }
+  if (job.status === "choose") {
+    showChoose(job);
+    loadJobs();
+    return;
+  }
   show("progress");
   $("#player").classList.add("hidden");
   $("#p-title").textContent = job.title;
@@ -199,6 +209,107 @@ async function refreshJob() {
   } else {
     loadJobs();
   }
+}
+
+// ------------------------------------------------------------------ 곡 나누기: 곡 고르기
+function showChoose(job) {
+  show("choose");
+  $("#player").classList.add("hidden");
+  $("#c-title").textContent = `${job.title} — 곡 ${job.songs.length}개를 찾았어요`;
+  $("#c-error").textContent = job.songs.length ? "" : "찬양 구간을 찾지 못했어요. 구간을 직접 추가해 주세요.";
+  if (!state.chooseAudio || state.chooseJob !== job.id) {
+    if (state.chooseAudio) state.chooseAudio.pause();
+    state.chooseAudio = new Audio(`/api/jobs/${job.id}/audio/full`);
+    state.chooseJob = job.id;
+    state.chooseAudio.addEventListener("timeupdate", drawChooseCursor);
+  }
+  state.picks = job.songs.map((s) => ({ ...s, on: true, title: "" }));
+  renderChoose(job);
+}
+
+function renderChoose(job) {
+  const total = job.duration || Math.max(1, ...state.picks.map((p) => p.end));
+  const tl = $("#c-timeline");
+  tl.innerHTML = '<div class="cursor"></div>';
+  state.picks.forEach((p, i) => {
+    const seg = document.createElement("div");
+    seg.className = "seg" + (p.on ? "" : " off");
+    seg.style.left = `${(p.start / total) * 100}%`;
+    seg.style.width = `${Math.max(0.5, ((p.end - p.start) / total) * 100)}%`;
+    seg.textContent = `${i + 1}`;
+    seg.title = `${fmtTime(p.start)} ~ ${fmtTime(p.end)}`;
+    seg.addEventListener("click", () => previewSong(i));
+    tl.appendChild(seg);
+  });
+  const box = $("#c-songs");
+  box.innerHTML = "";
+  state.picks.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "c-song";
+    row.innerHTML = `<input type="checkbox" ${p.on ? "checked" : ""}>
+      <input class="name" placeholder="${i + 1}번째 곡 (제목을 적어 두면 좋아요)">
+      <span class="meta"></span>
+      <span class="small">시작 <input type="number" class="st" min="0" step="1"> 끝 <input type="number" class="en" min="1" step="1"></span>
+      <button class="ghost">▶ 들어보기</button>`;
+    row.querySelector(".name").value = p.title || "";
+    row.querySelector(".meta").textContent =
+      `${fmtTime(p.start)}~${fmtTime(p.end)} · ${fmtTime(p.end - p.start)}` + (p.key ? ` · 키 ${p.key}` : "") + (p.tempo ? ` · 약 ${Math.round(p.tempo)} BPM` : "");
+    row.querySelector(".st").value = Math.round(p.start);
+    row.querySelector(".en").value = Math.round(p.end);
+    row.querySelector("input[type=checkbox]").addEventListener("change", (e) => { p.on = e.target.checked; renderChooseTimeline(job); });
+    row.querySelector(".name").addEventListener("input", (e) => { p.title = e.target.value; });
+    row.querySelector(".st").addEventListener("change", (e) => { p.start = Math.max(0, +e.target.value); renderChoose(job); });
+    row.querySelector(".en").addEventListener("change", (e) => { p.end = Math.max(p.start + 5, +e.target.value); renderChoose(job); });
+    row.querySelector("button").addEventListener("click", () => previewSong(i));
+    box.appendChild(row);
+  });
+  $("#c-make").disabled = !state.picks.some((p) => p.on);
+}
+
+function renderChooseTimeline(job) {
+  $$("#c-timeline .seg").forEach((el, i) => el.classList.toggle("off", !state.picks[i].on));
+  $("#c-make").disabled = !state.picks.some((p) => p.on);
+}
+
+function previewSong(i) {
+  const a = state.chooseAudio, p = state.picks[i];
+  if (!a) return;
+  if (!a.paused && state.previewing === i) { a.pause(); return; }
+  state.previewing = i;
+  a.currentTime = p.start;
+  a.play().catch(() => {});
+}
+
+function drawChooseCursor() {
+  const a = state.chooseAudio, job = state.job;
+  if (!a || !job || job.status !== "choose") return;
+  const total = job.duration || 1;
+  const c = $("#c-timeline .cursor");
+  if (c) c.style.left = `${(a.currentTime / total) * 100}%`;
+}
+
+async function makeSongs() {
+  const picks = state.picks.filter((p) => p.on).map((p) => ({ start: p.start, end: p.end, title: p.title || null, index: p.index }));
+  if (!picks.length) return;
+  $("#c-make").disabled = true;
+  try {
+    const r = await api(`/api/jobs/${state.job.id}/songs`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ songs: picks }) });
+    if (state.chooseAudio) state.chooseAudio.pause();
+    toast(`${r.jobs.length}곡의 악보를 만들기 시작했어요`);
+    await loadJobs();
+    if (r.jobs.length) openJob(r.jobs[0]);
+  } catch (e) {
+    $("#c-error").textContent = e.message;
+    $("#c-make").disabled = false;
+  }
+}
+
+function addManualSong() {
+  const a = state.chooseAudio;
+  const t = a ? Math.floor(a.currentTime) : 0;
+  state.picks.push({ start: t, end: t + 240, on: true, title: "", index: state.picks.length });
+  renderChoose(state.job);
 }
 
 // ------------------------------------------------------------------ 결과 화면

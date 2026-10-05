@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -12,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ..audio_io import require_ffmpeg
 from ..pipeline import AnalyzeOptions, RenderOptions, RenderResult, analyze, render
 from ..project import Project
 from ..view import measure_times
@@ -36,6 +39,10 @@ class Job:
     error: str | None = None
     result: dict | None = None  # 최근 렌더링 결과
     renders: dict[str, dict] = field(default_factory=dict)  # 키 -> 렌더링 결과
+    songs: list[dict] = field(default_factory=list)  # 곡 나누기: 찾은 곡 구간 (status = choose)
+    children: list[str] = field(default_factory=list)  # 곡 나누기로 만든 작업들
+    parent: str | None = None
+    duration: float | None = None  # 곡 나누기: 원본 길이 (초)
 
 
 class EditMixin:
@@ -254,6 +261,10 @@ class JobManager(EditMixin, PlaybackMixin):
 
         job.status = "running"
         self._save(job)
+        if opts.get("split_songs") and not opts.get("start") and not opts.get("duration") \
+                and src.suffix.lower() not in (".zip", ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"):
+            self._scan(job, src, log, progress)
+            return
         try:
             a = AnalyzeOptions(
                 quality=opts.get("quality", "standard"),
@@ -299,6 +310,65 @@ class JobManager(EditMixin, PlaybackMixin):
         finally:
             self._save(job)
 
+    # ------------------------------------------------------------------ 곡 나누기
+    def _scan(self, job: Job, src: Path, log, progress) -> None:
+        """긴 실황 영상에서 곡 구간을 찾아 고르게 한다 (status = choose)."""
+        from ..segment import SR, find_songs, load_mono
+
+        d = self.job_dir(job.id)
+        try:
+            progress(0.1, "곡 구간 찾는 중 (말씀·기도·전환과 찬양 구분)")
+            y = load_mono(src)
+            songs = find_songs(y, SR)
+            progress(0.8, "들어 볼 음원 만드는 중")
+            preview = d / "preview"
+            preview.mkdir(exist_ok=True)
+            subprocess.run([require_ffmpeg(), "-y", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "1",
+                            "-c:a", "libmp3lame", "-b:a", "96k", str(preview / "full.mp3")], check=False)
+            job.songs = [dict(sg.to_dict(), index=i) for i, sg in enumerate(songs)]
+            log(f"   - 곡 {len(songs)}개를 찾았습니다" + "".join(
+                f"\n     {i + 1}. {_mmss(sg.start)}~{_mmss(sg.end)} 키 {sg.key} 약 {sg.tempo:.0f} BPM"
+                for i, sg in enumerate(songs)))
+            job.duration = round(len(y) / SR, 1)
+            job.status, job.progress, job.stage = "choose", 1.0, "곡 고르기"
+        except Exception as e:
+            job.status, job.error = "error", str(e)
+            job.log.append("오류: " + str(e))
+        finally:
+            self._save(job)
+
+    def make_songs(self, job_id: str, picks: list[dict]) -> list[str]:
+        """고른 곡 구간마다 새 작업을 만든다. picks: [{start, end, title?}] (초)."""
+        parent = self.get(job_id)
+        src = next(self.job_dir(job_id).glob("input.*"))
+        ids = []
+        for i, pk in enumerate(picks):
+            start = max(0.0, float(pk["start"]) - 1.0)  # 첫 음이 잘리지 않게 1초 앞부터
+            end = float(pk["end"]) + 1.0
+            if end - start < 5:
+                continue
+            opts = {k: v for k, v in parent.options.items() if k not in ("split_songs", "start", "duration")}
+            opts.update(start=round(start, 2), duration=round(end - start, 2))
+            child_id = uuid.uuid4().hex[:12]
+            d = self.job_dir(child_id)
+            d.mkdir(parents=True)
+            dst = d / src.name
+            try:
+                os.link(src, dst)  # 같은 원본을 공유 (디스크 절약)
+            except OSError:
+                shutil.copyfile(src, dst)
+            title = pk.get("title") or f"{parent.title} - {int(pk.get('index', i)) + 1}번째 곡"
+            child = Job(id=child_id, title=str(title)[:120], filename=parent.filename, created=time.time(),
+                        options=opts, parent=job_id)
+            with self.lock:
+                self.jobs[child_id] = child
+                parent.children.append(child_id)
+            self._save(child)
+            self.pool.submit(self._run, child_id)
+            ids.append(child_id)
+        self._save(parent)
+        return ids
+
     def rerender(self, job_id: str, target_key: str | None, semitones: int | None,
                  direction: str = "nearest", subdiv: int | None = None) -> dict:
         job = self.get(job_id)
@@ -316,6 +386,10 @@ class JobManager(EditMixin, PlaybackMixin):
             job.renders[summary["key_short"]] = summary
         self._save(job)
         return summary
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t // 60)}:{int(t % 60):02d}"
 
 
 def extract_stems_zip(src: Path, dst: Path) -> Path:

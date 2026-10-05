@@ -52,6 +52,17 @@ class NotesEdit(BaseModel):
     semitones: int = 0
 
 
+class SongPick(BaseModel):
+    start: float
+    end: float
+    title: str | None = None
+    index: int | None = None
+
+
+class SongsRequest(BaseModel):
+    songs: list[SongPick]
+
+
 class PlaybackRequest(BaseModel):
     semitones: int = 0
 
@@ -231,6 +242,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         path, media = audio_file(job_id, name, semitones)
         return FileResponse(path, media_type=media)
 
+    @app.post("/api/jobs/{job_id}/songs")
+    def make_songs(job_id: str, req: SongsRequest):
+        """곡 나누기: 고른 곡 구간마다 악보 작업을 새로 만든다."""
+        job_or_404(job_id)
+        if not req.songs:
+            raise HTTPException(400, "곡을 하나 이상 고르세요.")
+        ids = manager.make_songs(job_id, [p.model_dump() if hasattr(p, "model_dump") else p.dict()
+                                          for p in req.songs])
+        return {"jobs": ids}
+
     @app.get("/api/jobs/{job_id}/playback")
     def playback_status(job_id: str, semitones: int = 0):
         job_or_404(job_id)
@@ -277,6 +298,7 @@ def _brief(job) -> dict:
         "id": job.id, "title": job.title, "filename": job.filename, "created": job.created,
         "status": job.status, "progress": job.progress, "stage": job.stage,
         "key": job.result["key_short"] if job.result else None,
+        "parent": job.parent, "songs": len(job.songs),
     }
 
 

@@ -72,7 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="보컬 채보 방식 (기본: crepe 설치 시 crepe, 아니면 pyin)")
     r.add_argument("--start", type=float, help="이 시각(초)부터만 사용")
     r.add_argument("--duration", type=float, help="이 길이(초)만 사용")
+    r.add_argument("--song", help="곡이 여러 개 든 실황 영상: 찾은 곡 중 이 번호만 (예: 2, 1,3, all) — band2sheet scan 으로 확인")
     _add_render_args(r)
+
+    sc = sub.add_parser("scan", help="긴 예배·공연 영상에서 곡 구간 찾기 (말씀·기도·전환 제외)")
+    sc.add_argument("source", help="오디오/영상 파일")
 
     t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
     t.add_argument("input", type=Path, help="project.json 또는 .musicxml/.mxl/.xml 파일")
@@ -123,6 +127,23 @@ def cmd_run(args) -> int:
         vocal_engine=args.vocal_engine, start=args.start, duration=args.duration,
     )
     ro = _render_opts(args)
+    if args.song:
+        songs = _songs_in(args.source)
+        if not songs:
+            print("찬양(음악) 구간을 찾지 못했습니다.", file=sys.stderr)
+            return 1
+        picks = range(1, len(songs) + 1) if args.song == "all" else [int(x) for x in args.song.split(",")]
+        for i in picks:
+            if not 1 <= i <= len(songs):
+                print(f"곡 번호는 1~{len(songs)} 입니다.", file=sys.stderr)
+                return 2
+            sg = songs[i - 1]
+            print(f"\n=== {i}번째 곡: {_mmss(sg.start)} ~ {_mmss(sg.end)} ===")
+            a.start, a.duration = max(0.0, sg.start - 1.0), sg.duration + 2.0
+            song_out = out / f"song{i}"
+            res = run(args.source, song_out, a, ro)
+            _report(res, song_out)
+        return 0
     res = run(args.source, out, a, ro)
     _report(res, out)
     return 0
@@ -150,6 +171,31 @@ def _report(res, out: Path) -> None:
     if res.chord_chart:
         print()
         print(res.chord_chart)
+
+
+def _songs_in(source: str):
+    from .audio_io import is_url
+    from .segment import scan_file
+
+    if is_url(source):
+        raise ValueError("곡 나누기는 내려받은 파일로 해 주세요 (유튜브 링크는 run 으로 먼저 받기)")
+    return scan_file(source)
+
+
+def cmd_scan(args) -> int:
+    songs = _songs_in(args.source)
+    if not songs:
+        print("찬양(음악) 구간을 찾지 못했습니다.")
+        return 0
+    print(f"곡 {len(songs)}개:")
+    for i, sg in enumerate(songs, 1):
+        print(f"  {i}. {_mmss(sg.start)} ~ {_mmss(sg.end)}  ({_mmss(sg.duration)})  키 {sg.key}  약 {sg.tempo:.0f} BPM")
+    print("\n악보 만들기: band2sheet run <파일> --song 2   (여러 곡: --song 1,3 / 전부: --song all)")
+    return 0
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t // 60)}:{int(t % 60):02d}"
 
 
 def cmd_transpose(args) -> int:
@@ -204,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {
             "run": cmd_run, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app, "keys": cmd_keys,
-            "engines": cmd_engines,
+            "engines": cmd_engines, "scan": cmd_scan,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:
         print(f"오류: {e}", file=sys.stderr)

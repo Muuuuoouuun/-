@@ -270,3 +270,18 @@ body { padding-bottom: 64px; }
   .cs-chord { color: #000; }
   .chordsheet { --cs-scale: 1 !important; }
 }
+
+/* 곡 나누기 */
+.c-timeline { position: relative; height: 34px; background: var(--line); border-radius: 8px; margin: 1rem 0; overflow: hidden; }
+.c-timeline .seg { position: absolute; top: 0; bottom: 0; background: var(--accent); opacity: .85; color: #fff;
+  font-size: .75rem; display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; }
+.c-timeline .seg.off { opacity: .3; }
+.c-timeline .cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); }
+.c-songs { display: grid; gap: .5rem; }
+.c-song { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: .6rem; align-items: center;
+  padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--card, transparent); }
+.c-song input[type=number] { width: 5.5rem; }
+.c-song .meta { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.c-song .name { width: 100%; }
+.c-actions { display: flex; gap: .6rem; margin-top: 1rem; align-items: center; }
+@media (max-width: 700px) { .c-song { grid-template-columns: auto 1fr; } }

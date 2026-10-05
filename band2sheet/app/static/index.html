@@ -74,7 +74,8 @@
             <label>시작(초)<input id="start" type="number" min="0" placeholder="처음부터"></label>
             <label>길이(초)<input id="duration" type="number" min="1" placeholder="끝까지"></label>
           </div>
-          <p class="muted small">긴 예배 영상에서 한 곡만 뽑을 때 시작/길이를 지정하세요.</p>
+          <label class="check"><input type="checkbox" id="split-songs"> 곡이 여러 개 든 예배·공연 실황 — 먼저 곡별로 나누기</label>
+          <p class="muted small">말씀·기도·전환을 빼고 찬양 구간을 찾아 줍니다. 고른 곡마다 악보를 따로 만들어요. 한 곡만 알면 시작/길이를 직접 넣어도 됩니다.</p>
         </div>
         <div class="card">
           <h3>가사</h3>
@@ -96,6 +97,19 @@
       <p id="p-stage" class="stage"></p>
       <details open><summary>진행 기록</summary><pre id="p-log" class="log"></pre></details>
       <p id="p-error" class="error"></p>
+    </section>
+
+    <!-- 곡 나누기: 곡 고르기 -->
+    <section id="view-choose" class="view hidden">
+      <h1 id="c-title"></h1>
+      <p class="muted">영상에서 찾은 찬양 구간입니다. 들어 보고 악보로 만들 곡을 고르세요. 시작·끝은 초 단위로 고칠 수 있어요.</p>
+      <div id="c-timeline" class="c-timeline"></div>
+      <div id="c-songs" class="c-songs"></div>
+      <div class="c-actions">
+        <button id="c-make" class="primary big">선택한 곡 악보 만들기</button>
+        <button id="c-add" class="ghost">+ 구간 직접 추가</button>
+      </div>
+      <p id="c-error" class="error"></p>
     </section>
 
     <!-- 결과 -->
