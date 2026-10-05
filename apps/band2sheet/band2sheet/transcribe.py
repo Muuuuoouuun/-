@@ -30,6 +30,10 @@ class Transcription:
     pedals: list[tuple[float, float]] = field(default_factory=list)
 
 
+class MissingEngine(RuntimeError):
+    """선택 설치 채보 엔진이 없음 -> 그 악기만 건너뛸 수 있다."""
+
+
 # ---------------------------------------------------------------------------
 # 다성: Basic Pitch
 # ---------------------------------------------------------------------------
@@ -40,7 +44,7 @@ def basic_pitch_notes(path: Path, spec: InstrumentSpec, onset_threshold: float =
         from basic_pitch import ICASSP_2022_MODEL_PATH
         from basic_pitch.inference import predict
     except ImportError as e:  # pragma: no cover - 설치 안내
-        raise RuntimeError("다성 채보에는 basic-pitch 가 필요합니다: pip install basic-pitch") from e
+        raise MissingEngine("다성 채보에는 basic-pitch 가 필요합니다: pip install basic-pitch") from e
 
     _, _, events = predict(
         str(path),
@@ -91,10 +95,13 @@ def piano_hr_notes(path: Path, device: str | None = None) -> tuple[list[Note], l
 
 def pyin_f0(y: np.ndarray, sr: int, hop: int, spec: InstrumentSpec) -> np.ndarray:
     """pYIN. 반환: 프레임별 MIDI 음높이 (무성 = nan)."""
-    f0, voiced, prob = librosa.pyin(
-        y, fmin=float(librosa.midi_to_hz(spec.low)), fmax=float(librosa.midi_to_hz(spec.high)),
-        sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan,
-    )
+    from .fastviterbi import fast_pyin
+
+    with fast_pyin():  # 결과는 librosa 와 같고 Viterbi 만 띠 구조로 빠르게
+        f0, voiced, prob = librosa.pyin(
+            y, fmin=float(librosa.midi_to_hz(spec.low)), fmax=float(librosa.midi_to_hz(spec.high)),
+            sr=sr, frame_length=2048, hop_length=hop, fill_na=np.nan,
+        )
     voiced = voiced & (prob > 0.3)
     return librosa.hz_to_midi(np.where(voiced, f0, np.nan))
 

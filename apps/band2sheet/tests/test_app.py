@@ -39,6 +39,14 @@ def test_info_and_reject_bad_file(client):
     assert r.status_code == 400
 
 
+def test_static_assets_are_compressed(client):
+    r = client.get("/static/vendor/opensheetmusicdisplay.min.js", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200
+    from starlette.middleware import gzip
+    if hasattr(gzip, "DEFAULT_EXCLUDED_CONTENT_TYPES"):
+        assert r.headers["content-encoding"] == "gzip"
+
+
 def test_path_traversal_blocked(client):
     assert client.get("/api/jobs/../../etc/passwd").status_code in (404, 400)
     assert client.get("/api/jobs/abc/files/sheets_G/..%2F..%2Fjob.json").status_code in (400, 404)
@@ -68,6 +76,9 @@ def test_full_job_flow(client, tmp_path):
     xml = client.get(f"/api/jobs/{job_id}/files/{res['sheet_dir']}/bass.musicxml")
     assert xml.status_code == 200 and "<staff-lines>4</staff-lines>" in xml.text
     assert client.get(f"/api/jobs/{job_id}/audio/vocals").status_code == 200
+    # 음원은 구간 요청으로 재생하므로 압축하지 않는다
+    r = client.get(f"/api/jobs/{job_id}/audio/vocals", headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"})
+    assert r.status_code == 206 and "content-encoding" not in r.headers
     assert "mr" in res["stems"]  # 반주(MR): 원곡 - 메인 보컬
     mr = client.get(f"/api/jobs/{job_id}/mr", params={"kind": "mr"})
     assert mr.status_code == 200 and "attachment" in mr.headers["content-disposition"]

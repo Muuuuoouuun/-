@@ -81,10 +81,25 @@ class RenderRequest(BaseModel):
     grid: int | None = None
 
 
+def _add_gzip(app: FastAPI) -> None:
+    """악보 라이브러리(1.4MB)·JSON 을 압축해 보낸다 (휴대폰에서 같은 네트워크로 열 때 빨라짐).
+
+    음원·영상은 구간 요청(Range)으로 재생하므로 압축하지 않는다. 그걸 보장하는 Starlette 에서만 켠다.
+    """
+    from starlette.middleware import gzip
+
+    if not hasattr(gzip, "DEFAULT_EXCLUDED_CONTENT_TYPES"):
+        return
+    exclude = (*gzip.DEFAULT_EXCLUDED_CONTENT_TYPES, "audio/*", "video/*", "application/pdf",
+               "application/vnd.recordare.musicxml", "application/octet-stream")
+    app.add_middleware(gzip.GZipMiddleware, minimum_size=1024, compresslevel=6, exclude_content_types=exclude)
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     manager = JobManager(data_dir or default_data_dir())
     app = FastAPI(title="band2sheet", version=__version__)
     app.state.manager = manager
+    _add_gzip(app)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     def job_or_404(job_id: str):
