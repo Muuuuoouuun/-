@@ -164,6 +164,14 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     beat_info = rhythm.track_beats(beat_src, opts.bpm, opts.beat_engine, opts.device, log)
     engines["beats"] = beat_info.engine
     beats = beat_info.beats
+    if not opts.bpm:
+        # 느린 곡이 8분음표 하이햇·분산화음 때문에 2배 템포로 잡히는 일이 흔하다 — 드럼·보컬로 바로잡기
+        fixed, how = rhythm.fix_tempo_octave(beats, {k: t.notes for k, t in tracks.items()})
+        if how != "x1":
+            log(f"   - 템포 {60 / np.median(np.diff(beats)):.0f} → {60 / np.median(np.diff(fixed)):.0f} BPM 로 바로잡음"
+                f" ({'절반' if how.startswith('half') else '2배'})")
+            beats = fixed
+            beat_info.downbeats = [d for d in beat_info.downbeats if min(abs(d - b) for b in beats) < 0.07]
     time_sig = opts.time_signature
     if not time_sig or time_sig == "auto":
         time_sig = rhythm.guess_meter(beats, beat_info.downbeats) or "4/4"

@@ -157,6 +157,11 @@ class SeparationAnalyzer:
             warnings.simplefilter("ignore", RuntimeWarning)  # 완전히 조용한 프레임
             bleed = np.nanpercentile(ratio, 25, axis=0)
         bleed = np.nan_to_num(bleed, nan=0.0)
+        # 이 악기 혼자 나오는 구간(보컬 솔로 전주 등)에서는 '나머지'가 거의 이 악기 자신의 블리딩이라
+        # 비율이 터무니없이 커진다 (예: 0.03 -> 8). 곡 전체의 보통 값의 몇 배로 제한한다.
+        positive = bleed[bleed > 0]
+        if positive.size:
+            bleed = np.minimum(bleed, 4.0 * float(np.median(positive)))
         bleed = _smooth(bleed, 11)
 
         sec = SR / HOP  # 초당 프레임 수

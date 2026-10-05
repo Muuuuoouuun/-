@@ -10,7 +10,7 @@ import librosa
 import numpy as np
 
 from .engines import available, torch_device
-from .instruments import KICK
+from .instruments import KICK, SNARE
 from .project import Note, TimeMap
 
 
@@ -147,3 +147,60 @@ def harmonic_change_by_phase(tracks: dict[str, list[Note]], timemap: TimeMap,
 def quantize(value: float, grid: int) -> float:
     """박 단위 값을 1/grid 박 격자에 맞춘다 (grid=4 -> 16분음표)."""
     return round(value * grid) / grid
+
+
+# ---------------------------------------------------------------------------
+# 템포 2배/절반 오류 바로잡기
+# ---------------------------------------------------------------------------
+
+def _tempo_candidates(beats: list[float]) -> dict[str, list[float]]:
+    bt = list(beats)
+    mids = [(a + b) / 2 for a, b in zip(bt, bt[1:])]
+    double = sorted(bt + mids)
+    return {"x1": bt, "half0": bt[0::2], "half1": bt[1::2], "double": double}
+
+
+def tempo_octave_scores(beats: list[float], tracks: dict[str, list[Note]]) -> dict[str, float]:
+    """비트 후보(그대로 / 절반(두 위상) / 2배)마다 '박다운 정도' 점수.
+
+    - 템포 선호: 60~140 BPM 사이 (로그 가우시안, 중심 95)
+    - 드럼: 킥·스네어가 거의 모든 박 위에 있고, 박 사이(반 박)에는 드물수록 그 격자가 박
+      (8분음표 하이햇·아르페지오에 끌려 2배로 잡히면 킥·스네어가 두 박에 한 번만 나온다)
+    - 보컬: 음절(음 시작) 간격의 중앙값이 대략 한 박
+    """
+    drums = [n.start for n in tracks.get("drums", []) if n.pitch in (KICK, SNARE)]
+    vocal = sorted(n.start for n in tracks.get("vocals", []))
+    out = {}
+    for name, bt in _tempo_candidates(beats).items():
+        if len(bt) < 8:
+            continue
+        tm = TimeMap(bt)
+        bpm = 60.0 / tm.period
+        score = -((np.log2(bpm / 95.0)) ** 2) / (2 * 0.45 ** 2)
+        if len(drums) >= 16:
+            pos = tm.to_beats(np.asarray(drums))
+            frac = pos - np.round(pos)
+            on = np.abs(frac) < 0.15
+            hit_beats = set(np.round(pos[on]).astype(int).tolist())
+            lo, hi = int(np.ceil(pos.min())), int(np.floor(pos.max()))
+            coverage = len(hit_beats) / max(1, hi - lo + 1)
+            offbeat = float(np.mean(np.abs(np.abs(frac) - 0.5) < 0.15))
+            score += 2.0 * coverage - 2.0 * offbeat
+        if len(vocal) >= 8:
+            ioi = np.diff(tm.to_beats(np.asarray(vocal)))
+            ioi = ioi[(ioi > 0.05) & (ioi < 4.5)]
+            if len(ioi) >= 6:
+                score -= 0.8 * abs(np.log2(float(np.median(ioi)) / 0.9))
+        out[name] = float(score)
+    return out
+
+
+def fix_tempo_octave(beats: list[float], tracks: dict[str, list[Note]], margin: float = 0.3) -> tuple[list[float], str]:
+    """템포가 2배/절반으로 잡혔으면 바로잡은 비트 목록을 돌려준다. 반환: (비트, 고른 후보 이름)."""
+    scores = tempo_octave_scores(beats, tracks)
+    if "x1" not in scores:
+        return beats, "x1"
+    best = max(scores, key=scores.get)
+    if best != "x1" and scores[best] > scores["x1"] + margin:
+        return _tempo_candidates(beats)[best], best
+    return beats, "x1"

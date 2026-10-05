@@ -140,10 +140,24 @@ def notes_from_f0(y: np.ndarray, sr: int, hop: int, midi: np.ndarray,
     midi = midi - (float(np.median(frac)) if frac.size else 0.0)
 
     onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="frames", backtrack=True)
+    # 같은 음을 다시 부른(음절) 온셋만: 그 직전에 소리가 눈에 띄게 줄었다가 다시 커져야 한다.
+    # (다른 악기에서 새어 든 하이햇 같은 온셋은 이 악기의 음량을 거의 바꾸지 않는다)
+    win = max(2, int(round(0.08 * sr / hop)))
+
+    def rearticulated(o: int) -> bool:
+        before = rms[max(0, o - 2 * win):max(1, o - win)]
+        dip = rms[max(0, o - win // 2):o + 2]
+        after = rms[o:o + win]
+        if not (before.size and dip.size and after.size):
+            return False
+        return float(dip.min()) < 0.75 * min(float(before.max()), float(after.max()))
+
+    onsets = np.array([o for o in onsets if o < n and rearticulated(int(o))], dtype=int)
     onset_set = set(int(o) for o in onsets)
 
     frame_t = hop / sr
     min_frames = max(2, int(round(spec.min_note / frame_t)))
+    glide_frames = max(1, int(round(0.1 / frame_t)))
     raw: list[tuple[float, float, int, float]] = []
     seg: list[int] = []
 
@@ -152,6 +166,21 @@ def notes_from_f0(y: np.ndarray, sr: int, hop: int, midi: np.ndarray,
             pitch = int(np.round(np.median(midi[seg])))
             raw.append((seg[0] * frame_t, (seg[-1] + 1) * frame_t, pitch, float(np.max(rms[seg]))))
         seg.clear()
+
+    def split_glide(target: float) -> list[int]:
+        """음이 바뀔 때: 앞 음 끝부분 중 이미 새 음 쪽으로 미끄러지기 시작한 프레임들을 새 음으로 넘긴다
+        (포르타멘토 — 음의 시작은 음높이가 움직이기 시작한 곳)."""
+        base = float(np.median(midi[seg[:max(1, len(seg) - glide_frames)]]))
+        direction = np.sign(target - base)
+        k = len(seg)
+        while k > min_frames and len(seg) - k < glide_frames:
+            d = (midi[seg[k - 1]] - base) * direction
+            if not d > 0.2:
+                break
+            k -= 1
+        moved = seg[k:]
+        del seg[k:]
+        return moved
 
     for i in range(n):
         if not voiced[i]:
@@ -171,13 +200,57 @@ def notes_from_f0(y: np.ndarray, sr: int, hop: int, midi: np.ndarray,
                 jump = ahead.size > 0 and bool(np.all(np.abs(ahead - current) > 0.6))
             # 같은 음 반복(가사 음절)은 온셋으로 분할
             restrike = i in onset_set and len(seg) >= min_frames
-            if jump or restrike:
+            if jump:
+                carried = split_glide(float(midi[i]))
+                flush()
+                seg.extend(carried)
+            elif restrike:
                 flush()
         seg.append(i)
     flush()
 
-    peak = max((r[3] for r in raw), default=1.0) or 1.0
-    return [Note(s, e, p, int(np.clip(40 + 87 * (v / peak), 1, 127))) for s, e, p, v in raw]
+    # 음높이 추적이 잠깐 끊겨 생긴 조각은 합친다 — 단, 그 사이에 온셋이 있으면 같은 음을 다시 부른 것(음절)
+    joined: list[tuple[float, float, int, float]] = []
+    onset_all = np.asarray(sorted(onsets)) * frame_t
+    for s, e, p, v in raw:
+        if joined:
+            ps, pe, pp, pv = joined[-1]
+            restruck = np.any((onset_all > pe - 0.02) & (onset_all < s + 0.02))
+            if pp == p and 0 <= s - pe <= 0.035 and not restruck:
+                joined[-1] = (ps, e, p, max(pv, v))
+                continue
+        joined.append((s, e, p, v))
+    raw = joined
+
+    # 음 시작을 실제 소리 시작(자음·어택)으로 당긴다: 음높이는 소리가 난 뒤 조금 지나야 잡히므로
+    # (되짚기 없는 온셋 — 되짚으면 앞 음이 잦아드는 곳까지 너무 앞당겨진다)
+    peaks = librosa.onset.onset_detect(y=y, sr=sr, hop_length=hop, units="frames", backtrack=False)
+    onset_t = np.asarray(sorted(peaks)) * frame_t
+    refined: list[tuple[float, float, int, float]] = []
+    for s, e, p, v in raw:
+        prev_end = refined[-1][1] if refined else -1.0
+        cand = onset_t[(onset_t >= s - 0.12) & (onset_t <= s + 0.01) & (onset_t >= prev_end + 0.025)]
+        if cand.size and cand[-1] < s:
+            # 다른 악기에서 새어 든 작은 소리의 온셋이 아니라, 이 음의 소리(자음·어택)가 시작된 곳이어야 한다
+            # 음높이가 잡히기 전 구간(온셋 ~ 시작 15ms 전)에 이미 이 음의 소리가 있어야 한다
+            # 그리고 거기서부터 소리가 커져야 한다 (앞 음이 잦아드는 곳의 온셋은 제외)
+            f0, f1 = int(cand[-1] / frame_t), int((s - 0.015) / frame_t)
+            fs = int(s / frame_t)
+            rising = float(np.max(rms[fs:fs + 4])) >= 1.3 * float(rms[f0]) if fs < len(rms) else False
+            # 사이에 다른 음이 또렷이 울리면(놓친 짧은 음) 건너뛰지 않는다.
+            # 이 음으로 미끄러져 오는 중(포르타멘토)이면 괜찮다.
+            between = midi[f0:fs]
+            between = between[~np.isnan(between)]
+            distinct = False
+            if between.size >= 2 and abs(float(np.median(between)) - p) > 0.6:
+                glide = abs(between[-1] - p) < abs(between[0] - p) - 0.3
+                distinct = not glide
+            if f1 > f0 and rising and not distinct and float(np.median(rms[f0:f1])) >= 0.12 * v:
+                s = float(cand[-1])
+        refined.append((min(s, e - frame_t), e, p, v))
+
+    peak = max((r[3] for r in refined), default=1.0) or 1.0
+    return [Note(s, e, p, int(np.clip(40 + 87 * (v / peak), 1, 127))) for s, e, p, v in refined]
 
 
 def mono_notes(path: Path, spec: InstrumentSpec, engine: str, device: str | None = None) -> list[Note]:
@@ -454,8 +527,9 @@ def transcribe_stem(path: Path, spec: InstrumentSpec, engine: str | None = None,
         raise ValueError(f"알 수 없는 채보 엔진: {engine}")
     poly = engine in ("basic_pitch", "piano_hr")
     notes = filter_notes(notes, spec)
-    if not (poly and restrike_by_attack):
-        notes = merge_fragments(notes, restrike=0.7 if poly else None)
+    # 단선율 엔진은 notes_from_f0 안에서 (온셋을 보고) 조각을 합친다
+    if poly and not restrike_by_attack:
+        notes = merge_fragments(notes, restrike=0.7)
     if spec.mono:
         notes = make_monophonic(notes, prefer_low=spec.stem == "bass")
     return Transcription(notes, engine, pedals)
