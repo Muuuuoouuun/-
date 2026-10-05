@@ -1666,8 +1666,8 @@ function updateDownloads() {
 }
 
 function onTime() {
-  const all = Object.values(state.audios);
-  const master = all[0];
+  const master = masterAudio();
+  if (!master) return;  // stopAudio() 뒤 이전 audio 의 늦은 timeupdate
   const t = master.currentTime;
   if (isFinite(master.duration)) $("#m-seek").value = Math.round((t / master.duration) * 1000);
   $("#m-time").textContent = `${fmtTime(t)} / ${fmtTime(master.duration)}`;

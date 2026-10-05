@@ -40,3 +40,23 @@ python3 scripts/verify-layout.py
 검증에는 실제 Python 합성 분석·악보 출력, 실제 브라우저 실행, 가짜 비동기 응답·오디오 객체를 이용한 상태 회귀가 각각 포함됩니다. 모델 런타임·가중치 다운로드, 실제 YouTube 다운로드, 실제 마이크·카메라 접근, 자격증명 사용, 외부 API·유료 호출은 하지 않습니다. 실제 채보·음성 화음 품질의 향상을 의미하지 않습니다.
 
 최종 회귀 결과와 수정 파일 목록은 [검증 기록](VALIDATION.md)에 정리합니다.
+
+## 전체 브랜치 통합 (2026-10-05, `claude/festive-mayer-6eu9mh`)
+
+`codex/two-apps` 의 두 앱 레이아웃을 기준으로 나머지 브랜치를 모두 합쳤습니다.
+
+| 브랜치 | 가져온 기능 | 통합 시 손본 점 |
+|---|---|---|
+| `claude/youtube-audio-to-sheet-music-zrwo2c` (`66af818`) | 곡 나누기(choose), MIDI·MusicXML 입력, 박자표 추정, 고음질 조옮김 재생·MR 받기 | 곡 찾기를 `_run` 의 try/finally 안으로 옮겨 최종 상태 저장이 lock 아래에서 끝나게 함. 새 화면을 리디자인된 HTML/CSS 로 옮김 |
+| `claude/compassionate-darwin-z4jsjz` (`26d414c`) | 내 영상 후보정(화음·반주 7가지·오토튠·다시 만들기), 구간만 받기 | remix 작업도 `_submit_locked`·`final_status` 흐름을 따르게 함 (그대로면 완료 후 `error` 로 덮어써짐). 후보정 화면에 작업 문맥 검사·공용 삭제 추가 |
+| `claude/funny-bardeen-p9viq0` (`e8bdf36`) | AirChoir Phase 0–2 | 내용은 이미 `apps/airchoir/` 에 있어 이력만 합침 (옛 `air-choir/` 폴더는 가져오지 않음) |
+
+### 최적화
+
+- **pYIN Viterbi 띠 계산** (`band2sheet/fastviterbi.py`): 음높이 상태(약 900개)마다 모든 이전 상태를 보던 계산을 한 프레임에 움직일 수 있는 띠 안만 보도록 바꿈. 띠 밖 전이도 그대로 고려해 결과는 librosa 와 비트 단위로 같음 (`tests/test_fastviterbi.py`). 보컬 23초 pYIN 8.4초 → 1.5초, 후보정 한 번 19초 → 8초, 전체 테스트 약 290초 → 170초.
+- **정적 파일·JSON gzip**: 악보 라이브러리 1.4MB 를 압축해 보냄. 음원·영상(구간 요청)·PDF 는 압축하지 않음.
+
+### 고친 점
+
+- 선택 설치 채보 엔진(basic-pitch 등)이 없으면 작업 전체가 실패하던 것을, 그 악기만 건너뛰고 로그에 남기도록 함. 모든 악기가 빠지면 이전처럼 오류.
+- 믹서를 다시 만들 때 이전 audio 의 늦은 `timeupdate` 로 나던 화면 오류(`currentTime` of undefined) 수정.

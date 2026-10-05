@@ -55,7 +55,7 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
             log: Log = _print, progress: Progress | None = None) -> Project:
     """무거운 단계 전부 실행 후 project.json 저장."""
     from .separate import QUALITY, Stems, load_stems_dir, separate, separate_detailed, stem_level_db
-    from .transcribe import transcribe_stem
+    from .transcribe import MissingEngine, transcribe_stem
 
     opts = opts or AnalyzeOptions()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +122,7 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
     tracks: dict[str, Track] = {}
     order = [s for s in SCORE_ORDER if s in stem_paths] + [s for s in stem_paths if s not in SCORE_ORDER]
     todo = [s for s in order if s in wanted]
+    missing: list[MissingEngine] = []
     for i, name in enumerate(todo):
         if analyzer is not None and not opts.stems:
             if separation[name]["active_ratio"] < 0.02:
@@ -137,10 +138,15 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
         spec = spec_for(name)
         engine = opts.vocal_engine if name == "vocals" and opts.vocal_engine else None
         step(0.45 + 0.35 * i / max(len(todo), 1), f"③ 채보 중: {spec.label_ko}")
-        res = transcribe_stem(stem_paths[name], spec, engine,
-                              drum_parts=sep.drum_parts if name == "drums" else None,
-                              device=opts.device, log=log,
-                              restrike_by_attack=analyzer is not None and name in STRUCK)
+        try:
+            res = transcribe_stem(stem_paths[name], spec, engine,
+                                  drum_parts=sep.drum_parts if name == "drums" else None,
+                                  device=opts.device, log=log,
+                                  restrike_by_attack=analyzer is not None and name in STRUCK)
+        except MissingEngine as e:  # 선택 엔진이 없으면 그 악기만 빼고 나머지 악보는 만든다
+            log(f"   ! {spec.label_ko} 건너뜀: {e}")
+            missing.append(e)
+            continue
         notes = res.notes
         extra = f", 페달 {len(res.pedals)}개" if res.pedals else ""
         if analyzer is not None and notes:
@@ -150,6 +156,9 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
                 separation[name]["removed_notes"] = removed
         tracks[name] = Track(name, notes, pedals=res.pedals, engine=res.engine)
         log(f"   - {len(notes)}개 음표 ({res.engine}{extra})")
+
+    if missing and not tracks:
+        raise missing[0]
 
     # 4) 가사
     if opts.lyrics and "vocals" in tracks:
