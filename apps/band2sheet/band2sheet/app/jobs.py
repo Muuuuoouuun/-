@@ -42,6 +42,7 @@ class Job:
     result: dict | None = None  # 최근 렌더링 결과
     renders: dict[str, dict] = field(default_factory=dict)  # 키 -> 렌더링 결과
     url: str | None = None  # 링크로 만든 작업 (유튜브 등)
+    kind: str = "score"  # score(악보) | remix(내 영상 후보정)
     source: dict | None = None  # 받은 영상·추출한 음성 정보 (파일 이름, 길이, 올린 사람 …)
     songs: list[dict] = field(default_factory=list)  # 곡 나누기: 찾은 곡 구간 (status = choose)
     children: list[str] = field(default_factory=list)  # 곡 나누기로 만든 작업들
@@ -255,6 +256,110 @@ class JobManager(EditMixin, PlaybackMixin):
             self._submit_locked(job)
         return job
 
+    def create_remix(self, filename: str, data_stream, options: dict) -> Job:
+        """내 영상 후보정 작업: 화음(기본) / 오케스트라 / 오토튠."""
+        from ..remix import STYLES
+
+        ext = Path(filename).suffix.lower()
+        if ext not in ALLOWED_EXT or ext == ".zip":
+            raise ValueError(f"영상 또는 음원 파일을 올려 주세요: {ext or '(확장자 없음)'}")
+        if options.get("style", "harmony") not in STYLES:
+            raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
+        job_id = uuid.uuid4().hex[:12]
+        d = self.job_dir(job_id)
+        d.mkdir(parents=True)
+        with open(d / f"input{ext}", "wb") as f:
+            shutil.copyfileobj(data_stream, f)
+        title = (options.get("title") or Path(filename).stem).strip()[:120] or "제목 없음"
+        job = Job(id=job_id, title=title, filename=Path(filename).name, created=time.time(),
+                  options=options, kind="remix")
+        with self.lock:
+            self.jobs[job_id] = job
+            self._submit_locked(job)
+        return job
+
+    MAX_VERSIONS = 6
+
+    def _run_remix(self, job: Job, d: Path, log, progress) -> None:
+        """후보정 한 번 = 버전 하나 (remix/v<n>/). 분석은 remix/analysis/ 에 두고 버전끼리 함께 쓴다."""
+        from ..remix import STYLES, RemixOptions, remix
+
+        o = job.options
+        num = lambda k: float(o[k]) if o.get(k) not in (None, "") else None  # noqa: E731
+        opts = RemixOptions(
+            style=o.get("style") or "harmony", harmony=o.get("harmony") or "both",
+            autotune=bool(o.get("autotune")),
+            autotune_strength=float(min(max(float(o.get("autotune_strength") or 0.7), 0.0), 1.0)),
+            hard_tune=bool(o.get("hard_tune")), key=o.get("key") or None,
+            with_harmony=o.get("with_harmony") if o.get("with_harmony") in (True, False) else None,
+            keep_backing=o.get("keep_backing") if o.get("keep_backing") in (True, False) else None,
+            bpm=num("bpm"), beats_per_bar=int(o.get("beats_per_bar") or 4),
+            chords=(o.get("chords") or "").strip() or None,
+        )
+        src = next(d.glob("input.*"))
+        root = d / "remix"
+        prev = dict(job.result or {})
+        versions = list(prev.get("versions") or [])
+        n = max([v["n"] for v in versions], default=0) + 1
+        out = root / f"v{n}"
+        try:
+            res = remix(src, out, opts, log, progress, analysis_dir=root / "analysis")
+        except Exception as e:
+            if not versions:
+                raise
+            # 다시 만들기가 실패해도 이전 버전들은 그대로 볼 수 있게
+            shutil.rmtree(out, ignore_errors=True)
+            job.result = dict(prev, last_error=str(e))
+            log("오류: " + str(e))
+            return
+        rel = lambda f: f.relative_to(root).as_posix()  # noqa: E731
+        version = {
+            "n": n, "style": opts.style, "style_label": STYLES[opts.style], "autotune": opts.autotune,
+            "with_harmony": opts.with_harmony, "key": res.key, "key_short": res.key_short,
+            "tempo": res.tempo, "beats_per_bar": opts.beats_per_bar, "chord_text": res.chord_text,
+            "chords_source": "user" if opts.chords else "auto", "user_key": bool(opts.key),
+            "user_bpm": bool(opts.bpm), "notes": res.notes, "reused": res.reused,
+            "video": rel(res.video) if res.video else None, "audio": rel(res.audio),
+            "files": [rel(f) for f in res.files],
+        }
+        versions.append(version)
+        while len(versions) > self.MAX_VERSIONS:  # 오래된 버전부터 지움
+            old = versions.pop(0)
+            shutil.rmtree(root / f"v{old['n']}", ignore_errors=True)
+        # 화면 호환: 현재 버전의 내용을 맨 위에도 둔다
+        job.result = {"kind": "remix", **version, "versions": versions, "current": n, "original": src.name}
+
+    def remix_again(self, job_id: str, options: dict) -> Job:
+        """같은 영상으로 스타일·화음·오토튠·템포·키·코드를 바꿔 새 버전 만들기 (분석 재사용)."""
+        from ..remix import STYLES, parse_chord_text
+
+        job = self.get(job_id)
+        if job.kind != "remix":
+            raise RuntimeError("후보정 작업이 아닙니다.")
+        if options.get("style", job.options.get("style", "harmony")) not in STYLES:
+            raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
+        if options.get("chords"):
+            parse_chord_text(options["chords"])  # 형식 오류는 바로 알림
+        with self.lock:
+            if job.status in ("queued", "running"):
+                raise RuntimeError("이미 만드는 중입니다. 끝난 뒤에 다시 시도해 주세요.")
+            job.options = {**job.options, **options}
+            job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+            if job.result:
+                job.result.pop("last_error", None)
+            self._submit_locked(job)
+        return job
+
+    def remix_file(self, job_id: str, path: str) -> Path:
+        job = self.get(job_id)
+        if job.kind != "remix" or not job.result:
+            raise KeyError(path)
+        d = self.job_dir(job_id)
+        f = (d / job.result["original"] if path == "original" else d / "remix" / path).resolve()
+        if not str(f).startswith(str(d.resolve())) or not f.is_file():
+            raise KeyError(path)
+        return f
+
     def create_from_url(self, url: str, options: dict) -> Job:
         """유튜브 등 영상 링크로 작업 만들기: 음성만 받아 바로 악보 (기본).
 
@@ -279,6 +384,13 @@ class JobManager(EditMixin, PlaybackMixin):
         """영상·음성만 받아 둔 작업(ready)이나 실패한 작업을 이어서 악보까지 만들기."""
         with self.lock:
             job = self.get(job_id)
+            if job.kind == "remix":  # 후보정 다시 시도
+                if job.status != "error":
+                    raise RuntimeError("실패한 후보정 작업만 다시 시도할 수 있습니다.")
+                job.options = {**job.options, **options}
+                job.status, job.error, job.progress, job.stage = "queued", None, 0.0, "대기 중"
+                self._submit_locked(job)
+                return job
             has_input = any(self.job_dir(job_id).glob("input.*"))
             if job.status not in ("ready", "error") or not (has_input or job.url):
                 raise RuntimeError("영상·음성을 받아 둔 작업(또는 실패한 작업)만 이어서 악보를 만들 수 있습니다.")
@@ -305,7 +417,15 @@ class JobManager(EditMixin, PlaybackMixin):
             raw, meta = download_video(job.url, d / "download",
                                        max_height=int(opts.get("max_height") or 720), progress=report)
         else:
-            raw, meta = download_audio(job.url, d / "download", progress=report)
+            fmt = str(opts.get("audio_format") or "mp3").lower()
+            cut = not opts.get("fetch_only")  # 받기만 할 때는 나중에 구간을 바꿀 수 있게 전체를 받음
+            raw, meta = download_audio(
+                job.url, d / "download", progress=report, prefer_ext="m4a" if fmt == "m4a" else None,
+                start=float(opts["start"]) if cut and opts.get("start") else None,
+                duration=float(opts["duration"]) if cut and opts.get("duration") else None)
+            if meta.get("section"):  # 구간만 받았으므로 분석할 때 다시 자르지 않음
+                log(f"구간만 받음: {meta['section'][0]:.0f}초부터")
+                opts["start"] = opts["duration"] = None
         src = d / f"input{raw.suffix.lower()}"
         shutil.move(str(raw), src)
         shutil.rmtree(d / "download", ignore_errors=True)
@@ -344,6 +464,10 @@ class JobManager(EditMixin, PlaybackMixin):
             job.progress, job.stage = round(frac, 3), msg.strip()
 
         try:
+            if job.kind == "remix":
+                self._run_remix(job, d, log, progress)
+                final_status, job.progress, job.stage = "done", 1.0, "완료"
+                return
             if job.url and not job.source:
                 self._fetch(job, d, log, progress)
                 if opts.get("fetch_only"):

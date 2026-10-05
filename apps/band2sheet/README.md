@@ -207,10 +207,67 @@ sh dev.sh                # 앱 전용 .venv · .data · .cache 사용, http://12
 
 같은 와이파이의 휴대폰·태블릿에서 보려면 `band2sheet app --host 0.0.0.0` 으로 실행하고 `http://<컴퓨터 IP>:8765` 로 접속하세요.
 
+## 🎤 내 노래 영상 후보정 (화음 · 반주 스타일 · 오토튠)
+
+직접 녹화한 노래 영상(또는 음원)을 넣으면 **화면은 그대로 두고 소리만** 다듬어 다시 영상으로 만들어 줍니다.
+앱에서는 새 작업 화면의 **🎤 내 영상 후보정** 탭을 쓰고, 결과 화면에서 **후보정 / 원본** 을 같은 위치에서 바꿔 들으며 비교할 수 있습니다.
+
+| 스타일 | 내용 |
+|---|---|
+| **화음 넣기** (기본) | 내 목소리로 3도 위 + 아래 화음(3성부)을 만듭니다. 그 시각의 **코드 구성음**에 맞춰 음을 고르고(코드를 모르면 음계 3도), 화음 성부는 항상 음계에 맞춥니다. 좌우로 펼치고 미세한 시차·음높이 흔들림을 줘서 여러 사람이 부르는 느낌을 냅니다 |
+| **오케스트라** | 키·박·코드를 분석해 현악(4성부, 성부 진행 최소화)·첼로/콘트라베이스·호른·하프 분산화음·팀파니로 편곡하고 연주합니다. 곡이 진행될수록 커지는 빌드업, 홀 잔향 포함. 편곡은 `orchestra.mid` 로도 저장됩니다 |
+| **재즈 트리오** | 코드를 재즈 코드로 넓혀(장3화음→maj7, 딸림화음→7, 단3화음→m7) 피아노가 루트리스 보이싱·찰스턴 리듬으로 컴핑, 박마다 걷는 **워킹 베이스**(다음 코드로 반음 접근), 브러시 드럼 스윙(라이드 '딩 딩-가', 하이햇 2·4박) |
+| **아카펠라** | 악기 없이 내 목소리 화음 + 베이스 보컬('둠 두-둠') + 비트박스(킥·스네어·하이햇) |
+| **워십 패드** | 근음·5도·옥타브의 따뜻한 패드와 높은 3도, 서브 베이스. 화음이 겹치며 넘어가고 잔향이 길어 찬양 인도·묵상에 어울림 |
+| **피아노** | 왼손 근음 옥타브 + 오른손 분산화음으로 시작해 후반엔 박마다 화음 반주로 빌드업 |
+| **어쿠스틱 기타** | 앞부분은 핑거피킹(베이스-3-2-1), 후반은 스트로크(D DU UDU, 줄마다 12ms 시차의 실제 스트로크 느낌) |
+| **오케스트라 + 화음** | 오케스트라에 내 목소리 화음까지 (다른 반주 스타일도 `--with-harmony` 로 화음 추가) |
+| **오토튠** (부가 기능) | 음계에서 벗어난 음을 가장 가까운 음으로 당깁니다. 강도 0~100%, 기본은 비브라토를 살리는 자연스러운 보정이고 **하드 튠**은 로봇 보이스 효과 |
+
+```bash
+band2sheet remix 내노래.mp4                                  # 화음 넣기 (기본)
+band2sheet remix 내노래.mp4 --autotune                       # + 오토튠 (강도 0.7)
+band2sheet remix 내노래.mp4 --autotune 1 --hard-tune         # 로봇 보이스
+band2sheet remix 내노래.mp4 --style orchestra --key G        # 오케스트라 반주 (키 직접 지정)
+band2sheet remix 내노래.mov --style full --harmony up        # 오케스트라 + 위 화음만
+band2sheet remix 내노래.mp4 --style jazz                     # 재즈 트리오
+band2sheet remix 내노래.mp4 --style acappella                # 아카펠라 (화음 + 베이스 보컬 + 비트박스)
+band2sheet remix 내노래.mp4 --style pad --with-harmony       # 워십 패드 + 내 목소리 화음
+band2sheet remix 내노래.mp4 --style piano                    # 피아노 반주  (guitar: 어쿠스틱 기타)
+```
+
+**노래만 녹음한 영상(반주 없음)** 도 됩니다. 멜로디에 사람이 반주를 붙이듯 템포·마디 첫 박·키·코드를 함께 추정합니다
+(조 안의 코드 중 강박·긴 음이 코드 구성음이 되고, V→I·IV→V 같은 자연스러운 진행이 되도록 고름).
+정답을 아는 합성 노래 18곡에서 템포 18/18, 키 18/18, 마디별 코드 약 83% (예전 방식 27%).
+F↔Dm, C↔Am 처럼 멜로디만으로 헷갈리는 코드는 아래처럼 직접 고쳐 넣으면 됩니다.
+
+**다시 만들기 · 버전 비교**: 분석(분리·음높이)은 저장해 두므로 스타일·화음·오토튠을 바꿔 다시 만들 때 금방 끝납니다.
+앱 결과 화면의 **🔁 다른 스타일로 다시 만들기** 에서 템포·박자·키·**코드 진행**을 고칠 수 있고,
+만든 버전들(v1 화음, v2 재즈 …)과 원본을 같은 위치에서 바꿔 들으며 비교합니다.
+
+```bash
+band2sheet remix 내노래.mp4 --style piano --chords "G | C | D | G | Em | C | D G | G"   # 코드 직접 입력
+band2sheet remix 내노래.mp4 --style guitar --bpm 72 --beats 3                         # 템포·박자 지정
+```
+코드 입력: 마디마다 하나면 `"G C D G"`, 마디를 `|` 로 나누면 한 마디에 여러 개 `"G | C D | Em7 | D/F#"`,
+`N.C.` 는 코드 없음, `%` 는 앞 코드 반복. 쓸 수 있는 코드: `G Em D7 Cmaj7 Bm7 Asus4 Bdim F#m` 등.
+
+결과 (`output/<이름>_remix/`): `<이름>_<스타일>.mp4`(후보정 영상), `remix.wav`, `stems/`(오토튠 보컬·위/아래 화음·반주),
+`<스타일>.mid`(반주 편곡 — 피아노·베이스·드럼 등 악기별 트랙), `remix.json`(키·코드·설정).
+
+- 목소리 음높이를 바꿀 때는 **PSOLA**(주기 단위로 잘라 붙이기)를 써서 음색(포먼트)이 유지됩니다. 화음이 다람쥐 소리처럼 되지 않습니다.
+- 반주와 함께 녹화한 영상이면 `pip install demucs` 를 설치해 두세요. 목소리만 골라서 화음·오토튠을 겁니다.
+  화음 스타일은 원래 반주를 유지하고, 반주 스타일은 원래 반주를 빼고 새 반주로 바꿉니다(`--keep-backing` 으로 둘 다).
+  Demucs 가 없으면 **목소리만 녹음된 영상**으로 보고 처리합니다.
+- 반주 음색은 내장 합성기입니다. [fluidsynth](https://www.fluidsynth.org) 와 GM 사운드폰트(.sf2, 예: FluidR3_GM)가 있으면
+  `--soundfont 파일.sf2` (또는 환경 변수 `BAND2SHEET_SOUNDFONT`) 로 훨씬 실감 나는 소리를 냅니다.
+- 박이 어긋나면 `--bpm`, 키가 틀리면 `--key` 로 직접 지정하세요. 화음·반주 음량은 `--harmony-level`, `--backing-level`.
+- 화면(영상)은 다시 인코딩하지 않아 화질 그대로이고 빠릅니다.
+
 ## 명령줄 사용법
 
 ```bash
-band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 영상(mp4) + 음성(wav) 만 받기
+band2sheet fetch "https://youtu.be/..."                    # 유튜브 → 음성(wav)만 받기 (--video: 영상도)
 band2sheet run 예배실황.mp4 --key A --lyrics               # 파일 → 악보 (+A키 악보, 가사)
 band2sheet run 곡.mp3 -q high                              # 고품질 분리
 band2sheet run --stems-dir 멀티트랙폴더/                    # 멀티트랙 (분리 없이)
@@ -218,6 +275,7 @@ band2sheet scan 주일예배.mp4                                # 긴 실황에�
 band2sheet run 주일예배.mp4 --song 2                        # 찾은 곡 중 2번째만 (--song 1,3 / all)
 band2sheet run 곡.mid --key A                              # MIDI → 코드표·리드시트·파트보·ChordPro
 band2sheet run 악보.musicxml                                # MusicXML(코드 기호·가사 포함) → 위와 같이
+band2sheet remix 내노래.mp4 --autotune                     # 내 영상 후보정 (화음 + 오토튠)
 band2sheet transpose output/곡/project.json --key Bb       # 분석 결과로 빠르게 조옮김
 band2sheet transpose 내악보.musicxml --key G               # 기존 MusicXML 조옮김
 band2sheet run "https://youtu.be/..."                      # 유튜브 링크 → 바로 악보 (오디오만 받아서 빠름)
@@ -237,15 +295,16 @@ band2sheet engines                                         # 엔진 설치 상�
 | `--bars-per-line 4` | 한 줄에 넣을 마디 수 (0 = 구간 시작에서만 줄바꿈) |
 | `--no-simplify` | 반주 리듬을 8분음표 격자로 단순화하지 않기 |
 
-### 유튜브 영상 받기 · 음성 추출 (`fetch`)
+### 유튜브 음성 받기 (`fetch`)
 
-악보 없이 **영상 다운로드 → 음성 추출** 까지만 합니다. 결과는 `output/<영상ID>/` 에 저장됩니다.
+악보 없이 **음성 다운로드 → 추출** 까지만 합니다. 기본은 **음성만** 받습니다 (영상보다 훨씬 작고 빠름).
+결과는 `output/<영상ID>/` 에 저장됩니다.
 
 ```bash
-band2sheet fetch "https://www.youtube.com/watch?v=..."               # 제목.mp4 + 제목.wav + info.json
+band2sheet fetch "https://www.youtube.com/watch?v=..."               # 제목.wav + info.json
 band2sheet fetch "https://youtu.be/..." -a mp3 -o 받은곡/              # 음성을 MP3 로
-band2sheet fetch "https://youtu.be/..." --audio-only -a m4a           # 영상 없이 음성만 (더 빠름)
-band2sheet fetch "https://youtu.be/..." --start 754 --duration 300    # 12:34 부터 5분만 음성 추출
+band2sheet fetch "https://youtu.be/..." --start 754 --duration 300    # 12:34 부터 5분 '만' 다운로드
+band2sheet fetch "https://youtu.be/..." --video                       # 영상(mp4)도 저장
 band2sheet fetch 예배실황.mp4 -a wav                                   # 가지고 있는 영상에서 소리만 뽑기
 band2sheet run 받은곡/제목.wav --key A                                 # 그다음 악보 만들기
 ```
@@ -253,10 +312,12 @@ band2sheet run 받은곡/제목.wav --key A                                 # �
 | 옵션 | 설명 |
 |---|---|
 | `-a wav/mp3/m4a/flac` | 음성 형식 (기본 wav — 악보 만들기에 가장 좋은 무손실) |
-| `--audio-only` | 영상은 저장하지 않음 |
-| `--max-height 720` | 영상 최대 화질 (기본 1080p, MP4(H.264+AAC) 우선) |
-| `--start`, `--duration` | 음성 추출 구간(초). 영상은 전체를 저장합니다 |
+| `--start`, `--duration` | 구간(초). 음성만 받을 때는 **그 구간만 다운로드**해서 긴 실황도 금방 받습니다 |
+| `--video` | 영상도 저장 (`--max-height 720` 으로 화질 제한, 기본 1080p). 이때 구간은 음성에만 적용 |
 | `--cookies 파일`, `--cookies-from-browser chrome` | 로그인·연령 확인·"봇이 아님을 확인" 이 필요한 영상 |
+
+받기 최적화: 구간만 받기, `-a m4a` 이면 원본 AAC 스트림을 골라 **다시 인코딩 없이 복사**, 조각 병렬 다운로드.
+구간 받기가 안 되는 사이트면 자동으로 전체를 받은 뒤 자릅니다.
 
 - 유튜브가 자주 바뀌므로 받기가 실패하면 먼저 `pip install -U yt-dlp` 로 최신 버전을 쓰세요.
   yt-dlp 가 JavaScript 런타임(deno 등)을 요구하는 경고를 내면 [yt-dlp 안내](https://github.com/yt-dlp/yt-dlp#dependencies)대로 설치합니다.
@@ -330,6 +391,10 @@ AI 엔진 설치 없이 상태 처리만 확인하려면 별도 가상환경에 
 | `pipeline.py` | 전체 흐름, MIDI·코드표 |
 | `engines.py` | 엔진 설치 확인, 장치 선택 |
 | `view.py` | 앱 자체 화면용 데이터(마디·코드·가사·구간·음표)와 코드/가사/음표 수정 |
+| `remix.py` | 내 영상 후보정 흐름: 분리 → 분석 → 오토튠/화음/오케스트라 → 믹스 → 영상에 입히기 |
+| `harmonize.py` | 반주 없는 노래: 멜로디로 템포·마디·키·코드 추정 (비터비 화성 붙이기) |
+| `vocalfx.py` | 보컬 DSP: 음높이 추적, PSOLA 피치 변환, 오토튠, 코드 맞춤 화음, 잔향 |
+| `backing.py` | 반주 스타일(오케스트라·재즈·아카펠라·패드·피아노·기타): 코드 진행 → 편곡(MIDI) → 내장 합성기 / 사운드폰트 연주 |
 | `audio_io.py` | 입력 처리: 유튜브 영상/오디오 다운로드(yt-dlp), 음성 추출, WAV 변환 |
 | `app/` | 앱 서버(FastAPI, 작업 큐 — 링크 작업은 음성(선택: 영상) 받기 → 분석, 또는 '준비됨' 에서 멈춤) + 화면: 코드 악보·라이브 코드(`views.js`, 운지 그림 `chords.js`), 피아노롤 편집, 믹서, 오선 악보(OSMD) |
 | `cli.py` | 명령줄 |

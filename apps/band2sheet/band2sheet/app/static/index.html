@@ -30,6 +30,11 @@
   <main id="main" tabindex="-1">
     <!-- 새 작업 -->
     <section id="view-new" class="view">
+      <div class="seg mode-tabs" id="mode-tabs" role="group" aria-label="작업 종류">
+        <button data-mode="score" class="on" aria-pressed="true">악보 만들기<small>링크·영상·음원 → 악보</small></button>
+        <button data-mode="remix" aria-pressed="false">내 영상 후보정<small>화음 · 반주 7가지 · 오토튠</small></button>
+      </div>
+      <div id="mode-score">
       <div class="new-heading"><span class="eyebrow">새 작업</span><h1>연주를, 읽을 수 있는 악보로.</h1>
       <p class="muted">링크 또는 음원을 추가하세요. 악기별 악보, TAB, 코드표를 한 작업실에서 확인하고 다듬습니다.</p></div>
       <div class="source-inputs">
@@ -114,6 +119,113 @@
         </div>
       </div>
       </details>
+      </div>
+
+      <!-- 내 영상 후보정 -->
+      <div id="mode-remix" class="hidden">
+        <h1>내 노래 영상 후보정</h1>
+        <p class="muted">직접 녹화한 노래 영상(또는 음원)에 화음을 넣거나, 오케스트라·재즈·피아노·기타·워십 패드 반주를 입히거나,
+          아카펠라로 바꾸고, 오토튠으로 음정을 다듬어 다시 영상으로 만들어 드려요. 화면은 그대로 두고 소리만 바꿉니다.</p>
+        <label id="rm-drop" class="drop">
+          <input id="rm-file" class="file-input" type="file" accept="video/*,audio/*" aria-label="후보정할 영상·음원 파일 선택">
+          <svg class="upload-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v5h16v-5"/></svg>
+          <div><b>녹화한 영상 선택</b><span class="muted"> 또는 여기에 놓기</span></div>
+          <div class="muted small">mp4, mov, webm, m4a, mp3, wav … — 목소리가 또렷할수록 결과가 좋아요</div>
+          <div id="rm-file-name" class="file-name"></div>
+        </label>
+        <div class="grid2">
+          <div class="card span-all">
+            <h3>스타일</h3>
+            <div class="seg style-grid" id="rm-style">
+              <button data-v="harmony" class="on">🎤 화음 넣기<small>기본 · 3도 위/아래</small></button>
+              <button data-v="orchestra">🎻 오케스트라<small>현악·호른·하프</small></button>
+              <button data-v="jazz">🎷 재즈 트리오<small>피아노·워킹 베이스·브러시</small></button>
+              <button data-v="acappella">👥 아카펠라<small>내 목소리 화음·베이스 보컬·비트박스</small></button>
+              <button data-v="pad">🌫 워십 패드<small>잔잔한 패드 + 서브 베이스</small></button>
+              <button data-v="piano">🎹 피아노<small>분산화음 → 화음 반주</small></button>
+              <button data-v="guitar">🎸 어쿠스틱 기타<small>핑거피킹 → 스트로크</small></button>
+            </div>
+            <label class="check" id="rm-with-harmony-row"><input type="checkbox" id="rm-with-harmony">
+              내 목소리 화음도 넣기</label>
+            <div class="row" id="rm-harmony-row">
+              <label>화음 성부<select id="rm-harmony">
+                <option value="both" selected>3도 위 + 아래 (3성부)</option>
+                <option value="up">위 화음만</option><option value="down">아래 화음만</option></select></label>
+            </div>
+            <label class="check"><input type="checkbox" id="rm-keep-backing" checked>
+              <span id="rm-keep-label">원래 반주 유지</span></label>
+            <p class="muted small">반주가 섞인 영상은 Demucs 가 설치돼 있으면 목소리만 골라 화음·오토튠을 겁니다.</p>
+          </div>
+          <div class="card">
+            <h3>오토튠 (부가 기능)</h3>
+            <label class="check"><input type="checkbox" id="rm-autotune"> 음정 자동 보정</label>
+            <div class="row">
+              <label>강도 <span id="rm-strength-v">70%</span>
+                <input id="rm-strength" type="range" min="10" max="100" value="70" disabled></label>
+            </div>
+            <label class="check"><input type="checkbox" id="rm-hard" disabled> 하드 튠 (비브라토까지 펴는 로봇 보이스)</label>
+            <div class="row">
+              <label>키<select id="rm-key"><option value="">자동 인식</option></select></label>
+              <label>템포(BPM)<input id="rm-bpm" type="number" min="30" max="260" placeholder="자동"></label>
+            </div>
+          </div>
+        </div>
+        <button id="rm-start" class="primary big" disabled>후보정 시작</button>
+        <p id="rm-error" class="error" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- 후보정 결과 -->
+    <section id="view-remix" class="view hidden">
+      <div class="result-head">
+        <div>
+          <h1 id="x-title"></h1>
+          <div id="x-meta" class="meta"></div>
+        </div>
+        <div class="actions">
+          <a id="x-dl" class="button primary">⬇ 후보정 영상 받기</a>
+          <button id="x-delete" class="ghost danger">삭제</button>
+        </div>
+      </div>
+      <div class="versions" id="x-versions" title="같은 위치에서 바꿔 들으며 비교"></div>
+      <video id="x-video" class="source-video" controls preload="metadata" playsinline></video>
+      <audio id="x-audio" controls preload="metadata" class="hidden"></audio>
+      <p id="x-last-error" class="error" role="alert"></p>
+      <div class="card again" id="x-again">
+        <h3>🔁 다른 스타일로 다시 만들기 <span class="muted small">— 분석은 다시 하지 않아 빨라요</span></h3>
+        <div class="seg style-grid" id="xa-style"></div>
+        <div class="row wrap">
+          <label class="check"><input type="checkbox" id="xa-with-harmony"> 내 목소리 화음</label>
+          <label class="inline">화음 성부<select id="xa-harmony">
+            <option value="both">3도 위 + 아래</option><option value="up">위만</option><option value="down">아래만</option></select></label>
+          <label class="check"><input type="checkbox" id="xa-autotune"> 오토튠</label>
+          <label class="inline">강도 <input id="xa-strength" type="range" min="10" max="100" value="70"></label>
+        </div>
+        <div class="row">
+          <label>템포(BPM)<input id="xa-bpm" type="number" min="30" max="260" step="0.5"></label>
+          <label>박자<select id="xa-beats"><option value="4">4/4</option><option value="3">3/4</option>
+            <option value="2">2/4</option><option value="6">6/8</option></select></label>
+          <label>키<select id="xa-key"><option value="">자동</option></select></label>
+        </div>
+        <label>코드 진행 <span class="muted small">마디는 <b>|</b> 로 나누고, 한 마디에 코드가 여럿이면 띄어 쓰세요 (예: G | C D | Em | D)</span>
+          <textarea id="xa-chords" rows="3" spellcheck="false"></textarea></label>
+        <div class="row wrap">
+          <button id="xa-go" class="primary">이 설정으로 다시 만들기</button>
+          <button id="xa-auto" class="ghost" type="button">코드·템포·키 자동으로 되돌리기</button>
+        </div>
+        <p id="xa-error" class="error" role="alert"></p>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h3>분석 · 처리 내용</h3>
+          <ul id="x-notes" class="notes"></ul>
+        </div>
+        <div class="card">
+          <h3>파일 받기</h3>
+          <ul id="x-files" class="files"></ul>
+          <p class="muted small">따로 받은 보컬·화음·반주 트랙과 MIDI 로 다른 편집 프로그램에서 더 다듬을 수 있어요.</p>
+        </div>
+      </div>
     </section>
 
     <!-- 받은 영상·음성 (악보 만들기 전) -->

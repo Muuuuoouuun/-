@@ -52,8 +52,9 @@ async function api(path, opts = {}) {
 }
 
 function show(view) {
-  for (const v of ["new", "source", "progress", "choose", "result"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
+  for (const v of ["new", "source", "progress", "choose", "result", "remix"]) $(`#view-${v}`).classList.toggle("hidden", v !== view);
   if (view !== "source") { $("#s-video").pause(); $("#s-audio").pause(); }
+  if (view !== "remix") { $("#x-video").pause(); $("#x-audio").pause(); }
   if (view !== "choose" && state.chooseAudio) state.chooseAudio.pause();
 }
 
@@ -151,7 +152,10 @@ async function loadInfo() {
     box.appendChild(l);
   }
   const tk = $("#target-key");
-  for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) tk.add(new Option(keyName(k), k));
+  for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) {
+    tk.add(new Option(keyName(k), k));
+    $("#rm-key").add(new Option(keyName(k), k));
+  }
   const eng = Object.fromEntries(state.info.engines.map((e) => [e.key, e]));
   const whisper = (eng.whisper && eng.whisper.installed) || (eng.whisperx && eng.whisperx.installed);
   $("#lyrics-hint").textContent = whisper ? "Whisper 로 가사를 인식합니다." :
@@ -281,6 +285,271 @@ async function startJob() {
   }
 }
 
+// ------------------------------------------------------------------ 내 영상 후보정
+function setMode(mode) {
+  $$("#mode-tabs button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.mode === mode);
+    b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+  });
+  $("#mode-score").classList.toggle("hidden", mode !== "score");
+  $("#mode-remix").classList.toggle("hidden", mode !== "remix");
+}
+
+function setRemixFile(f) {
+  state.rmFile = f;
+  $("#rm-file-name").textContent = f ? `${f.name} (${(f.size / 1048576).toFixed(1)} MB)` : "";
+  $("#rm-start").disabled = !f;
+}
+
+function updateHarmonyRow() {
+  const style = state.rmStyle;
+  const voices = style === "harmony" || $("#rm-with-harmony").checked;
+  $("#rm-harmony-row").classList.toggle("hidden", !voices);
+}
+
+function setRemixStyle(style) {
+  state.rmStyle = style;
+  $$("#rm-style button").forEach((b) => b.classList.toggle("on", b.dataset.v === style));
+  // 반주 스타일에서 내 목소리 화음을 더할지 (아카펠라는 기본으로 넣음)
+  $("#rm-with-harmony-row").classList.toggle("hidden", style === "harmony");
+  $("#rm-with-harmony").checked = style === "acappella";
+  updateHarmonyRow();
+  // 화음만 넣을 때는 원래 반주를 살리고, 오케스트라를 입힐 때는 원래 반주를 빼고 바꾸는 게 기본
+  $("#rm-keep-backing").checked = style === "harmony";
+  $("#rm-keep-label").textContent = style === "harmony" ? "원래 반주 유지" : "원래 반주도 남기기 (끄면 새 반주로 바꿈)";
+}
+
+function initRemix() {
+  state.rmStyle = "harmony";
+  $$("#mode-tabs button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  const drop = $("#rm-drop");
+  $("#rm-file").addEventListener("change", (e) => setRemixFile(e.target.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    if (e.dataTransfer.files.length) setRemixFile(e.dataTransfer.files[0]);
+  });
+  $$("#rm-style button").forEach((b) => b.addEventListener("click", () => setRemixStyle(b.dataset.v)));
+  $("#rm-with-harmony").addEventListener("change", updateHarmonyRow);
+  setRemixStyle("harmony");
+  $("#rm-autotune").addEventListener("change", () => {
+    $("#rm-strength").disabled = $("#rm-hard").disabled = !$("#rm-autotune").checked;
+  });
+  $("#rm-strength").addEventListener("input", () => { $("#rm-strength-v").textContent = `${$("#rm-strength").value}%`; });
+  $("#rm-start").addEventListener("click", startRemix);
+  initAgain();
+  $("#x-delete").addEventListener("click", () => deleteJob("후보정 결과를 지울까요? (원본 파일은 내 컴퓨터에 그대로 있어요)", $("#x-last-error")));
+}
+
+async function startRemix() {
+  if (state.startingJob || !state.rmFile) return;
+  state.startingJob = true;
+  const context = jobContext();
+  const file = state.rmFile;
+  $("#rm-error").textContent = "";
+  const options = {
+    style: state.rmStyle,
+    harmony: $("#rm-harmony").value,
+    with_harmony: state.rmStyle === "harmony" ? null : $("#rm-with-harmony").checked,
+    keep_backing: $("#rm-keep-backing").checked,
+    autotune: $("#rm-autotune").checked,
+    autotune_strength: Number($("#rm-strength").value) / 100,
+    hard_tune: $("#rm-autotune").checked && $("#rm-hard").checked,
+    key: $("#rm-key").value || null,
+    bpm: $("#rm-bpm").value || null,
+  };
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("options", JSON.stringify(options));
+  $("#rm-start").disabled = true;
+  $("#rm-start").textContent = "올리는 중…";
+  try {
+    const job = await api("/api/remix", { method: "POST", body: fd });
+    if (state.rmFile === file) {
+      setRemixFile(null);
+      $("#rm-file").value = "";
+    }
+    await loadJobs();
+    if (isCurrentJob(context)) await openJob(job.id);
+  } catch (e) {
+    if (isCurrentJob(context)) $("#rm-error").textContent = e.message;
+  } finally {
+    state.startingJob = false;
+    $("#rm-start").textContent = "후보정 시작";
+    $("#rm-start").disabled = !state.rmFile;
+  }
+}
+
+function remixUrl(path) {
+  return `/api/jobs/${state.job.id}/remix/${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function remixVersions() {
+  const r = state.job.result;
+  return r.versions || [r];
+}
+
+function currentVersion() {
+  const vs = remixVersions();
+  return vs.find((v) => v.n === state.remixVersion) || vs[vs.length - 1];
+}
+
+function selectVersion(which) {
+  // which: 버전 번호 또는 "original"
+  const v = which === "original" ? null : remixVersions().find((x) => x.n === which) || currentVersion();
+  if (v) state.remixVersion = v.n;
+  $$("#x-versions button").forEach((b) => b.classList.toggle("on", b.dataset.v === String(which === "original" ? "original" : v.n)));
+  const r = currentVersion();
+  const player = r.video ? $("#x-video") : $("#x-audio");
+  const t = player.currentTime || 0;
+  const playing = !player.paused;
+  player.src = remixUrl(which === "original" ? "original" : (r.video || r.audio));
+  player.addEventListener("loadedmetadata", () => {  // 같은 위치에서 이어서 비교
+    player.currentTime = t;
+    if (playing) player.play();
+  }, { once: true });
+  renderVersionInfo(r);
+}
+
+function versionLabel(v) {
+  return `v${v.n} ${v.style_label.replace(" (기본)", "")}${v.autotune ? " · 오토튠" : ""}`;
+}
+
+function renderVersionInfo(r) {
+  $("#x-meta").innerHTML = "";
+  const meta = [r.style_label, r.autotune ? "오토튠" : null, `키 ${r.key_short}`,
+    r.tempo ? `${Math.round(r.tempo)} BPM` : null, r.chords_source === "user" ? "코드 직접 입력" : null];
+  for (const m of meta.filter(Boolean)) {
+    const span = document.createElement("span");
+    span.textContent = m;
+    $("#x-meta").appendChild(span);
+  }
+  $("#x-notes").innerHTML = "";
+  for (const n of r.notes) {
+    const li = document.createElement("li");
+    li.textContent = n;
+    $("#x-notes").appendChild(li);
+  }
+  $("#x-dl").href = remixUrl(r.video || r.audio);
+  $("#x-dl").textContent = r.video ? "후보정 영상 받기" : "후보정 음원 받기";
+  $("#x-files").innerHTML = "";
+  for (const f of [...r.files, "original"]) {
+    const name = f.replace(/^v\d+\//, "");
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = remixUrl(f);
+    a.textContent = f === "original" ? "원본 파일" : f === r.video ? "후보정 영상" :
+      f === r.audio ? "후보정 음원 (WAV)" : name.endsWith(".mid") ? `반주 편곡 (MIDI · ${name})` :
+      { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음",
+        "stems/harmony_down.wav": "아래 화음" }[name] || (name.startsWith("stems/") ? `반주 트랙 (${name.slice(6)})` : name);
+    a.download = "";
+    li.appendChild(a);
+    $("#x-files").appendChild(li);
+  }
+  fillAgain(r);
+}
+
+// 다시 만들기 패널: 선택한 버전의 설정으로 채움
+function fillAgain(r) {
+  state.again = { style: r.style, chordText: r.chord_text || "", chordsSource: r.chords_source };
+  $$("#xa-style button").forEach((b) => b.classList.toggle("on", b.dataset.v === r.style));
+  $("#xa-with-harmony").checked = r.with_harmony != null ? r.with_harmony : ["harmony", "full", "acappella"].includes(r.style);
+  $("#xa-with-harmony").disabled = r.style === "harmony";
+  $("#xa-autotune").checked = !!r.autotune;
+  $("#xa-bpm").value = r.user_bpm ? r.tempo : "";
+  $("#xa-bpm").placeholder = r.tempo ? `자동 (지금 ${Math.round(r.tempo)})` : "자동";
+  $("#xa-beats").value = String(r.beats_per_bar || 4);
+  $("#xa-key").value = r.user_key ? r.key_short : "";
+  $("#xa-key").options[0].textContent = `자동 (지금 ${r.key_short})`;
+  $("#xa-chords").value = r.chord_text || "";
+  $("#xa-error").textContent = "";
+}
+
+function initAgain() {
+  $("#xa-style").innerHTML = $("#rm-style").innerHTML;
+  $$("#xa-style button").forEach((b) => b.addEventListener("click", () => {
+    state.again.style = b.dataset.v;
+    $$("#xa-style button").forEach((x) => x.classList.toggle("on", x === b));
+    $("#xa-with-harmony").disabled = b.dataset.v === "harmony";
+    $("#xa-with-harmony").checked = ["harmony", "full", "acappella"].includes(b.dataset.v);
+  }));
+  for (const k of [...MAJOR_KEYS, ...MINOR_KEYS]) $("#xa-key").add(new Option(keyName(k), k));
+  $("#xa-auto").addEventListener("click", () => {
+    $("#xa-bpm").value = "";
+    $("#xa-key").value = "";
+    $("#xa-chords").value = "";
+    state.again.chordText = "";
+    state.again.chordsSource = "auto";
+    toast("다시 만들 때 템포·키·코드를 자동으로 분석합니다");
+  });
+  $("#xa-go").addEventListener("click", startAgain);
+}
+
+async function startAgain() {
+  const context = jobContext();
+  if (!context.id || !state.again) return;
+  $("#xa-error").textContent = "";
+  const text = $("#xa-chords").value.trim();
+  const edited = text !== state.again.chordText.trim();
+  const style = state.again.style;
+  const options = {
+    style,
+    with_harmony: style === "harmony" ? null : $("#xa-with-harmony").checked,
+    harmony: $("#xa-harmony").value,
+    autotune: $("#xa-autotune").checked,
+    autotune_strength: Number($("#xa-strength").value) / 100,
+    hard_tune: false,
+    bpm: $("#xa-bpm").value || null,
+    beats_per_bar: Number($("#xa-beats").value),
+    key: $("#xa-key").value || null,
+    // 직접 고쳤거나, 이전에 직접 넣은 코드를 그대로 두었으면 그 코드로
+    chords: text && (edited || state.again.chordsSource === "user") ? text : null,
+    keep_backing: style === "harmony",
+  };
+  $("#xa-go").disabled = true;
+  try {
+    await api(`/api/jobs/${context.id}/remix`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ options }),
+    });
+    if (!isCurrentJob(context)) return;
+    state.remixVersion = null;  // 끝나면 새 버전을 보여 줌
+    await loadJobs();
+    if (isCurrentJob(context)) await refreshJob();
+  } catch (e) {
+    if (isCurrentJob(context)) $("#xa-error").textContent = e.message;
+  } finally {
+    $("#xa-go").disabled = false;
+  }
+}
+
+function showRemix() {
+  const job = state.job;
+  const r = job.result;
+  show("remix");
+  $("#player").classList.add("hidden");
+  $("#x-title").textContent = job.title;
+  $("#x-last-error").textContent = r.last_error ? `다시 만들기 실패: ${r.last_error}` : "";
+  $("#x-video").classList.toggle("hidden", !r.video);
+  $("#x-audio").classList.toggle("hidden", !!r.video);
+  const vs = remixVersions();
+  if (state.remixJob !== job.id || !vs.some((v) => v.n === state.remixVersion)) {
+    state.remixJob = job.id;
+    state.remixVersion = vs[vs.length - 1].n;
+  }
+  const box = $("#x-versions");
+  box.innerHTML = "";
+  for (const v of [...vs, null]) {
+    const b = document.createElement("button");
+    b.dataset.v = v ? String(v.n) : "original";
+    b.textContent = v ? versionLabel(v) : "원본";
+    b.addEventListener("click", () => selectVersion(v ? v.n : "original"));
+    box.appendChild(b);
+  }
+  selectVersion(state.remixVersion);
+}
+
 // ------------------------------------------------------------------ 받은 영상·음성
 function showSource() {
   const job = state.job;
@@ -334,7 +603,7 @@ function updateAnalysisButtons() {
 
 function updateDeleteButtons() {
   const pending = state.deletingJobs.has(state.jobId);
-  for (const selector of ["#s-delete", "#r-delete"]) {
+  for (const selector of ["#s-delete", "#r-delete", "#x-delete"]) {
     $(selector).disabled = pending;
     $(selector).setAttribute("aria-busy", String(pending));
   }
@@ -447,7 +716,8 @@ async function loadJobs() {
   for (const j of jobs) {
     const li = document.createElement("li");
     li.classList.toggle("active", j.id === state.jobId);
-    const st = j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
+    const st = j.status === "done" && j.kind === "remix" ? `후보정 완료 · ${j.key || ""}` :
+      j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
       j.status === "choose" ? `곡 고르기 · ${j.songs}곡` :
       j.status === "ready" ? "영상·음성 준비됨 · 악보 만들기 전" :
       j.status === "queued" ? "대기 중" : `${Math.round(j.progress * 100)}% · ${j.stage}`;
@@ -521,6 +791,11 @@ async function refreshJob() {
   retry.classList.add("hidden");
   state.job = job;
   updateAnalysisButtons();
+  if (job.status === "done" && job.kind === "remix") {
+    showRemix();
+    loadJobs();
+    return;
+  }
   if (job.status === "done") {
     await showResult();
     loadJobs();
@@ -539,7 +814,9 @@ async function refreshJob() {
   show("progress");
   $("#player").classList.add("hidden");
   $("#p-title").textContent = job.title;
-  $("#p-heading").textContent = job.status === "error" ? "분석을 완료하지 못했습니다" : job.status === "queued" ? "분석 대기 중" : "악보 분석 중";
+  const work = job.kind === "remix" ? "후보정" : "분석";
+  $("#p-heading").textContent = job.status === "error" ? `${work}을 완료하지 못했습니다` : job.status === "queued" ? `${work} 대기 중` :
+    job.kind === "remix" ? "후보정 중" : "악보 분석 중";
   updateProgress(job.progress, job.status === "error" ? "오류를 확인한 뒤 분석을 다시 시도하거나 다른 파일로 시작하세요." :
     job.status === "queued" ? "다른 작업이 끝나기를 기다리는 중…" : job.stage);
   $("#p-log").textContent = job.log.join("\n");
@@ -1430,6 +1707,7 @@ function followMeasure(t) {
 window.addEventListener("DOMContentLoaded", async () => {
   initNewView();
   initSourceView();
+  initRemix();
   initResultView();
   $("#btn-new").addEventListener("click", newJob);
   $("#jobs-retry").addEventListener("click", loadJobs);

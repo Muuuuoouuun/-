@@ -1,10 +1,11 @@
 """명령줄 인터페이스.
 
-  band2sheet fetch "https://youtu.be/..."                   # 유튜브 -> 영상(mp4) + 음성(wav)
+  band2sheet fetch "https://youtu.be/..."                   # 유튜브 -> 음성(wav) (--video: 영상도)
   band2sheet run "https://youtu.be/..." -o out/song         # 유튜브 -> 악보
   band2sheet run live.mp4 --key A --lyrics                  # 파일 -> 악보 + A키로 조옮김 + 가사
   band2sheet transpose out/song/project.json --key Bb       # 분석 결과로 빠르게 조옮김
   band2sheet transpose score.musicxml -s -2                 # 기존 MusicXML 조옮김
+  band2sheet remix 내노래.mp4 --autotune                    # 내 영상 후보정 (화음 + 오토튠)
   band2sheet app                                            # 악보 스튜디오 앱 실행
 """
 
@@ -79,17 +80,52 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("scan", help="긴 예배·공연 영상에서 곡 구간 찾기 (말씀·기도·전환 제외)")
     sc.add_argument("source", help="오디오/영상 파일")
 
-    f = sub.add_parser("fetch", help="유튜브 영상 다운로드 + 음성 추출 (악보는 만들지 않음)")
+    f = sub.add_parser("fetch", help="유튜브 음성 다운로드(선택: 영상도) + 음성 추출 (악보는 만들지 않음)")
     f.add_argument("source", help="유튜브 URL (또는 소리만 뽑을 영상 파일)")
     f.add_argument("-o", "--out", type=Path, default=None, help="저장 폴더 (기본: output/<제목>)")
     f.add_argument("-a", "--audio-format", choices=["wav", "mp3", "m4a", "flac"], default="wav",
                    help="음성 파일 형식 (기본 wav: 악보 만들기에 가장 좋음)")
-    f.add_argument("--audio-only", action="store_true", help="영상은 저장하지 않고 음성만 (더 빠름)")
-    f.add_argument("--max-height", type=int, default=1080, help="영상 최대 화질 (기본 1080p)")
-    f.add_argument("--start", type=float, help="이 시각(초)부터만 음성 추출")
-    f.add_argument("--duration", type=float, help="이 길이(초)만 음성 추출")
+    f.add_argument("--video", action="store_true", help="영상(mp4)도 받기 (기본: 음성만, 훨씬 빠름)")
+    f.add_argument("--audio-only", action="store_true", help=argparse.SUPPRESS)  # 예전 옵션 (이제 기본)
+    f.add_argument("--max-height", type=int, default=1080, help="--video 일 때 영상 최대 화질 (기본 1080p)")
+    f.add_argument("--start", type=float, help="이 시각(초)부터만 (음성만 받을 때는 이 구간만 다운로드)")
+    f.add_argument("--duration", type=float, help="이 길이(초)만")
     f.add_argument("--cookies", help="쿠키 파일 (로그인·연령 확인이 필요한 영상)")
     f.add_argument("--cookies-from-browser", help="이 브라우저의 쿠키 사용 (예: chrome, firefox, edge)")
+
+    m = sub.add_parser("remix", help="내 노래 영상 후보정: 화음(기본)·오케스트라·재즈·아카펠라·패드·피아노·기타 + 오토튠")
+    m.add_argument("source", type=Path, help="녹화한 영상 또는 음원 파일")
+    m.add_argument("-o", "--out", type=Path, default=None, help="결과 폴더 (기본: output/<이름>_remix)")
+    m.add_argument("--style", default="harmony",
+                   choices=["harmony", "orchestra", "full", "jazz", "acappella", "pad", "piano", "guitar"],
+                   help="harmony: 화음 넣기(기본) | orchestra: 오케스트라 | full: 오케스트라+화음 | "
+                        "jazz: 재즈 트리오 | acappella: 아카펠라 | pad: 워십 패드 | piano: 피아노 | "
+                        "guitar: 어쿠스틱 기타")
+    hg = m.add_mutually_exclusive_group()
+    hg.add_argument("--with-harmony", dest="with_harmony", action="store_true", default=None,
+                    help="반주 스타일에도 내 목소리 화음 넣기")
+    hg.add_argument("--no-harmony", dest="with_harmony", action="store_false",
+                    help="화음 없이 (아카펠라·풀 스타일에서 화음 빼기)")
+    m.add_argument("--harmony", choices=["both", "up", "down"], default="both",
+                   help="화음 성부: 3도 위+아래(기본) | 위만 | 아래만")
+    m.add_argument("--autotune", nargs="?", type=float, const=0.7, default=None, metavar="강도",
+                   help="오토튠 켜기 (강도 0~1, 기본 0.7 — 1 에 가까울수록 정확히 맞춤)")
+    m.add_argument("--hard-tune", action="store_true", help="비브라토까지 펴는 '로봇 보이스' 오토튠")
+    m.add_argument("--key", help="키 직접 지정 (예: G, Em; 기본 자동)")
+    m.add_argument("--bpm", type=float, help="템포 직접 지정 (반주 박자가 어긋날 때)")
+    m.add_argument("--beats", type=int, choices=[2, 3, 4, 6], default=4, help="한 마디 박 수 (기본 4, 왈츠는 3)")
+    m.add_argument("--chords", help='코드 진행 직접 입력. 마디마다 하나: "G C D G" / 마디를 | 로: "G | C D | Em | D"'),
+    m.add_argument("--no-separate", action="store_true", help="보컬/반주 분리 안 함 (보컬만 녹음된 영상)")
+    g = m.add_mutually_exclusive_group()
+    g.add_argument("--keep-backing", dest="keep_backing", action="store_true", default=None,
+                   help="원래 반주 유지 (오케스트라 스타일 기본은 원래 반주를 빼고 오케스트라로 바꿈)")
+    g.add_argument("--drop-backing", dest="keep_backing", action="store_false",
+                   help="원래 반주 빼기 (보컬만 남기고 새로 입힘)")
+    m.add_argument("--harmony-level", type=float, default=0.5, help="화음 음량 (리드 대비, 기본 0.5)")
+    m.add_argument("--backing-level", "--orchestra-level", dest="backing_level", type=float, default=0.55,
+                   help="새 반주 음량 (리드 대비, 기본 0.55)")
+    m.add_argument("--soundfont", help="반주 음색 .sf2 (fluidsynth 필요, 없으면 내장 합성기)")
+    m.add_argument("--device", help="cpu | cuda | mps (분리용, 기본 자동)")
 
     t = sub.add_parser("transpose", help="분석 결과(project.json) 또는 MusicXML 조옮김")
     t.add_argument("input", type=Path, help="project.json 또는 .musicxml/.mxl/.xml 파일")
@@ -180,7 +216,7 @@ def cmd_fetch(args) -> int:
             last[0] = msg
             print(f"\r  {msg:<50}", end="", flush=True)
 
-    res = fetch(args.source, out, audio_format=args.audio_format, keep_video=not args.audio_only,
+    res = fetch(args.source, out, audio_format=args.audio_format, keep_video=args.video,
                 max_height=args.max_height, start=args.start, duration=args.duration,
                 progress=progress, cookies=args.cookies, cookies_from_browser=args.cookies_from_browser)
     print()
@@ -190,6 +226,32 @@ def cmd_fetch(args) -> int:
     print(f"  음성: {res.audio}")
     print()
     print(f"악보 만들기: band2sheet run \"{res.audio}\" -o \"{out}\"")
+    return 0
+
+
+def cmd_remix(args) -> int:
+    from .audio_io import safe_name
+    from .remix import STYLES, RemixOptions, remix
+
+    out = args.out or Path("output") / f"{safe_name(args.source.stem)}_remix"
+    opts = RemixOptions(
+        style=args.style, harmony=args.harmony, autotune=args.autotune is not None,
+        autotune_strength=float(min(max(args.autotune if args.autotune is not None else 0.7, 0.0), 1.0)),
+        hard_tune=args.hard_tune, key=args.key, separate=not args.no_separate,
+        keep_backing=args.keep_backing, harmony_level=args.harmony_level, with_harmony=args.with_harmony,
+        backing_level=args.backing_level, bpm=args.bpm, soundfont=args.soundfont,
+        beats_per_bar=args.beats, chords=args.chords,
+        device=args.device,
+    )
+    if args.hard_tune and args.autotune is None:
+        opts.autotune, opts.autotune_strength = True, 1.0
+    res = remix(args.source, out, opts)
+    print()
+    print(f"코드 진행: {res.chord_text}  (템포 {res.tempo:.0f} BPM)")
+    print("  틀린 곳은 --chords \"...\" 로 고쳐 다시 실행하세요 (분석은 저장돼 있어 금방 끝납니다).")
+    print(f"완료! {STYLES[opts.style]}" + (" + 오토튠" if opts.autotune else "") + f" · 키 {res.key}")
+    for f in res.files:
+        print("  -", f)
     return 0
 
 
@@ -293,8 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return {
-            "run": cmd_run, "fetch": cmd_fetch, "transpose": cmd_transpose, "app": cmd_app, "web": cmd_app,
-            "keys": cmd_keys, "engines": cmd_engines, "scan": cmd_scan,
+            "run": cmd_run, "fetch": cmd_fetch, "remix": cmd_remix, "transpose": cmd_transpose,
+            "app": cmd_app, "web": cmd_app, "keys": cmd_keys, "engines": cmd_engines, "scan": cmd_scan,
         }[args.command](args)
     except (RuntimeError, FileNotFoundError, ValueError) as e:
         print(f"오류: {e}", file=sys.stderr)

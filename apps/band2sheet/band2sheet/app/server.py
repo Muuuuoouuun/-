@@ -139,6 +139,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(400, str(e))
         return asdict(job)
 
+    @app.post("/api/remix")
+    def create_remix_job(file: UploadFile = File(...), options: str = Form("{}")):
+        try:
+            opts = json.loads(options or "{}")
+            if not isinstance(opts, dict):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(400, "옵션 형식이 잘못되었습니다.")
+        try:
+            job = manager.create_remix(file.filename or "upload", file.file, opts)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return asdict(job)
+
+    @app.post("/api/jobs/{job_id}/remix")
+    def remix_again(job_id: str, req: AnalyzeRequest):
+        job_or_404(job_id)
+        try:
+            return asdict(manager.remix_again(job_id, req.options))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/jobs/{job_id}/remix/{path:path}")
+    def remix_file(job_id: str, path: str):
+        job = job_or_404(job_id)
+        parts = path.split("/")
+        if any(not SAFE.match(p) or p in (".", "..") for p in parts):
+            raise HTTPException(400, "잘못된 경로입니다.")
+        try:
+            f = manager.remix_file(job_id, path)
+        except KeyError:
+            raise HTTPException(404, "파일이 없습니다.")
+        media = {".mp4": "video/mp4", ".mov": "video/quicktime", ".m4v": "video/mp4", ".webm": "video/webm",
+                 ".mkv": "video/x-matroska", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+                 ".mid": "audio/midi", ".json": "application/json"}.get(f.suffix.lower())
+        ext = f.suffix.lower()
+        version = next((v for v in job.result.get("versions") or [job.result]
+                        if path in (v.get("video"), v.get("audio"))), None)
+        if path == "original":
+            name = f"{_file_title(job.title)}_원본{ext}"
+        elif version:
+            name = f"{_file_title(job.title)}_{version['style']}{ext}"
+        else:
+            name = f.name
+        return FileResponse(f, media_type=media, filename=name)
+
     @app.post("/api/jobs/url")
     def create_url_job(req: UrlJob):
         try:
@@ -339,7 +387,7 @@ def _brief(job) -> dict:
         "status": job.status, "progress": job.progress, "stage": job.stage,
         "key": job.result["key_short"] if job.result else None,
         "parent": job.parent, "songs": len(job.songs),
-        "url": job.url,
+        "url": job.url, "kind": job.kind,
     }
 
 
