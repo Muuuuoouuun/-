@@ -17,9 +17,9 @@ QUALITIES: dict[str, tuple[tuple[int, ...], float]] = {
     # 이름: (구성음 간격, 사전 점수 — 단순한 코드를 선호)
     "": ((0, 4, 7), 0.0),
     "m": ((0, 3, 7), 0.0),
-    "7": ((0, 4, 7, 10), -0.04),
-    "maj7": ((0, 4, 7, 11), -0.05),
-    "m7": ((0, 3, 7, 10), -0.04),
+    "7": ((0, 4, 7, 10), -0.03),
+    "maj7": ((0, 4, 7, 11), -0.04),
+    "m7": ((0, 3, 7, 10), -0.025),
     "sus4": ((0, 5, 7), -0.06),
     "sus2": ((0, 2, 7), -0.08),
     "dim": ((0, 3, 6), -0.10),
@@ -71,10 +71,11 @@ def nashville_degree(pc: int, key: Key) -> str:
 
 
 def _beat_chroma(tracks: dict[str, list[Note]], timemap: TimeMap, n_beats: int,
-                 offset: float) -> tuple[np.ndarray, np.ndarray]:
-    """박마다 (12차원 크로마, 12차원 베이스 크로마)."""
+                 offset: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """박마다 (12차원 크로마, 12차원 베이스 크로마, 베이스를 뺀 윗성부 크로마)."""
     chroma = np.zeros((n_beats, 12))
     bass = np.zeros((n_beats, 12))
+    upper = np.zeros((n_beats, 12))
     for name, notes in tracks.items():
         w = HARMONY_WEIGHTS.get(name)
         if w is None:
@@ -91,7 +92,9 @@ def _beat_chroma(tracks: dict[str, list[Note]], timemap: TimeMap, n_beats: int,
                 chroma[k, n.pitch % 12] += v
                 if name == "bass":
                     bass[k, n.pitch % 12] += overlap
-    return chroma, bass
+                elif name != "vocals":  # 멜로디의 경과음·꾸밈음은 코드 모양에 넣지 않는다
+                    upper[k, n.pitch % 12] += v
+    return chroma, bass, upper
 
 
 def _templates(key: Key):
@@ -127,10 +130,15 @@ def detect_chords(tracks: dict[str, list[Note]], timemap: TimeMap, key: Key,
         n_beats = int(np.ceil(last)) + 1
     if n_beats <= 0:
         return []
-    chroma, bass = _beat_chroma(tracks, timemap, n_beats, float(downbeat))
+    chroma, bass, upper = _beat_chroma(tracks, timemap, n_beats, float(downbeat))
 
     labels, T, priors = _templates(key)
     roots = np.array([r for r, _ in labels])
+    # 템플릿마다 구성음 표 (베이스 음이 구성음인지 = 자리바꿈 코드인지 보려고)
+    member = np.zeros((len(labels), 12), dtype=bool)
+    for i, (r, q) in enumerate(labels):
+        for iv in QUALITIES[q][0]:
+            member[i, (r + iv) % 12] = True
     prior_cache: dict[tuple[int, str], np.ndarray] = {(key.tonic, key.mode): priors}
 
     def priors_at(k: int) -> np.ndarray:
@@ -144,18 +152,38 @@ def detect_chords(tracks: dict[str, list[Note]], timemap: TimeMap, key: Key,
     energy = chroma.sum(axis=1)
     loud = np.percentile(energy[energy > 0], 75) if np.any(energy > 0) else 1.0
 
+    # 분산화음(아르페지오)은 한 박에 코드 음이 2~3개만 들어 있다 — 같은 반 마디(4/4 의 1·2박, 3·4박)의
+    # 이웃 박을 조금 섞어 코드 모양을 본다 (마디 구조를 따라 섞으므로 코드가 바뀌는 곳은 잘 흐려지지 않는다)
+    group = 2 if beats_per_bar % 2 == 0 else beats_per_bar
+    pooled = upper.copy()
+    for k in range(n_beats):
+        g0 = (k // group) * group
+        others = [j for j in range(g0, min(g0 + group, n_beats)) if j != k]
+        if others:
+            pooled[k] = upper[k] + 0.6 * upper[others].sum(axis=0)
+
     emis = np.full((n_beats, n_states), -1.0)
     for k in range(n_beats):
         c = chroma[k]
         norm = np.linalg.norm(c)
         if norm > 0:
-            sim = T @ (c / norm) + priors_at(k)
+            # 화음 모양은 윗성부(건반·기타 등)로 맞춘다 — 베이스까지 섞으면 베이스 음이 너무 커서
+            # 7화음의 7음 같은 윗성부 음이 묻히고, 자리바꿈(A/C#)이 엉뚱한 코드(C#m)가 된다.
+            u = pooled[k]
+            un = np.linalg.norm(u)
+            has_upper = np.linalg.norm(upper[k]) > 0.25 * norm
+            shape = u / un if has_upper else c / norm  # 화음 악기가 거의 없으면(베이스+보컬만) 전체로
+            sim = T @ shape + priors_at(k)
             bvec = bass[k]
             if bvec.sum() > 0:
-                # 베이스가 한 음을 뚜렷하게 지속할수록 그 음을 근음으로 보는 가중치를 키운다
+                # 베이스 음: 근음이면 가장 좋고, 다른 구성음이면(자리바꿈) 조금 좋고, 구성음이 아니면 나쁘다.
+                # 화음 악기가 없으면 베이스가 화성의 주된 근거라 근음 쪽으로 더 기운다.
                 bpc = int(np.argmax(bvec))
                 dominance = bvec[bpc] / bvec.sum()
-                sim = sim + 0.22 * dominance * (roots == bpc)
+                is_root = roots == bpc
+                in_chord = member[:, bpc]
+                w_root, w_inv = (0.16, 0.08) if has_upper else (0.25, 0.0)
+                sim = sim + dominance * np.where(is_root, w_root, np.where(in_chord, w_inv, -0.12))
             emis[k, :-1] = sim
         # 소리가 거의 없으면 N.C.
         emis[k, -1] = 0.9 if energy[k] < 0.05 * loud else -0.5

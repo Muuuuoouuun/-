@@ -135,7 +135,7 @@ def harmonic_change_by_phase(tracks: dict[str, list[Note]], timemap: TimeMap,
     n_beats = int(np.ceil(float(timemap.to_beats(max(n.end for n in notes))))) + 1
     if n_beats < beats_per_bar * 2:
         return out
-    chroma, _ = _beat_chroma(harm, timemap, n_beats, 0.0)
+    chroma, _, _ = _beat_chroma(harm, timemap, n_beats, 0.0)
     norm = np.linalg.norm(chroma, axis=1) + 1e-9
     unit = chroma / norm[:, None]
     for k in range(1, n_beats):
