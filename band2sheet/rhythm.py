@@ -204,3 +204,125 @@ def fix_tempo_octave(beats: list[float], tracks: dict[str, list[Note]], margin: 
     if best != "x1" and scores[best] > scores["x1"] + margin:
         return _tempo_candidates(beats)[best], best
     return beats, "x1"
+
+
+# ---------------------------------------------------------------------------
+# 박자표 추정 (다운비트 모델이 없을 때): 3/4, 6/8, 4/4 …
+# ---------------------------------------------------------------------------
+
+STRONG_DRUMS = (KICK, SNARE)
+
+
+def _subdivide(beats: list[float], s: int) -> list[float]:
+    out = []
+    for a, b in zip(beats, beats[1:]):
+        out += [a + (b - a) * j / s for j in range(s)]
+    out.append(beats[-1])
+    return out
+
+
+def beat_subdivision(beats: list[float], tracks: dict[str, list[Note]]) -> int:
+    """박 안의 음 시작이 2등분(8분음표) 쪽인지 3등분(셋잇단·겹박자) 쪽인지."""
+    tm = TimeMap(beats)
+    starts = [n.start for name, ns in tracks.items() for n in ns]
+    if len(starts) < 16:
+        return 2
+    pos = tm.to_beats(np.asarray(starts))
+    frac = pos - np.floor(pos)
+    inner = frac[(frac > 0.12) & (frac < 0.88)]
+    if len(inner) < 0.12 * len(frac) or len(inner) < 8:
+        return 2
+    e2 = np.abs(inner - 0.5)
+    e3 = np.minimum(np.abs(inner - 1 / 3), np.abs(inner - 2 / 3))
+    return 3 if float(np.mean(e3)) < 0.6 * float(np.mean(e2)) else 2
+
+
+def _bar_evidence(beats: list[float], tracks: dict[str, list[Note]]) -> np.ndarray:
+    """박마다 '마디 첫 박다움': 베이스 음 시작(길이 가중), 킥, 화음이 바뀌는 정도."""
+    from .chords import _beat_chroma
+
+    tm = TimeMap(beats)
+    n = len(beats)
+    bass = np.zeros(n)
+    kick = np.zeros(n)
+    for note in tracks.get("bass", []):
+        b = float(tm.to_beats(note.start))
+        k = int(round(b))
+        if abs(b - k) < 0.15 and 0 <= k < n:
+            bass[k] += min(float(tm.to_beats(note.end)) - b, 4.0)
+    for note in tracks.get("drums", []):
+        b = float(tm.to_beats(note.start))
+        k = int(round(b))
+        if note.pitch == KICK and abs(b - k) < 0.15 and 0 <= k < n:
+            kick[k] += 1.0
+    harm = {k: v for k, v in tracks.items() if k in ("piano", "guitar", "other", "bass")}
+    change = np.zeros(n)
+    if any(harm.values()):
+        chroma, _, _ = _beat_chroma(harm, tm, n, 0.0)
+        norm = np.linalg.norm(chroma, axis=1) + 1e-9
+        unit = chroma / norm[:, None]
+        for k in range(1, n):
+            if norm[k] > 1e-6 and norm[k - 1] > 1e-6:
+                change[k] = 1.0 - float(unit[k] @ unit[k - 1])
+
+    def unit_scale(x):
+        m = float(np.mean(x[x > 0])) if np.any(x > 0) else 0.0
+        return x / m if m > 0 else x
+
+    return unit_scale(bass) + 0.7 * unit_scale(kick) + 1.5 * unit_scale(change)
+
+
+def _salience(beats: list[float], tracks: dict[str, list[Note]]) -> float:
+    """강한 음(베이스·킥·스네어·화음 악기 동시 타건)이 박 위에 놓이는 비율."""
+    times = [n.start for n in tracks.get("bass", [])]
+    times += [n.start for n in tracks.get("drums", []) if n.pitch in STRONG_DRUMS]
+    for name in ("piano", "guitar", "other"):
+        starts = sorted(n.start for n in tracks.get(name, []))
+        times += [a for a, b in zip(starts, starts[1:]) if b - a < 0.03]  # 화음(동시 타건)
+    if len(times) < 8:
+        return 0.5
+    tm = TimeMap(beats)
+    pos = tm.to_beats(np.asarray(times))
+    return float(np.mean(np.abs(pos - np.round(pos)) < 0.12))
+
+
+METER_PRIOR = {"4/4": 0.25, "3/4": 0.1, "2/4": -0.5, "6/8": 0.1, "12/8": -0.25, "9/8": -0.6}
+
+
+def estimate_meter(beats: list[float], tracks: dict[str, list[Note]]) -> tuple[list[float], str, int, dict]:
+    """박자표·마디 첫 박을 음표로 추정. 반환: (박 목록 — 겹박자면 점4분음표 박으로 바뀔 수 있음,
+    박자표, 마디 첫 박 위치, 후보 점수)."""
+    if len(beats) < 16:
+        return beats, "4/4", 0, {}
+    s = beat_subdivision(beats, tracks)
+    hyps: list[tuple[list[float], bool]] = [(beats, s == 3)]
+    if s == 2:  # 8분음표 셋을 한 박으로 묶는 겹박자(6/8) — 비트 추적이 4분음표에 걸린 경우
+        eighths = _subdivide(beats, 2)
+        hyps += [(eighths[p::3], True) for p in range(3)]
+    scores: dict[str, float] = {}
+    best: tuple[float, list[float], str, int] | None = None
+    for cand, compound in hyps:
+        if len(cand) < 12:
+            continue
+        period = float(np.median(np.diff(cand)))
+        bpm = 60.0 / period
+        center = 60.0 if compound else 95.0
+        tempo = -((np.log2(bpm / center)) ** 2) / (2 * 0.5 ** 2)
+        sal = _salience(cand, tracks)
+        ev = _bar_evidence(cand, tracks)
+        for m, name in ((2, "6/8" if compound else "2/4"), (3, "9/8" if compound else "3/4"),
+                        (4, "12/8" if compound else "4/4")):
+            for q in range(m):
+                idx = np.arange(len(ev))
+                on = ev[(idx % m) == q]
+                off = ev[(idx % m) != q]
+                contrast = (float(np.mean(on)) - float(np.mean(off))) / (float(np.mean(ev)) + 1e-9)
+                score = 3.0 * sal + tempo + 0.8 * contrast + METER_PRIOR[name]
+                key = f"{name}@{bpm:.0f}"
+                scores[key] = max(scores.get(key, -99.0), round(score, 3))
+                if best is None or score > best[0]:
+                    best = (score, cand, name, q)
+    if best is None:
+        return beats, "4/4", 0, scores
+    _, cand, name, q = best
+    return list(cand), name, q, scores

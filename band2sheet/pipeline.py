@@ -183,8 +183,13 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
             beats = fixed
             beat_info.downbeats = [d for d in beat_info.downbeats if min(abs(d - b) for b in beats) < 0.07]
     time_sig = opts.time_signature
+    meter_downbeat = None
     if not time_sig or time_sig == "auto":
-        time_sig = rhythm.guess_meter(beats, beat_info.downbeats) or "4/4"
+        time_sig = rhythm.guess_meter(beats, beat_info.downbeats)
+        if time_sig is None:
+            # 다운비트 모델이 없으면: 박 쪼개짐(2/3), 베이스·킥·화음 변화 위치로 3/4·6/8·4/4 를 고른다
+            # (6/8 은 비트가 4분음표에 걸려 있으면 점4분음표 박으로 바꾼다)
+            beats, time_sig, meter_downbeat, _ = rhythm.estimate_meter(beats, {k: t.notes for k, t in tracks.items()})
     key = estimate_key(tracks)
     project = Project(title=title, source=source, beat_times=beats, key=key,
                       time_signature=time_sig, tracks=tracks,
@@ -195,6 +200,8 @@ def analyze(source: str, out_dir: Path, opts: AnalyzeOptions | None = None,
                       engines=engines)
     if opts.downbeat is not None:
         project.downbeat = opts.downbeat
+    elif meter_downbeat is not None:
+        project.downbeat = meter_downbeat
     else:
         db = rhythm.downbeat_from_model(beats, beat_info.downbeats, project.beats_per_bar)
         project.downbeat = db if db is not None else rhythm.estimate_downbeat(
@@ -593,7 +600,7 @@ def export_pdf(xml: Path) -> Path | None:
 
 # 코드 이름·템포 표시 안의 SMuFL 기호 -> 일반 유니코드 (악보 글꼴이 PDF 변환기에 없어서)
 _SMUFL_TEXT = {"\uea64": "♭", "\uea65": "♮", "\uea66": "♯", "\ueca5": "♩", "\ueca6": "♩",
-               "\ueca7": "♪", "\ueca8": "♪", "\uecb7": "."}
+               "\ueca7": "♪", "\ueca8": "♪", "\uecb7": ".", " ": ""}  # 점4분음표 = 음표 + 공백 + 점
 
 
 def _smufl_text(m) -> str:

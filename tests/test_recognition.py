@@ -120,3 +120,37 @@ def test_convert_and_chordpro(tmp_path):
     assert p2.chords and p2.engines.get("chords") == "악보의 코드 기호"
     res2 = render(p2, tmp_path / "xml", RenderOptions(), log=lambda m: None)
     assert res2.key.short_name == "A" and "Key: Bb" in res2.chord_chart
+
+
+# ---------------------------------------------------------------------------
+# 박자표: 3/4 · 6/8 · 4/4 (다운비트 모델 없이)
+# ---------------------------------------------------------------------------
+
+def _meter_tracks(truth, meter):
+    from band2sheet.instruments import KICK, SNARE
+
+    tracks = {k: [Note(s, e, p, 90) for s, e, p in v] for k, v in truth.notes.items()}
+    bpb = {"3/4": 3, "6/8": 2, "4/4": 4}[meter]
+    drums = []
+    for k, t in enumerate(truth.beats[:-1]):
+        pos = k % bpb
+        drums.append(Note(t, t + 0.1, KICK if pos == 0 or (meter == "4/4" and pos == 2) else SNARE, 100))
+    tracks["drums"] = drums
+    return tracks
+
+
+@pytest.mark.parametrize("meter", ["3/4", "6/8", "4/4"])
+def test_meter_estimation(tmp_path, meter):
+    from band2sheet.rhythm import _subdivide, estimate_meter
+    from tests.song_meter import make_meter_song
+
+    _, truth, info = make_meter_song(tmp_path / "s", meter, bars=16)
+    tracks = _meter_tracks(truth, meter)
+    beats = truth.beats
+    if meter == "6/8":  # 비트 추적이 점4분음표가 아니라 4분음표(8분음표 둘)에 걸린 경우
+        beats = _subdivide(truth.beats, 3)[::2]
+    est, ts, downbeat, _ = estimate_meter(beats, tracks)
+    assert ts == meter
+    first = int(np.argmin(np.abs(np.asarray(est) - truth.beats[0])))
+    assert abs(est[first] - truth.beats[0]) < 0.03 and (first - downbeat) % info["beats_per_bar"] == 0
+    assert abs(np.median(np.diff(est)) - np.median(np.diff(truth.beats))) < 0.03
