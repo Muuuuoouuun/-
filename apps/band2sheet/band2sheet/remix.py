@@ -424,15 +424,17 @@ def mux_video(video: Path, audio: Path, dst_stem: Path) -> Path:
     return dst
 
 
-def _master(stereo: np.ndarray, target_rms: float = 0.12) -> np.ndarray:
-    """음량 맞추기 + 부드러운 리미터 (찌그러짐 방지)."""
-    rms = float(np.sqrt(np.mean(stereo ** 2))) or 1.0
-    y = stereo * (target_rms / rms)
-    knee = 0.8
-    a = np.abs(y)
-    over = a > knee
-    y[over] = np.sign(y[over]) * (knee + (1 - knee) * np.tanh((a[over] - knee) / (1 - knee)))
-    return y * 0.98
+def _master(stereo: np.ndarray, target_rms: float = 0.12, sr: int = 44100) -> np.ndarray:
+    """음량 맞추기 + 미리 보는 피크 리미터.
+
+    예전 tanh 곡선은 큰 소리에서 파형 자체를 휘게 해 찌그러짐이 생겼다. 이제는 파형은 두고
+    피크 몇 ms 전부터 음량만 부드럽게 줄인다. 20Hz 아래 울림(직류·바람 소리)도 걷어 낸다.
+    """
+    from .sound import highpass, limit
+
+    y = highpass(np.asarray(stereo, dtype=float), sr, 20.0)
+    rms = float(np.sqrt(np.mean(y ** 2))) or 1.0
+    return limit(y * (target_rms / rms), sr, ceiling=0.96)
 
 
 # ---------------------------------------------------------------------------
@@ -564,12 +566,16 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
             out = out + backing[:n]
     if harmonies:
         hbus = sum(_fit(h, n) for h in harmonies) * opts.harmony_level
+        # 음높이를 옮긴 목소리의 거친 고역(조각 이음 소리)과 아래 화음의 웅웅거림을 살짝 덜어 냄
+        from .sound import eq, highpass
+
+        hbus = eq(highpass(hbus, SR, 90.0), SR, [(7000, -3.0, 0.7, "highshelf"), (2800, 1.0, 1.0)])
         out = out + add_reverb(hbus, SR, wet=0.3, seconds=2.0)
     if orch is not None:
         orch = _fit(orch, n)
         level = opts.backing_level * LEVEL_OF.get(opts.style, 1.0)
         out = out + orch * (level * voiced_rms / (_rms(orch) or 1.0))
-    out = _master(out)
+    out = _master(out, sr=SR)
     audio = _write(out_dir / "remix.wav", out)
     files.insert(0, audio)
 

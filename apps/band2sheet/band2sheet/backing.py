@@ -24,6 +24,7 @@ import librosa
 import numpy as np
 from scipy.signal import butter, lfilter, sosfilt
 
+from .sound import eq, pluck
 from .theory import Key
 from .vocalfx import add_reverb, chord_tones, pan
 
@@ -75,23 +76,23 @@ class Part:
 
 PARTS: dict[str, Part] = {
     # osc p = (파형, 겹칠 소리 수, 디튠 센트, 비브라토 센트, 어택 초, 릴리즈 초)
-    "strings": Part("Strings", 48, "osc", 0.16, "wide", 4500, p=("saw", 3, 9.0, 12.0, 0.35, 0.45)),
-    "cello": Part("Cello", 42, "osc", 0.28, 0.35, 2200, p=("warm", 2, 6.0, 10.0, 0.12, 0.3)),
-    "contrabass": Part("Contrabass", 43, "osc", 0.30, 0.0, 900, p=("warm", 2, 5.0, 6.0, 0.1, 0.3)),
-    "horn": Part("French Horn", 60, "osc", 0.18, -0.35, 1800, p=("horn", 2, 5.0, 4.0, 0.25, 0.4)),
-    "pad": Part("Warm Pad", 89, "osc", 0.12, "wide", 2400, p=("saw", 5, 14.0, 0.0, 1.1, 1.6)),
-    "pad_sub": Part("Pad Bass", 38, "osc", 0.22, 0.0, 260, p=("warm", 1, 0.0, 0.0, 0.6, 1.2)),
-    # pluck p = (배음 수, 울림 시간 초, 밝기 0~1)
-    "harp": Part("Harp", 46, "pluck", 0.22, -0.45, None, p=(6, 1.2, 0.45)),
-    "guitar": Part("Acoustic Guitar", 25, "pluck", 0.24, "spread", 6500, p=(14, 1.5, 0.8)),
-    "upright_bass": Part("Acoustic Bass", 32, "pluck", 0.50, 0.1, 1400, p=(8, 0.9, 0.35)),
-    "piano": Part("Piano", 0, "piano", 0.30, "spread"),
+    "strings": Part("Strings", 48, "osc", 0.136, "wide", 4500, p=("saw", 3, 9.0, 12.0, 0.35, 0.45)),
+    "cello": Part("Cello", 42, "osc", 0.18, 0.35, 2200, p=("warm", 2, 6.0, 10.0, 0.12, 0.3)),
+    "contrabass": Part("Contrabass", 43, "osc", 0.215, 0.0, 900, p=("warm", 2, 5.0, 6.0, 0.1, 0.3)),
+    "horn": Part("French Horn", 60, "osc", 0.13, -0.35, 1800, p=("horn", 2, 5.0, 4.0, 0.25, 0.4)),
+    "pad": Part("Warm Pad", 89, "osc", 0.097, "wide", 2400, p=("saw", 5, 14.0, 0.0, 1.1, 1.6)),
+    "pad_sub": Part("Pad Bass", 38, "osc", 0.21, 0.0, 260, p=("warm", 1, 0.0, 0.0, 0.6, 1.2)),
+    # pluck: Karplus-Strong 현 (울림·밝기·뜯는 위치는 PLUCK 표)
+    "harp": Part("Harp", 46, "pluck", 0.57, -0.45, 5000),  # 소리는 PLUCK 표
+    "guitar": Part("Acoustic Guitar", 25, "pluck", 0.59, "spread", 7000),
+    "upright_bass": Part("Acoustic Bass", 32, "pluck", 0.94, 0.1, 1200),
+    "piano": Part("Piano", 0, "piano", 0.60, "spread"),
     "timpani": Part("Timpani", 47, "drum", 0.35, 0.0, p=("timpani",)),
     "kick": Part("Kick", 36, "drum", 0.45, 0.0, drum=True, p=("kick",)),
     "brush": Part("Brush Snare", 40, "drum", 0.22, -0.15, drum=True, p=("brush",)),
     "ride": Part("Ride", 51, "drum", 0.16, 0.35, drum=True, p=("ride",)),
     "hihat": Part("Hi-hat Pedal", 44, "drum", 0.14, -0.3, drum=True, p=("hat",)),
-    "bass_vox": Part("Bass Vocal", 53, "vox", 0.55, 0.0, p=("oo",)),
+    "bass_vox": Part("Bass Vocal", 53, "vox", 0.51, 0.0, p=("oo",)),
     "bb_kick": Part("Beatbox Kick", 36, "drum", 0.55, 0.0, drum=True, p=("bb_kick",)),
     "bb_snare": Part("Beatbox Snare", 38, "drum", 0.32, 0.05, drum=True, p=("bb_snare",)),
     "bb_hat": Part("Beatbox Hat", 42, "drum", 0.16, -0.1, drum=True, p=("bb_hat",)),
@@ -438,39 +439,85 @@ def write_arrangement_midi(notes: list[ONote], path: Path, tempo: float = 120.0)
 # ---------------------------------------------------------------------------
 # 내장 합성기
 # ---------------------------------------------------------------------------
+# 음색 원칙
+#   - 지속음(현악·호른·패드): 대역 제한 파형(보간 읽기) 여러 겹 + 겹마다 다른 느린 음정 흔들림.
+#     활·입김이 닿는 순간만 밝았다가(bite) 차분해지거나, 소리가 커지며 밝아짐(swell).
+#   - 뜯는 현(기타·하프·베이스): Karplus-Strong 물리 모델 + 울림통 이퀄라이저.
+#   - 피아노: 비조화 배음 + 세게 칠수록 밝음 + 두 단계 감쇠(잔향음) + 세 줄 맥놀이.
+#   - 모든 음은 몇 ms 씩 사람처럼 어긋나게 연주한다 (드럼은 더 작게).
 
 _TABLES: dict[tuple[str, int], np.ndarray] = {}
 TABLE = 4096
 
 
 def _table(kind: str, midi: int, sr: int) -> np.ndarray:
-    """대역 제한 파형 한 주기 (나이퀴스트를 넘는 배음은 뺌)."""
+    """대역 제한 파형 한 주기 (나이퀴스트를 넘는 배음은 뺌). 보간용으로 첫 샘플을 끝에 한 번 더 붙인다."""
     key = (kind, midi)
     if key not in _TABLES:
         f0 = librosa.midi_to_hz(midi)
-        n_h = int(min(48, (sr / 2) / f0 * 0.9))
+        n_h = int(min(48, (sr / 2) / (f0 * 1.03) * 0.9))  # 비브라토로 올라가도 넘지 않게 여유
         ph = np.arange(TABLE) / TABLE * 2 * np.pi
         slope = {"saw": 1.0, "warm": 1.25, "horn": 1.7}[kind]
         w = sum(np.sin(k * ph) / k ** slope for k in range(1, max(n_h, 1) + 1))
-        _TABLES[key] = w / np.abs(w).max()
+        w = w / np.abs(w).max()
+        _TABLES[key] = np.append(w, w[0])
     return _TABLES[key]
 
 
 def _osc(kind: str, midi: int, n: int, sr: int, detune_cents: float = 0.0, vib_cents: float = 0.0,
-         seed: int = 0) -> np.ndarray:
+         seed: int = 0, drift_cents: float = 0.0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     t = np.arange(n) / sr
-    f = librosa.midi_to_hz(midi) * 2 ** (detune_cents / 1200)
+    cents = np.full(n, detune_cents)
     if vib_cents:
         onset = np.clip(t / 0.4, 0, 1)  # 비브라토는 음이 시작되고 조금 뒤부터
-        f = f * 2 ** (vib_cents / 1200 * onset * np.sin(2 * np.pi * rng.uniform(4.8, 5.8) * t))
-    phase = (rng.uniform() + np.cumsum(np.broadcast_to(f, t.shape)) / sr) % 1.0
-    return _table(kind, midi, sr)[(phase * TABLE).astype(int) % TABLE]
+        cents = cents + vib_cents * onset * np.sin(2 * np.pi * rng.uniform(4.8, 5.8) * t + rng.uniform(0, 6.3))
+    if drift_cents and n > 1:  # 연주자마다 다른 느린 음정 흔들림 (합주가 기계처럼 딱 맞지 않게)
+        knots = rng.normal(0, drift_cents, int(n / sr / 0.6) + 3)
+        cents = cents + np.interp(t, np.linspace(0, n / sr, len(knots)), knots)
+    f = librosa.midi_to_hz(midi) * 2 ** (cents / 1200)
+    phase = (rng.uniform() + np.cumsum(f) / sr) % 1.0
+    pos = phase * TABLE
+    i = pos.astype(np.int64)
+    frac = pos - i
+    tab = _table(kind, midi, sr)
+    return tab[i] * (1 - frac) + tab[i + 1] * frac  # 선형 보간 (정수 자르기 잡음 제거)
 
 
 def _env(n: int, sr: int, attack: float, release: float) -> np.ndarray:
     t = np.arange(n) / sr
-    return np.clip(t / max(attack, 1e-3), 0, 1) * np.clip((n / sr - t) / max(release, 1e-3), 0, 1)
+    a = np.clip(t / max(attack, 1e-3), 0, 1)
+    r = np.clip((n / sr - t) / max(release, 1e-3), 0, 1)
+    return (a * a * (3 - 2 * a)) * (r * r * (3 - 2 * r))  # 부드러운 S 곡선 (시작·끝 딸깍 방지)
+
+
+# 지속음 색: (기본 밝기 0~1, 방식 bite|swell, 시간 초, 활·숨 잡음 양)
+OSC_COLOR = {
+    "strings": (0.45, "bite", 0.22, 0.035),
+    "cello": (0.5, "bite", 0.18, 0.03),
+    "contrabass": (0.6, "bite", 0.15, 0.02),
+    "horn": (0.35, "swell", 0.3, 0.012),
+    "pad": (0.55, "swell", 1.2, 0.0),
+    "pad_sub": (1.0, "swell", 0.5, 0.0),
+}
+# 뜯는 현: (울림 초, 밝기, 뜯는 위치)
+PLUCK = {
+    "harp": (2.4, 0.7, 0.45),
+    "guitar": (2.2, 0.95, 0.17),
+    "upright_bass": (2.6, 0.5, 0.3),
+}
+# 파트별 울림통·공간 이퀄라이저 (주파수, dB, Q[, 종류])
+PART_EQ = {
+    "strings": [(280, 2.5, 1.0), (1300, -1.5, 1.2), (3000, 2.0, 1.1), (8000, -4.0, 0.7, "highshelf")],
+    "cello": [(220, 2.0, 1.0), (2500, 1.5, 1.0)],
+    "horn": [(450, 2.0, 0.9), (3500, -2.0, 0.8, "highshelf")],
+    "guitar": [(100, 4.0, 2.2), (205, 3.0, 2.0), (2600, 2.0, 1.0), (9000, -3.0, 0.7, "highshelf")],
+    "harp": [(180, 2.0, 1.2), (4500, 1.5, 1.0)],
+    "upright_bass": [(85, 3.0, 1.4), (700, -2.0, 1.0), (1800, 1.0, 1.5)],
+    "piano": [(110, 1.5, 0.8), (600, -1.0, 1.0), (3200, 1.5, 1.0), (10000, -2.5, 0.7, "highshelf")],
+    "pad": [(250, -2.0, 0.8)],
+    "bass_vox": [(120, 2.0, 1.0)],
+}
 
 
 def _decaying_partials(freqs, amps, decays, n: int, sr: int, seed: int = 0) -> np.ndarray:
@@ -483,27 +530,38 @@ def _decaying_partials(freqs, amps, decays, n: int, sr: int, seed: int = 0) -> n
     return out
 
 
-def _pluck(midi: int, n: int, sr: int, n_partials: int, tau: float, bright: float) -> np.ndarray:
-    f0 = librosa.midi_to_hz(midi)
-    tau = tau * float(np.clip(1.4 - (midi - 40) / 60, 0.45, 1.6))  # 낮은 줄이 더 오래 울림
-    ks = np.arange(1, n_partials + 1)
-    amps = np.exp(-(ks - 1) * (1 - bright) * 0.6) / ks
-    out = _decaying_partials(ks * f0, amps, (1 + 0.35 * (ks - 1)) / tau, n, sr, seed=midi)
-    return out * np.clip(np.arange(n) / (0.002 * sr), 0, 1)
-
-
-def _piano(midi: int, n: int, sr: int) -> np.ndarray:
-    f0 = librosa.midi_to_hz(midi)
+def _piano(midi: int, n: int, sr: int, vel: float = 0.6) -> np.ndarray:
+    """vel: 0~1. 세게 칠수록 높은 배음이 살아나고 해머 소리가 커진다."""
+    f0 = float(librosa.midi_to_hz(midi))
     tau = float(np.clip(3.2 - (midi - 21) * 0.035, 0.5, 3.2))
-    ks = np.arange(1, 11)
-    freqs = ks * f0 * np.sqrt(1 + 0.0004 * ks ** 2)  # 피아노 현의 비조화성
-    amps = 1.0 / ks ** 1.2
-    decays = (1 + 0.5 * (ks - 1)) / tau
-    out = _decaying_partials(freqs, amps, decays, n, sr, seed=midi)
-    out += 0.5 * _decaying_partials(freqs[:3] * 1.0015, amps[:3], decays[:3], n, sr, seed=midi + 1)  # 두 번째 현
-    t = np.arange(n) / sr
-    hammer = np.random.default_rng(midi).normal(size=n) * np.exp(-t * 400) * 0.08
-    return (out + hammer) * np.clip(t / 0.002, 0, 1)
+    big_b = 0.00008 * 2 ** ((midi - 48) / 18)  # 높은 음일수록 현이 짧고 굵어 비조화성 증가
+    k_max = int(min(48, 0.45 * sr / f0))
+    ks = np.arange(1, k_max + 1)
+    freqs = ks * f0 * np.sqrt(1 + big_b * ks ** 2)
+    tilt = 1.9 - 0.9 * vel
+    amps = (1.0 / ks ** tilt) * (0.35 + 0.65 * np.abs(np.sin(np.pi * ks * 0.118)))  # 해머 위치(약 1/8.5)
+    rates = (1 + 0.45 * (ks - 1) ** 1.15) / tau
+    rng = np.random.default_rng(midi * 131 + int(vel * 100))
+    ph, ph2 = rng.uniform(0, 2 * np.pi, k_max), rng.uniform(0, 2 * np.pi, k_max)
+    t_all = np.arange(n) / sr
+    out = np.zeros(n)
+    for k in range(k_max):
+        if freqs[k] >= sr * 0.45:
+            break
+        # 이 배음이 -100dB 아래로 내려가는 데까지만 계산 (높은 배음은 금방 사라짐)
+        m = min(n, int(np.log(max(amps[k], 1e-9) / 1e-5) / (rates[k] * 0.22) * sr) + 1)
+        if m <= 0:
+            continue
+        t = t_all[:m]
+        env = 0.72 * np.exp(-rates[k] * t) + 0.28 * np.exp(-rates[k] * 0.22 * t)  # 두 단계 감쇠
+        beat = 1 - 0.16 * (1 - np.cos(2 * np.pi * freqs[k] * 0.0006 * t + ph2[k]))  # 세 줄 맥놀이
+        out[:m] += amps[k] * np.sin(2 * np.pi * freqs[k] * t + ph[k]) * env * beat
+    h = min(n, int(0.03 * sr))
+    hammer = rng.normal(size=h) * np.exp(-t_all[:h] * (450 - 150 * vel))
+    hammer = sosfilt(butter(2, 1200 + 4000 * vel, fs=sr, output="sos"), hammer)
+    out[:h] += hammer * (0.04 + 0.08 * vel) * (np.abs(out[:h]).max() or 1.0)
+    out *= np.clip(t_all / 0.0015, 0, 1)
+    return out / (np.abs(out).max() or 1.0)
 
 
 def _noise_band(n: int, sr: int, lo: float | None, hi: float | None, seed: int) -> np.ndarray:
@@ -550,8 +608,9 @@ def _drum(kind: str, midi: int, sr: int) -> np.ndarray:
 
 
 def _vox(midi: int, n: int, sr: int) -> np.ndarray:
-    """베이스 보컬 '둠': 성대 펄스(톱니) + '우' 모음 포먼트."""
-    src = _osc("saw", midi, n, sr, 0.0, 8.0, seed=midi)
+    """베이스 보컬 '둠': 성대 펄스(톱니, 미세한 떨림) + 숨소리 + '우' 모음 포먼트."""
+    src = _osc("saw", midi, n, sr, 0.0, 8.0, seed=midi, drift_cents=4.0)
+    src = src + 0.05 * np.random.default_rng(midi).normal(size=n)  # 숨소리도 같은 포먼트를 지남
     for fc, bw in ((320, 90), (800, 110), (2300, 160)):
         r = np.exp(-np.pi * bw / sr)
         th = 2 * np.pi * fc / sr
@@ -561,23 +620,71 @@ def _vox(midi: int, n: int, sr: int) -> np.ndarray:
     return src / (np.abs(src).max() or 1.0) * env
 
 
-def _render_note(name: str, part: Part, pitch: int, dur: float, sr: int, seed: int) -> np.ndarray:
+def _vel_bin(velocity: int) -> float:
+    """세기를 몇 단계로 묶어 같은 음은 한 번만 합성 (0~1)."""
+    return round(float(np.clip(velocity, 1, 127)) / 127 * 6) / 6
+
+
+def _sustain_raw(name: str, part: Part, pitch: int, n: int, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """지속음의 밝은 소리와 어두운 소리 (음 길이와 무관 -> 음높이마다 한 번)."""
+    wave, voices, det, vib, _, _ = part.p
+    sig = sum(_osc(wave, pitch, n, sr, det * (v - (voices - 1) / 2), vib, seed=pitch * 17 + v,
+                   drift_cents=3.0 + det * 0.25)
+              for v in range(voices)) / np.sqrt(voices)  # 겹친 소리는 서로 무관해 √N 으로 나눠야 크기가 같다
+    dark = sosfilt(butter(1, min(sr * 0.45, 2.2 * librosa.midi_to_hz(pitch) + 300), fs=sr, output="sos"), sig)
+    return sig, dark
+
+
+def _sustain_note(name: str, part: Part, raw: tuple[np.ndarray, np.ndarray], n: int, sr: int,
+                  noise: np.ndarray | None, seed: int) -> np.ndarray:
+    bright_sig, dark = raw[0][:n], raw[1][:n]
+    *_, att, rel = part.p
+    base, mode, tau, nz = OSC_COLOR.get(name, (1.0, "bite", 0.2, 0.0))
+    t = np.arange(n) / sr
+    env = _env(n, sr, att, rel)
+    if mode == "bite":  # 활이 닿는 순간 밝았다가 차분해짐
+        b = base + (1 - base) * np.exp(-t / tau)
+    else:  # 소리가 커지며 밝아짐 (호른·패드)
+        b = base + (1 - base) * 0.8 * np.clip(t / tau, 0, 1)
+    sig = dark + (bright_sig - dark) * b
+    if nz and noise is not None:  # 활·숨 잡음: 시작에 조금 더
+        off = (seed * 7919) % max(1, len(noise) - n)
+        sig = sig + noise[off:off + n] * nz * (1 + 2.5 * np.exp(-t / 0.08))
+    return sig * env
+
+
+def _ring(part: Part, name: str, pitch: int, n: int, sr: int, vel: float) -> np.ndarray:
+    """울리고 사라지는 소리 (피아노·뜯는 현) — 음 길이와 무관하게 끝까지."""
+    if part.kind == "piano":
+        return _piano(pitch, n, sr, vel)
+    decay, bright, pick = PLUCK.get(name, (1.5, 0.6, 0.15))
+    decay *= float(np.clip(1.5 - (pitch - 40) / 60, 0.5, 1.6))  # 낮은 줄이 더 오래 울림
+    return pluck(pitch, n, sr, decay=decay, bright=bright * (0.7 + 0.5 * vel), pick=pick,
+                 velocity=vel, seed=pitch)
+
+
+def _render_note(name: str, part: Part, pitch: int, dur: float, sr: int, seed: int,
+                 velocity: int = 80) -> np.ndarray:
+    """음 하나 (테스트·외부용). synthesize 는 같은 음을 묶어 더 빠르게 만든다."""
+    n = max(1, int(dur * sr))
     if part.kind == "osc":
-        wave, voices, det, vib, att, rel = part.p
-        n = max(1, int(dur * sr))
-        sig = sum(_osc(wave, pitch, n, sr, det * (v - (voices - 1) / 2), vib, seed=seed + v)
-                  for v in range(voices)) / voices
-        return sig * _env(n, sr, att, rel)
+        return _sustain_note(name, part, _sustain_raw(name, part, pitch, n, sr), n, sr, None, seed)
     if part.kind == "drum":
         return _drum(part.p[0], pitch, sr)
     if part.kind == "vox":
-        return _vox(pitch, max(1, int(dur * sr)), sr)
-    damp = 0.12  # 줄/건반을 멈출 때 짧게 잦아듦
-    n = max(1, int((dur + damp) * sr))
-    sig = _piano(pitch, n, sr) if part.kind == "piano" else _pluck(pitch, n, sr, *part.p)
-    fade = min(n, int(damp * sr))
-    sig[-fade:] *= np.linspace(1, 0, fade)
+        return _vox(pitch, n, sr)
+    damp = 0.12
+    m = max(1, int((dur + damp) * sr))
+    sig = _ring(part, name, pitch, m, sr, _vel_bin(velocity)).copy()
+    fade = min(m, int(damp * sr))
+    sig[-fade:] *= np.linspace(1, 0, fade) ** 2
     return sig
+
+
+def _humanize(i: int, part: Part) -> float:
+    """음마다 정해진(재현 가능한) 몇 ms 의 어긋남."""
+    r = np.random.default_rng(1_000_003 * (i + 1)).uniform(-1, 1)
+    return r * (0.0025 if part.drum or part.kind == "drum" else 0.006)
 
 
 def synthesize(notes: list[ONote], duration: float, sr: int = 44100, reverb: float = 0.3,
@@ -592,16 +699,47 @@ def synthesize(notes: list[ONote], duration: float, sr: int = 44100, reverb: flo
         part = PARTS[name]
         stereo = part.pan == "spread"
         bus = np.zeros((total, 2) if stereo else total, dtype=np.float32)
-        cache: dict[tuple, np.ndarray] = {}
+        damp = 0.12 if part.kind in ("piano", "pluck") else 0.0
+        # 같은 음(울리는 악기는 같은 세기까지)은 가장 긴 길이로 한 번만 합성해 잘라 쓴다
+        longest: dict[tuple, int] = {}
+        for nt in pnotes:
+            k = (nt.pitch, _vel_bin(nt.velocity) if part.kind in ("piano", "pluck") else 0)
+            longest[k] = max(longest.get(k, 0), int((max(nt.end - nt.start, 0.02) + damp) * sr) + 1)
+        noise = None
+        if part.kind == "osc" and OSC_COLOR.get(name, (0, 0, 0, 0))[3]:
+            noise = _noise_band(min(total, int(12 * sr)) + max(longest.values()), sr, 1200, 6500, 11)
+            noise = (noise / (np.std(noise) or 1.0)).astype(np.float32)
+        cache: dict[tuple, object] = {}
         for i, nt in enumerate(pnotes):
-            s0 = int(round(nt.start * sr))
+            start = nt.start + _humanize(i, part)
+            s0 = int(round(start * sr))
             if s0 >= total:
                 continue
-            dur = round(max(nt.end - nt.start, 0.02) * 20) / 20  # 50 ms 단위로 묶어 같은 음은 한 번만 합성
-            key = (nt.pitch, dur)
-            if key not in cache:
-                cache[key] = _render_note(name, part, nt.pitch, dur, sr, seed=len(cache) * 7).astype(np.float32)
-            sig = cache[key]
+            dur = max(nt.end - nt.start, 0.02)
+            n = max(1, int(dur * sr))
+            if part.kind == "osc":
+                k = (nt.pitch, 0)
+                if k not in cache:
+                    cache[k] = _sustain_raw(name, part, nt.pitch, longest[k], sr)
+                sig = _sustain_note(name, part, cache[k], n, sr, noise, i)
+            elif part.kind in ("piano", "pluck"):
+                k = (nt.pitch, _vel_bin(nt.velocity))
+                if k not in cache:
+                    cache[k] = _ring(part, name, nt.pitch, longest[k], sr, k[1]).astype(np.float32)
+                m = min(len(cache[k]), int((dur + damp) * sr))
+                sig = cache[k][:m].copy()
+                fade = min(m, int(damp * sr))
+                sig[m - fade:] *= np.linspace(1, 0, fade) ** 2  # 손을 떼면 짧게 잦아듦 (댐퍼)
+            elif part.kind == "drum":
+                k = ("d", nt.pitch)
+                if k not in cache:
+                    cache[k] = _drum(part.p[0], nt.pitch, sr).astype(np.float32)
+                sig = cache[k]
+            else:
+                k = (nt.pitch, round(dur * 20))
+                if k not in cache:
+                    cache[k] = _vox(nt.pitch, n, sr).astype(np.float32)
+                sig = cache[k]
             if s0 < 0:  # 곡 시작 전에 시작한 음은 앞부분을 잘라 냄
                 sig, s0 = sig[-s0:], 0
             sig = sig[:total - s0] * (nt.velocity / 127.0) ** 1.6
@@ -613,6 +751,8 @@ def synthesize(notes: list[ONote], duration: float, sr: int = 44100, reverb: flo
                 bus[s0:s0 + len(sig)] += sig
         if part.lowpass:
             bus = sosfilt(butter(2, part.lowpass, btype="low", fs=sr, output="sos"), bus, axis=0)
+        if name in PART_EQ:
+            bus = eq(bus, sr, PART_EQ[name])
         bus = bus * part.gain
         if stereo:
             out += bus.astype(np.float32)

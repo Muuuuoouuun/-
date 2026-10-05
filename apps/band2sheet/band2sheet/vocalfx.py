@@ -256,19 +256,10 @@ def psola_shift(x: np.ndarray, sr: int, track: PitchTrack, shift: np.ndarray,
 # ---------------------------------------------------------------------------
 
 def reverb_ir(sr: int, seconds: float = 2.2, predelay: float = 0.02, seed: int = 7) -> np.ndarray:
-    """홀 잔향 임펄스 응답 (스테레오, 지수 감쇠 잡음 + 고역 감쇠)."""
-    rng = np.random.default_rng(seed)
-    n = int(seconds * sr)
-    t = np.arange(n) / sr
-    env = np.exp(-6.9 * t / seconds)  # RT60
-    ir = rng.normal(size=(n, 2)) * env[:, None]
-    # 뒤로 갈수록 어둡게: 두 대역을 시간에 따라 섞음
-    sos = butter(2, 3500, btype="low", fs=sr, output="sos")
-    dark = sosfiltfilt(sos, ir, axis=0)
-    mix = np.clip(t / (seconds * 0.4), 0, 1)[:, None]
-    ir = ir * (1 - mix) + dark * mix
-    ir = np.concatenate([np.zeros((int(predelay * sr), 2)), ir])
-    return ir / np.sqrt(np.sum(ir ** 2) / 2)
+    """홀 잔향 임펄스 응답 (스테레오). 대역별 감쇠·초기 반사는 sound.reverb_ir 참고."""
+    from .sound import reverb_ir as _ir
+
+    return _ir(sr, seconds, predelay, seed)
 
 
 def add_reverb(stereo: np.ndarray, sr: int, wet: float = 0.25, seconds: float = 2.2) -> np.ndarray:

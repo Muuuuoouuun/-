@@ -26,6 +26,9 @@ export const PRESETS = [
 ];
 export const MAX_VOICES = 4;
 const VOICE_PAN = [-0.45, 0.45, 0, 0.2];
+// 합창 성부가 들어오는 시차 (ms): 사람마다 숨 쉬고 소리 내는 순간이 조금씩 다르다
+const VOICE_LAG_MS = [0, 9, 14, 5];
+const DRIFT_CENTS = 6;
 
 // 실수 MIDI 음을 키 안에서 가장 가까운 스케일 음으로 맞춘다.
 export function snapToScale(midi, tonic, scale) {
@@ -200,9 +203,10 @@ export class InputRing {
 // Tone.js PitchShift와 같은 원리: 길이가 변하는 지연선 두 개를 교차 페이드.
 
 export class GranularVoice {
-  constructor(ring, sampleRate, windowMs = 40) {
+  constructor(ring, sampleRate, windowMs = 40, delay = 0) {
     this.ring = ring;
     this.sr = sampleRate;
+    this.delay = delay; // 추가 지연(샘플): 합창 성부마다 조금씩 늦게 들어오게
     this.p = 0;
     this.ratio = 1;
     this.target = 1;
@@ -213,11 +217,11 @@ export class GranularVoice {
     this.W = Math.max(64, Math.round((ms * this.sr) / 1000));
   }
   get latencyMs() {
-    return ((this.W / 2) / this.sr) * 1000;
+    return ((this.W / 2 + this.delay) / this.sr) * 1000;
   }
   processBlock(out, len) {
     const ring = this.ring;
-    const n0 = ring.n - len;
+    const n0 = ring.n - len - this.delay;
     const W = this.W;
     for (let i = 0; i < len; i++) {
       this.ratio += (this.target - this.ratio) * this.smooth;
@@ -351,56 +355,122 @@ const VOWEL_A = [
   [1090, 130, 0.45],
   [2440, 180, 0.2],
 ];
+// 합창용 '아~': 조금 더 둥근 모음 + 가수 포먼트(2.8kHz 근처, 합창이 반주를 뚫고 들리는 대역)
+const VOWEL_CHOIR = [
+  [650, 120, 1.0],
+  [1050, 140, 0.5],
+  [2650, 220, 0.16],
+  [2950, 260, 0.12],
+];
+const ENSEMBLE_CENTS = [0, 7, -6, 3];
+
+// 작은 결정적 난수 (워클릿·테스트에서 같은 결과)
+function lcg(seed) {
+  let s = (seed * 2654435761) >>> 0 || 1;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
 
 export class SynthVoice {
-  constructor(sampleRate) {
+  // opts.choir: 합창 성부용 음색 (기본은 깨끗한 독창 — 테스트 신호로도 쓴다)
+  //   ensemble: 한 성부를 함께 부르는 사람 수 - 1, breath: 숨소리 양, seed
+  constructor(sampleRate, opts = {}) {
     this.sr = sampleRate;
+    this.choir = Boolean(opts.choir);
+    this.singers = 1 + (this.choir ? Math.max(0, Math.min(3, opts.ensemble ?? 1)) : 0);
+    this.breath = this.choir ? opts.breath ?? 0.05 : 0;
+    this.rand = lcg(opts.seed ?? 1);
     this.freq = 220;
     this.target = 220;
-    this.theta = 0;
-    this.vib = Math.random() * Math.PI * 2;
+    this.theta = new Float64Array(this.singers);
+    this.vib = new Float64Array(this.singers);
+    this.vibRate = new Float64Array(this.singers);
+    this.drift = new Float64Array(this.singers);
+    this.driftTo = new Float64Array(this.singers);
+    for (let k = 0; k < this.singers; k++) {
+      this.theta[k] = this.rand() * Math.PI * 2;
+      this.vib[k] = this.rand() * Math.PI * 2;
+      this.vibRate[k] = (2 * Math.PI * (5.0 + 0.7 * this.rand())) / sampleRate;
+    }
+    this.driftCount = 0;
+    this.driftSmooth = 1 - Math.exp(-1 / (0.25 * sampleRate));
     this.amps = new Float32Array(64);
     this.nh = 0;
     this.ampFreq = 0;
     this.glide = 1 - Math.exp(-1 / (0.025 * sampleRate));
+    // 숨소리: 2차 공명 필터 (1.6kHz 근처, 넓게)
+    const fc = 1600;
+    const r = Math.exp((-Math.PI * 1400) / sampleRate);
+    this.bpA1 = 2 * r * Math.cos((2 * Math.PI * fc) / sampleRate);
+    this.bpA2 = -r * r;
+    this.bpG = 1 - r;
+    this.bp1 = 0;
+    this.bp2 = 0;
   }
   computeAmps(f) {
     const nh = Math.max(1, Math.min(63, Math.floor(5000 / f)));
+    const vowel = this.choir ? VOWEL_CHOIR : VOWEL_A;
     let pow = 0;
     for (let h = 1; h <= nh; h++) {
       const fh = h * f;
       // 성대음(배음마다 1/h로 약해짐) × 모음 포먼트 강조
       let boost = 0.25;
-      for (const [F, bw, g] of VOWEL_A) boost += 2 * g * Math.exp(-0.5 * ((fh - F) / bw) ** 2);
+      for (let i = 0; i < vowel.length; i++) {
+        let [F, bw, g] = vowel[i];
+        // 높은 소리(소프라노)는 첫 포먼트를 기본음 위로 올려 부른다 — 얇아지지 않게
+        if (this.choir && i === 0 && F < f * 1.1) F = f * 1.1;
+        boost += 2 * g * Math.exp(-0.5 * ((fh - F) / bw) ** 2);
+      }
       const a = boost / h;
       this.amps[h] = a;
       pow += a * a;
     }
-    const norm = 0.35 / Math.sqrt(pow / 2);
+    const norm = 0.35 / Math.sqrt(pow / 2) / Math.sqrt(this.singers);
     for (let h = 1; h <= nh; h++) this.amps[h] *= norm;
     this.nh = nh;
     this.ampFreq = f;
   }
   // env: 샘플별 음량(입력 목소리 크기를 따라감). null이면 1.
   processBlock(out, len, env) {
+    const S = this.singers;
     for (let i = 0; i < len; i++) {
       this.freq += (this.target - this.freq) * this.glide;
       if (Math.abs(this.freq - this.ampFreq) > this.ampFreq * 0.004) this.computeAmps(this.freq);
-      this.vib += (2 * Math.PI * 5.3) / this.sr;
-      const f = this.freq * (1 + 0.004 * Math.sin(this.vib));
-      this.theta += (2 * Math.PI * f) / this.sr;
-      if (this.theta > 2 * Math.PI) this.theta -= 2 * Math.PI;
-      // sin(hθ)를 점화식으로 계산: s(h+1) = 2cosθ·s(h) − s(h−1)
-      const s1 = Math.sin(this.theta);
-      const c2 = 2 * Math.cos(this.theta);
-      let prev = 0;
-      let cur = s1;
+      if (S > 1 && ++this.driftCount >= 4096) {
+        // 함께 부르는 사람마다 음정이 천천히 조금씩 다르게 흔들림 (±4 cent)
+        this.driftCount = 0;
+        for (let k = 0; k < S; k++) this.driftTo[k] = (this.rand() * 2 - 1) * 4;
+      }
       let sum = 0;
-      for (let h = 1; h <= this.nh; h++) {
-        sum += this.amps[h] * cur;
-        const nx = c2 * cur - prev;
-        prev = cur;
-        cur = nx;
+      for (let k = 0; k < S; k++) {
+        if (S > 1) this.drift[k] += (this.driftTo[k] - this.drift[k]) * this.driftSmooth;
+        this.vib[k] += this.vibRate[k];
+        if (this.vib[k] > 2 * Math.PI) this.vib[k] -= 2 * Math.PI;
+        const cents = ENSEMBLE_CENTS[k] + this.drift[k];
+        const f = this.freq * (1 + 0.004 * Math.sin(this.vib[k])) * (cents ? Math.pow(2, cents / 1200) : 1);
+        let th = this.theta[k] + (2 * Math.PI * f) / this.sr;
+        if (th > 2 * Math.PI) th -= 2 * Math.PI;
+        this.theta[k] = th;
+        // sin(hθ)를 점화식으로 계산: s(h+1) = 2cosθ·s(h) − s(h−1)
+        const c2 = 2 * Math.cos(th);
+        let prev = 0;
+        let cur = Math.sin(th);
+        for (let h = 1; h <= this.nh; h++) {
+          sum += this.amps[h] * cur;
+          const nx = c2 * cur - prev;
+          prev = cur;
+          cur = nx;
+        }
+      }
+      if (this.breath) {
+        // 숨소리: 성대가 열리는 순간마다 조금씩 (주기에 맞춰 출렁이는 잡음)
+        const n = (this.rand() * 2 - 1) * (0.55 + 0.45 * Math.cos(this.theta[0]));
+        const y = this.bpG * n + this.bpA1 * this.bp1 + this.bpA2 * this.bp2;
+        this.bp2 = this.bp1;
+        this.bp1 = y;
+        sum += this.breath * 2.2 * y;
       }
       out[i] = sum * (env ? env[i] : 1);
     }
@@ -427,15 +497,27 @@ export class Harmonizer {
       dryGain: 1,
       harmGain: 0.8,
       windowMs: 40,
+      humanize: 1, // 0 = 기계처럼 딱 맞게, 1 = 사람 합창처럼 성부마다 음정·타이밍이 조금씩 다름
     };
     this.gran = [];
     this.psola = [];
     this.synth = [];
     for (let i = 0; i < MAX_VOICES; i++) {
-      this.gran.push(new GranularVoice(this.ring, sampleRate, this.params.windowMs));
-      this.psola.push(new PsolaVoice(this.analyzer, L));
-      this.synth.push(new SynthVoice(sampleRate));
+      const lag = Math.round(VOICE_LAG_MS[i] * sampleRate / 1000);
+      this.gran.push(new GranularVoice(this.ring, sampleRate, this.params.windowMs, lag));
+      this.psola.push(new PsolaVoice(this.analyzer, L + lag));
+      this.synth.push(new SynthVoice(sampleRate, { choir: true, ensemble: 1, breath: 0.05, seed: i + 1 }));
     }
+    // 성부별 사람다움: 천천히 움직이는 음정 흔들림(cent)과 고역 다듬기
+    this.rand = lcg(7);
+    this.ratio = new Float32Array(MAX_VOICES).fill(1);
+    this.drift = new Float32Array(MAX_VOICES);
+    this.driftTo = new Float32Array(MAX_VOICES);
+    this.driftClock = 0;
+    this.driftSmooth = 1 - Math.exp(-128 / (0.3 * sampleRate)); // 블록마다
+    this.lp = new Float32Array(MAX_VOICES);
+    this.lpCoef = 1 - Math.exp((-2 * Math.PI * 7000) / sampleRate);
+    this.norm = 1;
     this.voiceGain = new Float32Array(MAX_VOICES);
     this.voiceTarget = new Float32Array(MAX_VOICES);
     this.wasActive = new Array(MAX_VOICES).fill(false);
@@ -485,8 +567,7 @@ export class Harmonizer {
     for (let i = 0; i < MAX_VOICES; i++) {
       if (i >= h.targets.length) continue;
       const ratio = Math.pow(2, (h.targets[i] - ref) / 12);
-      this.gran[i].target = ratio;
-      this.psola[i].target = ratio;
+      this.ratio[i] = ratio;
       this.synth[i].target = params.lock ? midiToHz(h.targets[i]) : det.freq * ratio;
     }
   }
@@ -503,8 +584,26 @@ export class Harmonizer {
 
     const { params } = this;
     const preset = PRESETS[params.preset] || PRESETS[0];
+    let power = 0;
     for (let v = 0; v < MAX_VOICES; v++) {
       this.voiceTarget[v] = v < preset.voices.length ? preset.voices[v].gain ?? 1 : 0;
+      power += this.voiceTarget[v] * this.voiceTarget[v];
+    }
+    // 성부가 많아져도 합창단 전체 크기는 비슷하게 (같은 목소리를 옮긴 소리라 거의 그대로 더해진다)
+    const normTarget = 1 / Math.sqrt(Math.max(1, power));
+
+    // 성부마다 음정이 천천히 다르게 흔들림 (약 0.4초마다 새 목표, 부드럽게 따라감)
+    const human = Math.max(0, params.humanize ?? 1);
+    this.driftClock += len;
+    if (this.driftClock >= this.sr * 0.4) {
+      this.driftClock = 0;
+      for (let v = 0; v < MAX_VOICES; v++) this.driftTo[v] = (this.rand() * 2 - 1) * DRIFT_CENTS * human;
+    }
+    for (let v = 0; v < MAX_VOICES; v++) {
+      this.drift[v] += (this.driftTo[v] - this.drift[v]) * this.driftSmooth * (len / 128);
+      const r = this.ratio[v] * Math.pow(2, this.drift[v] / 1200);
+      this.gran[v].target = r;
+      this.psola[v].target = r;
     }
 
     // 유성음일 때만 화음이 들리게 하는 게이트 + 입력 음량 추적
@@ -536,14 +635,20 @@ export class Harmonizer {
     const dry = params.dryGain;
     const hg = params.harmGain;
     const useGate = params.engine !== 'synth'; // 합성 보이스는 이미 env를 곱했다
+    // 음높이를 옮긴 목소리의 거친 고역(조각 이음 소리)을 살짝 다듬는다
+    const smooth = useGate && human > 0;
+    const a = this.lpCoef;
     for (let i = 0; i < len; i++) {
       let l = dry * input[i];
       let r = l;
+      this.norm += (normTarget - this.norm) * this.voiceSmooth;
       for (let v = 0; v < MAX_VOICES; v++) {
         this.voiceGain[v] += (this.voiceTarget[v] - this.voiceGain[v]) * this.voiceSmooth;
         const g = this.voiceGain[v];
         if (g < 1e-4) continue;
-        const s = this.vbuf[v][i] * g * hg * (useGate ? env[i] : 1);
+        let x = this.vbuf[v][i];
+        if (smooth) x = this.lp[v] += (x - this.lp[v]) * a;
+        const s = x * g * hg * this.norm * (useGate ? env[i] : 1);
         const pan = VOICE_PAN[v];
         l += s * (1 - pan) * 0.7;
         r += s * (1 + pan) * 0.7;

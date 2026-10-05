@@ -42,6 +42,11 @@ function fakeWebAudio(t, load = async () => {}) {
     createGain() { return new Node(); }
     createBiquadFilter() { return new Node(); }
     createConvolver() { return new Node(); }
+    createDynamicsCompressor() {
+      const node = new Node();
+      for (const k of ['threshold', 'knee', 'ratio', 'attack', 'release']) node[k] = { value: 0 };
+      return node;
+    }
     createStereoPanner() { return new Node(); }
     createBufferSource() { return new Node(); }
     createMediaStreamSource() { return new Node(); }
@@ -381,10 +386,12 @@ test('session recording reuses one post-master tap including every output bus an
   const tap = ctx.mediaDestinations[0];
   for (let i = 0; i < 5; i++) assert.equal(audio.getRecordingStream(), stream);
   assert.equal(ctx.mediaDestinations.length, 1);
-  assert.deepEqual(audio.master.connections, [ctx.destination, tap]);
+  assert.deepEqual(audio.master.connections, [audio.limiter], 'master mute feeds the output limiter');
+  assert.deepEqual(audio.limiter.connections, [ctx.destination, tap], 'speaker and recording hear the same limited mix');
   for (const bus of [audio.dry, audio.harmGain, audio.reverb, audio.accompaniment.output, audio.orbBus, audio.click]) {
     assert.ok(bus.connections.includes(audio.master), 'each audible bus flows through the master');
     assert.ok(!bus.connections.includes(tap), 'no bus can bypass master mute into the recording');
+    assert.ok(!bus.connections.includes(audio.limiter), 'no bus can bypass master mute into the limiter');
   }
   assert.ok(!audio.recBus.connections.includes(tap), 'orb recording remains a separate bus');
   audio.setOutputMuted(true);
@@ -422,7 +429,7 @@ test('session disposal stops original recording tracks and disconnects before co
   fakeWebAudio(t);
   const audio = new ChoirAudio();
   await audio.init();
-  const ctx = audio.ctx, master = audio.master;
+  const ctx = audio.ctx, master = audio.master, limiter = audio.limiter;
   const stream = audio.getRecordingStream();
   const original = stream.getTracks()[0], tap = audio.recordDestination;
   const close = deferred();
@@ -430,6 +437,7 @@ test('session disposal stops original recording tracks and disconnects before co
     assert.equal(original.readyState, 'ended');
     assert.equal(tap.disconnected, true);
     assert.equal(master.disconnected, true);
+    assert.equal(limiter.disconnected, true);
     await close.promise;
     ctx.state = 'closed';
   });
@@ -460,7 +468,7 @@ test('a new session receives a fresh recording stream even while the old context
   assert.notEqual(newStream, oldStream);
   assert.notEqual(newTap, oldTap);
   assert.equal(audio.recordingContext, contexts[1]);
-  assert.deepEqual(audio.master.connections, [contexts[1].destination, newTap]);
+  assert.deepEqual(audio.limiter.connections, [contexts[1].destination, newTap]);
   closing.resolve();
   await disposal;
   assert.equal(audio.getRecordingStream(), newStream, 'late old close cannot reset the new session tap');
@@ -473,9 +481,9 @@ test('a failed recording tap connection releases its stream and allows a clean r
   fakeWebAudio(t);
   const audio = new ChoirAudio();
   await audio.init();
-  const connect = audio.master.connect.bind(audio.master);
+  const connect = audio.limiter.connect.bind(audio.limiter);
   let failed = false;
-  t.mock.method(audio.master, 'connect', target => {
+  t.mock.method(audio.limiter, 'connect', target => {
     if (!failed) { failed = true; throw new Error('connection failed'); }
     return connect(target);
   });
@@ -487,7 +495,7 @@ test('a failed recording tap connection releases its stream and allows a clean r
   const stream = audio.getRecordingStream();
   assert.equal(audio.ctx.mediaDestinations.length, 2);
   assert.equal(stream.getTracks()[0].readyState, 'live');
-  assert.equal(audio.master.connections.length, 2);
+  assert.equal(audio.limiter.connections.length, 2);
   audio.ctx.state = 'closed';
   assert.throws(() => audio.getRecordingStream(), /먼저 시작/);
   await audio.dispose();

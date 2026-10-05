@@ -15,14 +15,45 @@ import { orbMix } from './orbs.js';
 
 const canceled = () => new DOMException('Canceled', 'AbortError');
 
-function makeImpulse(ctx, seconds = 2.6, decay = 3.2) {
-  const len = Math.round(ctx.sampleRate * seconds);
-  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-  const pre = Math.round(ctx.sampleRate * 0.018);
+// 홀 잔향: 고역이 먼저 사라지는 꼬리(시간에 따라 어두워짐) + 좌우가 다른 초기 반사.
+// 예전처럼 밝은 잡음이 끝까지 '쉬익' 하고 남지 않는다.
+export function impulseData(sampleRate, seconds = 2.6, seed = 11) {
+  let s = seed >>> 0;
+  const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296) * 2 - 1;
+  const len = Math.round(sampleRate * seconds);
+  const pre = Math.round(sampleRate * 0.018);
+  const rt60 = seconds * 0.8;
+  const channels = [];
   for (let c = 0; c < 2; c++) {
-    const d = buf.getChannelData(c);
-    for (let i = pre; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - (i - pre) / (len - pre), decay);
+    const d = new Float32Array(len);
+    let lp = 0;
+    for (let i = pre; i < len; i++) {
+      const t = (i - pre) / sampleRate;
+      // 1차 저역통과의 차단 주파수가 9kHz -> 1.2kHz 로 내려감
+      const fc = 1200 + 7800 * Math.exp(-t / (rt60 * 0.25));
+      const a = 1 - Math.exp((-2 * Math.PI * fc) / sampleRate);
+      lp += (rnd() - lp) * a;
+      const onset = Math.min(1, t / 0.025);
+      d[i] = lp * Math.exp((-6.9 * t) / rt60) * onset * onset * (1.6 + 2.4 * (1 - a));
+    }
+    for (let k = 0; k < 7; k++) { // 초기 반사 (8~80ms)
+      const tt = 0.008 + 0.072 * ((rnd() + 1) / 2);
+      const i = pre + Math.round(tt * sampleRate);
+      if (i < len) d[i] += 0.5 * rnd() * Math.exp(-tt * 14);
+    }
+    channels.push(d);
   }
+  let e = 0;
+  for (const d of channels) for (let i = 0; i < len; i++) e += d[i] * d[i];
+  const g = 1 / Math.sqrt(e / 2 || 1);
+  for (const d of channels) for (let i = 0; i < len; i++) d[i] *= g;
+  return channels;
+}
+
+function makeImpulse(ctx, seconds = 2.6) {
+  const data = impulseData(ctx.sampleRate, seconds);
+  const buf = ctx.createBuffer(2, data[0].length, ctx.sampleRate);
+  data.forEach((d, c) => buf.copyToChannel(d, c));
   return buf;
 }
 
@@ -86,11 +117,18 @@ export class ChoirAudio {
       this.dry.gain.value = 0;
       this.master = ctx.createGain();
       this.master.gain.value = this.outputMuted ? 0 : 0.75;
+      // 성부·오브·코드가 한꺼번에 커져도 스피커에서 찌그러지지 않게 (빠른 리미터)
+      this.limiter = ctx.createDynamicsCompressor();
+      this.limiter.threshold.value = -3;
+      this.limiter.knee.value = 3;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.002;
+      this.limiter.release.value = 0.12;
 
       this.node.connect(this.filter).connect(this.harmGain).connect(this.master);
       this.harmGain.connect(this.reverbSend).connect(this.reverb).connect(this.master);
       this.dry.connect(this.master);
-      this.master.connect(ctx.destination);
+      this.master.connect(this.limiter).connect(ctx.destination);
 
       // 오브용: 녹음 버스 → 녹음기, 오브 버스, 메트로놈
       await ctx.audioWorklet.addModule(new URL('../core/recorder-worklet.js', import.meta.url));
@@ -198,13 +236,13 @@ export class ChoirAudio {
   // a recorder must clone them and stop only its own clones.
   getRecordingStream() {
     const ctx = this.ctx;
-    if (!this.ready || !ctx || ctx.state === 'closed' || !this.master) {
+    if (!this.ready || !ctx || ctx.state === 'closed' || !this.master || !this.limiter) {
       throw new Error('오디오 세션을 먼저 시작해 주세요.');
     }
     if (this.recordDestination && this.recordingContext === ctx) return this.recordDestination.stream;
     const destination = ctx.createMediaStreamDestination();
     try {
-      this.master.connect(destination);
+      this.limiter.connect(destination); // 스피커와 같은 소리 (음소거·리미터 포함)
     } catch (error) {
       destination.stream.getTracks().forEach((track) => track.stop());
       destination.disconnect();
@@ -437,7 +475,7 @@ export class ChoirAudio {
     // leave a live recording source attached while a replacement session starts.
     this.recordDestination?.stream.getTracks().forEach((track) => track.stop());
     this.recordingContext = null;
-    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'recordDestination', 'recBus', 'voiceRecord', 'accompRecord', 'recorder', 'orbBus', 'click']) {
+    for (const key of ['node', 'filter', 'harmGain', 'reverbSend', 'reverb', 'dry', 'master', 'limiter', 'recordDestination', 'recBus', 'voiceRecord', 'accompRecord', 'recorder', 'orbBus', 'click']) {
       const node = this[key];
       if (node?.port) { node.port.onmessage = null; node.port.close(); }
       node?.disconnect();

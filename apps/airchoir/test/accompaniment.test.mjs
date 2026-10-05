@@ -237,3 +237,38 @@ test('dispose is immediate and idempotent even while suspended; it never closes 
   synth.setGain(0.5);
   assert.equal(ctx.oscillators.length, 3);
 });
+
+test('when the browser supports custom waves, every note shares one warm pad wave with a small per-note detune', () => {
+  const ctx = new Context();
+  const waves = [];
+  ctx.createPeriodicWave = (real, imag) => {
+    const wave = { real, imag };
+    waves.push(wave);
+    return wave;
+  };
+  const make = ctx.createOscillator.bind(ctx);
+  ctx.createOscillator = () => {
+    const node = make();
+    node.detune = new Param();
+    node.setPeriodicWave = (wave) => { node.wave = wave; };
+    return node;
+  };
+  const synth = new Accompaniment(ctx);
+  synth.setChord([60, 64, 67]);
+  synth.setChord([62, 65, 69]);
+  assert.equal(waves.length, 1, 'the wave is built once and shared');
+  const [{ real, imag }] = waves;
+  assert.equal(real.length, imag.length);
+  assert.equal(imag[0], 0);
+  assert.ok(imag[1] > imag[2] && imag[2] > 0, 'fundamental-led spectrum with even harmonics (not a triangle)');
+  for (const node of ctx.oscillators) {
+    assert.equal(node.wave, waves[0]);
+    assert.equal(node.type, undefined);
+    const cents = node.detune.events.at(-1)[1];
+    assert.ok(Math.abs(cents) <= 4);
+  }
+  assert.ok(new Set(ctx.oscillators.slice(0, 3).map((n) => n.detune.events.at(-1)[1])).size > 1, 'chord tones are not all detuned alike');
+  synth.release({ immediate: true });
+  assert.equal(openSources(ctx).length, 0, 'lifecycle is unchanged');
+  synth.dispose();
+});

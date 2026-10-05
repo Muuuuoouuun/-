@@ -8,6 +8,15 @@ const RELEASE = 0.08;
 const MAX_SOURCES = 8; // Four held notes plus at most four release tails.
 const clampGain = (value) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 
+// 따뜻한 패드 음색: 배음이 1/h^1.6 으로 줄고 3~5배음(모음 '오~' 근처)을 살짝 살린 파형.
+// 삼각파처럼 홀수 배음만 있는 '삐-' 소리 대신 현악·합창 패드처럼 둥글게 들린다.
+export const PAD_HARMONICS = Array.from({ length: 24 }, (_, i) => {
+  const h = i + 1;
+  return (1 / h ** 1.6) * (1 + 0.6 * Math.exp(-0.5 * ((h - 4) / 1.5) ** 2));
+});
+// 화음 음마다 몇 cent 씩 다르게: 함께 울릴 때 천천히 맥놀이가 생겨 살아 있는 소리
+export const detuneCents = (note) => ((note * 37) % 9) - 4;
+
 function chordNotes(notes) {
   if (!Array.isArray(notes) || notes.length < 3 || notes.length > 4) return null;
   if (!notes.every((note) => Number.isInteger(note) && note >= 0 && note <= 127)) return null;
@@ -29,6 +38,7 @@ export class Accompaniment {
     this.disposed = false;
     this._held = new Map();
     this._voices = new Set();
+    this._wave = null;
     for (const target of new Set([destination, recordDestination].filter(Boolean))) this.output.connect(target);
     this._stateChange = () => {
       // Frozen audio time cannot finish a scheduled release. Do not leave notes
@@ -95,8 +105,11 @@ export class Accompaniment {
         envelope: { from: 0, to: 0, start: now, end: now },
       };
       this._voices.add(voice);
-      oscillator.type = 'triangle';
+      const wave = this._padWave();
+      if (wave && typeof oscillator.setPeriodicWave === 'function') oscillator.setPeriodicWave(wave);
+      else oscillator.type = 'triangle';
       oscillator.frequency.setValueAtTime(440 * 2 ** ((note - 69) / 12), now);
+      oscillator.detune?.setValueAtTime(detuneCents(note), now);
       envelope.gain.value = 0;
       oscillator.connect(envelope).connect(this.output);
       oscillator.onended = () => this._cleanupVoice(voice);
@@ -111,6 +124,24 @@ export class Accompaniment {
       }
       throw error;
     }
+  }
+
+  // 브라우저가 지원하면 한 번 만든 패드 파형을 모든 음이 함께 쓴다
+  _padWave() {
+    if (this._wave === null) {
+      this._wave = false;
+      if (typeof this.ctx.createPeriodicWave === 'function') {
+        const real = new Float32Array(PAD_HARMONICS.length + 1);
+        const imag = new Float32Array(PAD_HARMONICS.length + 1);
+        PAD_HARMONICS.forEach((a, i) => { imag[i + 1] = a; });
+        try {
+          this._wave = this.ctx.createPeriodicWave(real, imag);
+        } catch {
+          this._wave = false;
+        }
+      }
+    }
+    return this._wave || null;
   }
 
   _rampVoice(voice, target, now, duration) {

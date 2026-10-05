@@ -176,3 +176,69 @@ test('녹음 링 버퍼: 절대 프레임으로 구간 꺼내기, 지난 구간�
   assert.equal(r.read(100, 200), null); // 이미 덮어씀
   assert.equal(r.read(2500, 2600), null); // 아직 안 들어옴
 });
+
+function runHarmonizer(input, params) {
+  const h = new Harmonizer(SR);
+  h.setParams(params);
+  const L = new Float32Array(input.length);
+  const R = new Float32Array(input.length);
+  for (let i = 0; i + 128 <= input.length; i += 128) {
+    h.process(input.subarray(i, i + 128), L.subarray(i, i + 128), R.subarray(i, i + 128));
+  }
+  return { L, R };
+}
+const rms = (x, from = 0.4) => {
+  let s = 0;
+  const a = Math.floor(x.length * from);
+  for (let i = a; i < x.length; i++) s += x[i] * x[i];
+  return Math.sqrt(s / (x.length - a));
+};
+
+test('합창단: 성부가 많아져도 전체 크기는 비슷하고, 성부마다 음정은 목표 근처에서만 흔들린다', () => {
+  const input = vowel(midiToHz(64), 2.5);
+  for (const engine of ['psola', 'granular']) {
+    const one = runHarmonizer(input, { engine, preset: 1, dryGain: 0, harmGain: 1 });
+    const full = runHarmonizer(input, { engine, preset: 4, dryGain: 0, harmGain: 1 });
+    const ratio = (rms(full.L) + rms(full.R)) / (rms(one.L) + rms(one.R));
+    assert.ok(ratio > 0.7 && ratio < 1.6, `${engine}: 4성부/1성부 크기 비 ${ratio.toFixed(2)}`);
+    // 한 성부(3도 위 = G4)는 흔들려도 목표에서 크게 벗어나지 않음
+    const det = new PitchDetector(SR);
+    const found = [];
+    for (let i = 0; i + 128 <= one.L.length; i += 128) {
+      det.process(one.L.subarray(i, i + 128));
+      if (i > SR * 0.5 && det.voiced) found.push(cents(det.freq, midiToHz(67)));
+    }
+    assert.ok(found.length > 100);
+    const worst = Math.max(...found.map(Math.abs));
+    assert.ok(worst < 18, `${engine}: 최대 ${worst.toFixed(1)} cent`);
+  }
+});
+
+test('합창단: humanize 를 끄면 기계처럼 딱 맞고, 켜면 성부가 조금씩 다르게 움직인다', () => {
+  const input = vowel(midiToHz(64), 1.5);
+  const tight = runHarmonizer(input, { engine: 'psola', preset: 2, dryGain: 0, humanize: 0 });
+  const human = runHarmonizer(input, { engine: 'psola', preset: 2, dryGain: 0, humanize: 1 });
+  let diff = 0;
+  for (let i = SR; i < input.length; i++) diff += Math.abs(tight.L[i] - human.L[i]);
+  assert.ok(diff / (input.length - SR) > 1e-3, '사람다움이 소리에 반영되어야 함');
+  assert.ok(human.L.every(Number.isFinite) && human.R.every(Number.isFinite));
+});
+
+test('합창용 합성 보이스: 두 사람이 함께 불러도 음정은 정확하고, 성부마다 소리가 다르다', () => {
+  const sing = (seed) => {
+    const v = new SynthVoice(SR, { choir: true, ensemble: 1, breath: 0.05, seed });
+    v.freq = v.target = 220;
+    const out = new Float32Array(SR);
+    v.processBlock(out, out.length, null);
+    return out;
+  };
+  const a = sing(1);
+  const b = sing(2);
+  assert.ok(Math.abs(cents(measureHz(a), 220)) < 10, `${measureHz(a).toFixed(1)} Hz`);
+  assert.ok(a.every(Number.isFinite));
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  assert.ok(d / a.length > 0.01, '씨앗이 다르면 다른 사람처럼');
+  const peak = a.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
+  assert.ok(peak < 1.2, `최대 ${peak}`);
+});
