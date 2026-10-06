@@ -115,6 +115,38 @@ def _block_sim(F: np.ndarray, a: int, b: int, size: int) -> float:
     return float(np.mean(sims))
 
 
+def _pair_phrases(labels: list[str]) -> list[str]:
+    """늘 붙어 다니는 두 프레이즈(X 다음엔 꼭 Y, Y 앞엔 꼭 X)를 한 구간(8마디 절·후렴)으로 묶는다.
+
+    예) 절의 앞 4마디(A)와 뒤 4마디(B)가 다를 때 B 를 '프리코러스'로 따로 부르지 않도록.
+    """
+    out = list(labels)
+    n = len(out)
+    pairs: dict[str, str] = {}
+    for x in dict.fromkeys(out):
+        idx = [i for i, lab in enumerate(out) if lab == x]
+        if len(idx) < 2 or any(i + 1 >= n for i in idx):
+            continue
+        nxt = {out[i + 1] for i in idx}
+        if len(nxt) != 1:
+            continue
+        y = nxt.pop()
+        if y == x or y in pairs or y in pairs.values() or x in pairs.values():
+            continue
+        y_idx = [i for i, lab in enumerate(out) if lab == y]
+        if all(i > 0 and out[i - 1] == x for i in y_idx):
+            pairs[x] = y
+    i = 0
+    while i < n - 1:
+        if pairs.get(out[i]) == out[i + 1]:
+            merged = out[i] + out[i + 1]
+            out[i] = out[i + 1] = merged
+            i += 2
+        else:
+            i += 1
+    return out
+
+
 def detect_sections(project: Project, chords: list[ChordEvent], n_bars: int,
                     phrase: int = 4, threshold: float = 0.86) -> list[Section]:
     """프레이즈 단위로 묶어 곡 구조를 찾는다."""
@@ -139,6 +171,8 @@ def detect_sections(project: Project, chords: list[ChordEvent], n_bars: int,
             best = chr(ord("A") + len(reps)) if len(reps) < 26 else "Z"
             reps.append((best, s))
         labels.append(best)
+
+    labels = _pair_phrases(labels)
 
     # 2) 같은 글자가 이어지면 한 구간으로
     raw: list[list] = []
@@ -204,11 +238,18 @@ def detect_sections(project: Project, chords: list[ChordEvent], n_bars: int,
             kinds[chorus] = "Chorus"
         if others:
             kinds[others[0]] = "Verse"
+            first_chorus = min((i for i, r in enumerate(raw) if r[2] == chorus), default=None)
             for lab in others[1:]:
-                # 매번 후렴 바로 앞에 나오면 프리코러스, 아니면 브리지
+                # 매번 후렴 바로 앞에 나오면 프리코러스, 후렴이 나온 뒤에 처음 나오면 브리지,
+                # 그 밖(후렴이 없거나 첫 후렴 전)은 절의 다른 모양
                 idx = [i for i, r in enumerate(raw) if r[2] == lab]
                 before_chorus = all(i + 1 < len(raw) and kinds.get(raw[i + 1][2]) == "Chorus" for i in idx)
-                kinds[lab] = "Pre-Chorus" if before_chorus and len(idx) >= 2 else "Bridge"
+                if before_chorus and len(idx) >= 2:
+                    kinds[lab] = "Pre-Chorus"
+                elif first_chorus is not None and idx[0] > first_chorus:
+                    kinds[lab] = "Bridge"
+                else:
+                    kinds[lab] = "Verse"
         if not chorus and len(others) == 1:
             kinds[others[0]] = "Verse"
 

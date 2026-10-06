@@ -443,8 +443,10 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
     bar_offset = grid.shift_beats // grid.beats_per_bar
 
     # 못갖춘마디: 첫 마디 앞쪽이 비어 있으면(첫 음이 마디 중간) 짧은 0번 마디로 만든다
+    # 일부 악기만 만들 때도 마디 번호가 같도록 곡 전체(모든 악기)의 첫 음으로 정한다
     starts = [e.offset for evs in events_by.values() for e in evs]
-    first_on = min(starts, default=0.0)
+    starts += [grid.ql(min(n.start for n in t.notes)) for t in project.tracks.values() if t.notes]
+    first_on = min((x for x in starts if x >= 0), default=0.0)
     pickup_ql = first_on if (opts.pickup and 0 < first_on < grid.bar_ql and
                              (first_on / grid.beat_ql) >= 1 - 1e-6) else 0.0
     number_shift = -1 if pickup_ql else 0  # 못갖춘마디가 있으면 마디 번호가 하나씩 당겨짐
@@ -484,6 +486,8 @@ def render(project: Project, out_root: Path, opts: RenderOptions | None = None,
         spec = spec_for(name)
         track = project.tracks[name]
         if name == "drums":
+            if opts.simplify:  # 구간마다 기본 그루브로 맞춰 읽기 쉽게 (필인은 그대로)
+                events = sc.regularize_drums(events, grid.bar_ql, segments, total_ql)
             parts = [sc.build_drums(events, project, total_ql, with_tempo=True)]
             full_view = [sc.build_drums(events, project, total_ql, with_tempo=not full_parts)]
         else:
@@ -611,6 +615,25 @@ def _smufl_text(m) -> str:
     return m.group(0)
 
 
+def strip_tab_rhythm(mei: str) -> str:
+    """MEI 에서 TAB 보표의 리듬 표시(tabDurSym, 빔)를 지운다 (오선보+TAB 함께 있을 때 깔끔하게)."""
+    import re as _re
+
+    tab_staves = set(_re.findall(r'<staffDef[^>]*\bn="(\d+)"[^>]*notationtype="tab', mei))
+    tab_staves |= set(_re.findall(r'<staffDef[^>]*notationtype="tab[^"]*"[^>]*\bn="(\d+)"', mei))
+    if not tab_staves:
+        return mei
+
+    def clean(m):
+        block = m.group(0)
+        block = _re.sub(r"<tabDurSym\b[^>]*/>", "", block)
+        block = _re.sub(r"<tabDurSym\b[^>]*>.*?</tabDurSym>", "", block, flags=_re.S)
+        return _re.sub(r"</?beam\b[^>]*>", "", block)
+
+    pattern = r'<staff\b[^>]*\bn="(?:%s)"[^>]*>.*?</staff>' % "|".join(sorted(tab_staves))
+    return _re.sub(pattern, clean, mei, flags=_re.S)
+
+
 def korean_font() -> str | None:
     """한글·♯/♭ 이 들어 있는 시스템 글꼴 이름 (PDF 제목·가사·코드용)."""
     import sys
@@ -662,6 +685,11 @@ def export_pdf_verovio(xml: Path, pdf: Path) -> Path | None:
         tk.setOptions({"breaks": "encoded" if n_breaks >= n_meas / 6 else "smart", "breaksSmartSb": 0.6})
         if not tk.loadData(text):
             return None
+        if "<sign>TAB</sign>" in text:
+            # TAB 위에 박자 기호(꼬리·빔)를 또 그리지 않는다 — 리듬은 위 오선보에 이미 있다
+            mei = strip_tab_rhythm(tk.getMEI())
+            if not tk.loadData(mei):
+                return None
         # PDF 변환기(cairo)는 글자별 대체 글꼴을 찾지 않으므로 한글·♯ 이 있는 글꼴을 직접 지정
         font = korean_font()
         writer = PdfWriter()

@@ -99,6 +99,17 @@ def assign_frets(chords: list[list[int]], tuning: tuple[int, ...],
         result[idx[k]] = cands[idx[k]][j]
         if k > 0:
             j = int(back[k - 1][j])
+    # 같은 화음(같은 음들)은 곡 전체에서 같은 운지로 — 후렴마다 자리가 바뀌면 읽기 어렵다.
+    # 가장 많이 고른 운지를 쓰고, 같으면 낮은 자리.
+    from collections import Counter
+
+    by_chord: dict[tuple[int, ...], Counter] = {}
+    for i in idx:
+        by_chord.setdefault(tuple(sorted(chords[i])), Counter())[result[i]] += 1
+    for i in idx:
+        counts = by_chord[tuple(sorted(chords[i]))]
+        if len(counts) > 1:
+            result[i] = max(counts, key=lambda f: (counts[f], -(f.position or 0.0)))
     return result
 
 

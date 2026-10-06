@@ -514,6 +514,7 @@ async function loadSheet() {
       R.LyricsHeight = 2.2;
       R.SheetSubtitleHeight = 1.8;
       R.MinimumDistanceBetweenSystems = 6;
+      R.TabBeamsRendered = false; // TAB 위에 리듬(빔)을 또 그리지 않는다 — 리듬은 위 오선보에
       R.VoiceSpacingMultiplierVexflow = 0.75; // 조금 촘촘하게 (기본 0.85 / 3)
       R.VoiceSpacingAddendVexflow = 2.5;
     }

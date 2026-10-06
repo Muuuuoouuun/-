@@ -424,6 +424,81 @@ def drum_events(notes: list[Note], grid: Grid) -> list[Event]:
     return events
 
 
+CYMBALS = (42, 44, 46, 51, 53, 59)  # 하이햇·라이드 — 일정하게 이어 치는 악기
+
+
+def _complete_ostinato(groove: set[tuple[float, int]], bar_ql: float) -> set[tuple[float, int]]:
+    """하이햇·라이드가 8분(또는 16분)음표 자리를 거의 다 채우면 빠진 한두 자리도 채운다
+    (킥·스네어와 같이 칠 때 하이햇 소리가 묻혀 잘 안 잡힌다)."""
+    out = set(groove)
+    for p in CYMBALS:
+        pos = {round(x, 4) for x, q in groove if q == p}
+        if not pos:
+            continue
+        for step in (0.5, 0.25):
+            grid = {round(k * step, 4) for k in range(int(round(bar_ql / step)))}
+            if pos <= grid and len(grid) - len(pos) <= max(1, len(grid) // 4):
+                out |= {(g, p) for g in grid}
+                break
+    return out
+
+
+def regularize_drums(events: list[Event], bar_ql: float, segments: list[float] | None,
+                     total_ql: float, snap: float = 0.6) -> list[Event]:
+    """구간(절·후렴 …)마다 기본 리듬(그루브)을 찾고, 조금만 다른 마디는 그 그루브로 맞춘다.
+
+    드럼 채보는 하이햇 한두 개를 놓치거나 킥이 조금 밀리기 쉬워 마디마다 모양이 달라 읽기 어렵다.
+    기본 그루브와 비슷한(겹침 비율 >= snap) 마디만 맞추고, 크게 다른 마디(필인·브레이크)는 그대로 둔다.
+    """
+    if not events:
+        return events
+    n_bars = int(math.ceil(total_ql / bar_ql - 1e-9))
+    bars: list[set[tuple[float, int]]] = [set() for _ in range(n_bars)]
+    vel: dict[tuple[int, float, int], int] = {}
+    for ev in events:
+        b = int(math.floor(ev.offset / bar_ql + 1e-9))
+        if not 0 <= b < n_bars:
+            continue
+        pos = round(ev.offset - b * bar_ql, 4)
+        for p in ev.pitches:
+            bars[b].add((pos, p))
+            vel[(b, pos, p)] = ev.velocity
+    bounds = sorted({0, n_bars, *(int(round(x / bar_ql)) for x in (segments or []) if 0 < x / bar_ql < n_bars)})
+    for a, z in zip(bounds, bounds[1:]):
+        played = [b for b in range(a, z) if bars[b]]
+        if len(played) < 3:
+            continue
+        counts: dict[tuple[float, int], int] = {}
+        for b in played:
+            for hit in bars[b]:
+                counts[hit] = counts.get(hit, 0) + 1
+        groove = {hit for hit, c in counts.items() if c >= 0.6 * len(played)}
+        if len(groove) < 2:
+            continue
+        groove = _complete_ostinato(groove, bar_ql)
+        for b in played:
+            union = bars[b] | groove
+            sim = len(bars[b] & groove) / len(union) if union else 1.0
+            last = b == z - 1  # 구간 마지막 마디는 필인일 때가 많아 더 비슷할 때만
+            if sim >= (0.8 if last else snap) and bars[b] != groove:
+                default_v = int(np.median([vel[(b, pos, p)] for pos, p in bars[b]])) if bars[b] else 90
+                for pos, p in groove:
+                    vel.setdefault((b, pos, p), default_v)
+                bars[b] = set(groove)
+    out: list[Event] = []
+    for b in range(n_bars):
+        by_pos: dict[float, list[int]] = {}
+        for pos, p in bars[b]:
+            by_pos.setdefault(pos, []).append(p)
+        positions = sorted(by_pos)
+        for k, pos in enumerate(positions):
+            on = b * bar_ql + pos
+            nxt = b * bar_ql + positions[k + 1] if k + 1 < len(positions) else (b + 1) * bar_ql
+            pitches = sorted(by_pos[pos])
+            out.append(Event(on, min(nxt - on, 1.0), pitches, max(vel[(b, pos, p)] for p in pitches)))
+    return out
+
+
 def _insert_chords(part: stream.Stream, chords_: list[tuple[float, str]]) -> None:
     for offset, figure in chords_:
         if figure == "N.C.":
