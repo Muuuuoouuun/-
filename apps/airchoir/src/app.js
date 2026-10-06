@@ -6,6 +6,8 @@ import { drawStage, coverMapper } from './stage.js';
 import { Transport, OrbStation } from './orbs.js';
 import { Performance } from './performance.js';
 import { FocusSession } from './focus-session.js';
+import { Coach } from './coach.js';
+import { CoachUI } from './coach-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const css = getComputedStyle(document.documentElement);
@@ -47,6 +49,7 @@ let selectedOrbId = null;
 let loopSignature = '';
 let performer;
 let focusSession;
+let coachReplay = false;
 const pointer = { inside: false, down: false, x: 0.5, y: 0.5, fingers: 2 };
 
 // 오브 모드: 마디 그리드 + 오브 상태. 녹음한 구간의 음 높이로 오브 색을 정한다.
@@ -73,7 +76,10 @@ const station = new OrbStation({
   },
 });
 let metronomeWanted = false;
-window.airchoir = { station, audio, transport, tracker }; // 디버그·자동 테스트용
+let coachStorage;
+try { coachStorage = window.localStorage; } catch { coachStorage = null; }
+const coach = new Coach({ storage: coachStorage });
+window.airchoir = { station, audio, transport, tracker, coach }; // 디버그·자동 테스트용
 
 // ───────────── 상태 표시 ─────────────
 
@@ -242,6 +248,8 @@ async function start(kind) {
   $('start').hidden = true;
   audio.setOutputMuted(false);
   performer.sessionStarted();
+  coach.begin(performance.now(), { force: coachReplay });
+  coachReplay = false;
   updateProductControls();
   renderLoopHud();
   if (mode === 'camera') focusSession.enter();
@@ -253,6 +261,7 @@ async function start(kind) {
 function stopSession({ focus = true } = {}) {
   focusSession?.sessionEnded();
   performer?.stop('세션 종료 · 다시 시작할 수 있어요.', true);
+  coach.reset();
   startupRequest++;
   soundRequest++;
   starting = sessionActive = manualRecording = false;
@@ -381,6 +390,7 @@ function bindControls() {
   $('session-end').onclick = () => stopSession();
   $('record-toggle').onclick = recordAction;
   $('record-cancel').onclick = cancelRecording;
+  $('coach-replay').onclick = replayCoach;
   $('src-mic').onclick = () => startSound('mic');
   $('src-demo').onclick = () => startSound('demo');
   $('src-file').onchange = (e) => {
@@ -510,6 +520,8 @@ function drawOverlay() {
       y0: Math.min(0.45, (hud.offsetTop + hud.offsetHeight + 10) / H),
       y1: 1 - 52 / H,
     };
+    const card = $('coach');
+    if (!card.hidden && card.offsetHeight) station.bounds.y1 = Math.max(station.bounds.y0 + 0.1, Math.min(station.bounds.y1, (card.offsetTop - 12) / H));
     const manual = manualRecording && ['countin', 'recording'].includes(station.mode);
     const routed = performer.legacy && !performer.blocked && !performer.settingsOpen ? { ...gesture, screen } : { present: false, pinch: false, fist: false, screen: null };
     station.update(manual ? { ...routed, present: true, pinch: true, fist: false, screen } : routed, now);
@@ -625,7 +637,7 @@ function renderLoopHud() {
   $('record-label').textContent = {countin:'대기 취소',recording:'녹음 마치기',finishing:'마디 마무리 중',holding:'오브 내려놓기',drag:'오브 이동 중'}[mode] || '녹음 시작';
   $('record-toggle').disabled = !sessionActive || !audio.ready || ['finishing','drag'].includes(mode) || (mode === 'idle' && station.count >= station.maxOrbs);
   $('record-cancel').hidden = !['recording', 'finishing'].includes(mode);
-  $('stage-empty').hidden = performer?.state.product === 'chord' || performer?.state.input === 'manual' || !sessionActive || station.count > 0 || mode !== 'idle' || gesture.present;
+  $('stage-empty').hidden = coachUI?.visible || performer?.state.product === 'chord' || performer?.state.input === 'manual' || !sessionActive || station.count > 0 || mode !== 'idle' || gesture.present;
   $('orb-count').textContent = `${station.count} / ${station.maxOrbs}`;
   const busy = station.count > 0 || station.mode !== 'idle';
   $('bpm').disabled = busy;
@@ -681,6 +693,8 @@ function frame(now) {
   focusSession.tick(performance.now());
   if (now - lastHud > 70) {
     lastHud = now;
+    coach.observe(coachObservation(), performance.now());
+    coachUI.render(coach.view());
     renderHud();
     drawTrace();
     performer.render();
@@ -717,6 +731,44 @@ function updateProductControls() {
   for (const id of ['src-mic', 'src-demo', 'src-file', 'dry', 'key', 'scale', 'lock', 'humanize']) $(id).disabled = chord || !sessionActive;
   document.querySelectorAll('[data-engine]').forEach(b => (b.disabled = chord));
   $('source-name').textContent = chord ? '코드 악기 · 마이크 입력 없이 합성' : $('source-name').textContent;
+}
+
+// 안내는 목소리 합창을 손(또는 마우스)으로 지휘할 때만 진행한다. 코드 악기·휠 선택·설정 중에는 잠시 숨긴다.
+function coachObservation() {
+  const voiced = stats?.midi != null;
+  return {
+    eligible: sessionActive && performer.legacy && !performer.settingsOpen,
+    mode, source: audio.source?.kind,
+    voiced, voices: voiced ? stats.targets.length : 0,
+    handUp: gesture.present && !gesture.fist,
+    fist: gesture.present && gesture.fist,
+    orbs: station.count,
+  };
+}
+
+const coachUI = new CoachUI({
+  root: $('coach'),
+  onSkip: () => coach.skip(performance.now()),
+  onClose: () => {
+    coach.dismiss();
+    coachUI.render(null);
+    (mode === 'pointer' ? $('stage') : $('record-toggle')).focus({ preventScroll: true });
+  },
+});
+
+function replayCoach() {
+  if (sessionActive) {
+    coach.begin(performance.now(), { force: true });
+    coach.observe(coachObservation(), performance.now());
+    $('stage').scrollIntoView({ block: 'nearest' });
+    coachUI.render(coach.view());
+    if (coachUI.visible) $('coach-skip').focus({ preventScroll: true });
+    else notice('목소리 합창을 손동작으로 지휘할 때 처음 안내가 나와요.');
+  } else {
+    coachReplay = true;
+    notice('세션을 시작하면 처음 안내가 다시 나와요.');
+    $('start-pointer').focus();
+  }
 }
 
 performer = new Performance({

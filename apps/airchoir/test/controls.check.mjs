@@ -48,6 +48,8 @@ try {
       return route.abort();
     });
     await page.addInitScript(() => {
+      // The first-run coach has its own check (coach.check.mjs); keep this stage clear.
+      localStorage.setItem('airchoir.coach.v1', 'dismissed');
       window.pendingMedia = [];
       window.stoppedFakeTracks = 0;
       navigator.mediaDevices.getUserMedia = (constraints) => new Promise((resolve) => {
