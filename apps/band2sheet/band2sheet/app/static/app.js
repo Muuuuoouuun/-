@@ -429,25 +429,25 @@ function renderVersionInfo(r) {
   $("#x-notes").innerHTML = "";
   for (const n of r.notes) {
     const li = document.createElement("li");
-    li.textContent = n;
+    li.textContent = n.replace(/--(?=\w)/g, "\u2011\u2011");
     $("#x-notes").appendChild(li);
   }
   $("#x-dl").href = remixUrl(r.video || r.audio);
   $("#x-dl").textContent = r.video ? "후보정 영상 받기" : "후보정 음원 받기";
-  $("#x-files").innerHTML = "";
+  const box = $("#x-files");
+  box.replaceChildren();
+  const group = document.createElement("section");
+  group.className = "file-group";
   for (const f of [...r.files, "original"]) {
     const name = f.replace(/^v\d+\//, "");
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = remixUrl(f);
-    a.textContent = f === "original" ? "원본 파일" : f === r.video ? "후보정 영상" :
-      f === r.audio ? "후보정 음원 (WAV)" : name.endsWith(".mid") ? `반주 편곡 (MIDI · ${name})` :
+    const ext = f === "original" ? (state.job.filename.split(".").pop() || "") : name.split(".").pop();
+    const label = f === "original" ? "원본 파일" : f === r.video ? "후보정 영상" :
+      f === r.audio ? "후보정 음원" : name.endsWith(".mid") ? "반주 편곡" :
       { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음",
-        "stems/harmony_down.wav": "아래 화음" }[name] || (name.startsWith("stems/") ? `반주 트랙 (${name.slice(6)})` : name);
-    a.download = "";
-    li.appendChild(a);
-    $("#x-files").appendChild(li);
+        "stems/harmony_down.wav": "아래 화음" }[name] || (name.startsWith("stems/") ? `반주 트랙 (${name.slice(6, -4)})` : name);
+    group.appendChild(fileLink(remixUrl(f), { label, type: ext.toUpperCase() }, "", name));
   }
+  box.appendChild(group);
   fillAgain(r);
 }
 
@@ -716,7 +716,7 @@ async function loadJobs() {
   for (const j of jobs) {
     const li = document.createElement("li");
     li.classList.toggle("active", j.id === state.jobId);
-    const st = j.status === "done" && j.kind === "remix" ? `후보정 완료 · ${j.key || ""}` :
+    const st = j.status === "done" && j.kind === "remix" ? `완료 · ${j.key || ""}` :
       j.status === "done" ? `완료 · ${j.key || ""}` : j.status === "error" ? "오류" :
       j.status === "choose" ? `곡 고르기 · ${j.songs}곡` :
       j.status === "ready" ? "영상·음성 준비됨 · 악보 만들기 전" :
@@ -732,13 +732,45 @@ async function loadJobs() {
     const status = document.createElement("span");
     status.className = `s ${j.status}`;
     status.textContent = st;
-    button.append(title, status);
+    const meta = document.createElement("span");
+    meta.className = "jm";
+    const kind = document.createElement("span");
+    const k = jobKind(j);
+    kind.className = `kind kind-${k.id}`;
+    kind.textContent = k.label;
+    meta.append(kind);
+    if (Number.isFinite(j.created) && j.created > 0) {  // 시각이 없는 작업도 목록은 그대로 보인다
+      const when = document.createElement("time");
+      when.dateTime = new Date(j.created * 1000).toISOString();
+      when.textContent = timeAgo(j.created);
+      when.title = new Date(j.created * 1000).toLocaleString();
+      meta.append(when);
+    }
+    button.append(title, status, meta);
     button.addEventListener("click", () => openJob(j.id));
     li.appendChild(button);
     ul.appendChild(li);
     if (focusedJob === j.id) button.focus({ preventScroll: true });
   }
   return jobs;
+}
+
+function jobKind(j) {
+  if (j.kind === "remix") return { id: "remix", label: "후보정" };
+  if (j.status === "choose" || j.songs) return { id: "split", label: "곡 나누기" };
+  if (j.parent) return { id: "song", label: "실황 한 곡" };
+  if (j.url) return { id: "link", label: "링크" };
+  return { id: "score", label: "악보" };
+}
+
+function timeAgo(sec) {
+  const d = Math.max(0, Date.now() / 1000 - sec);
+  if (d < 60) return "방금";
+  if (d < 3600) return `${Math.floor(d / 60)}분 전`;
+  if (d < 86400) return `${Math.floor(d / 3600)}시간 전`;
+  if (d < 7 * 86400) return `${Math.floor(d / 86400)}일 전`;
+  const t = new Date(sec * 1000);
+  return `${t.getMonth() + 1}/${t.getDate()}`;
 }
 
 async function openJob(id) {
@@ -843,6 +875,7 @@ function showChoose(job) {
     state.chooseAudio = new Audio(`/api/jobs/${job.id}/audio/full`);
     state.chooseJob = job.id;
     state.chooseAudio.addEventListener("timeupdate", drawChooseCursor);
+    for (const ev of ["play", "pause", "ended"]) state.chooseAudio.addEventListener(ev, updatePreviewButtons);
   }
   state.picks = job.songs.map((s) => ({ ...s, on: true, title: "" }));
   renderChoose(job);
@@ -853,38 +886,72 @@ function renderChoose(job) {
   const tl = $("#c-timeline");
   tl.innerHTML = '<div class="cursor"></div>';
   state.picks.forEach((p, i) => {
-    const seg = document.createElement("div");
+    const seg = document.createElement("button");
+    seg.type = "button";
     seg.className = "seg" + (p.on ? "" : " off");
     seg.style.left = `${(p.start / total) * 100}%`;
     seg.style.width = `${Math.max(0.5, ((p.end - p.start) / total) * 100)}%`;
     seg.textContent = `${i + 1}`;
-    seg.title = `${fmtTime(p.start)} ~ ${fmtTime(p.end)}`;
+    seg.title = `${i + 1}번째 곡 · ${fmtTime(p.start)} ~ ${fmtTime(p.end)} (누르면 들어보기)`;
+    seg.setAttribute("aria-label", seg.title);
     seg.addEventListener("click", () => previewSong(i));
     tl.appendChild(seg);
   });
+  // 시간 눈금: 길이에 맞춰 30초·1분·5분·10분 간격
+  const axis = $("#c-axis");
+  axis.replaceChildren();
+  const step = [30, 60, 120, 300, 600, 900].find((s) => total / s <= 8) || 1800;
+  for (let t = 0; t <= total + 0.5; t += step) {
+    const tick = document.createElement("span");
+    tick.style.left = `${(t / total) * 100}%`;
+    tick.textContent = fmtTime(t);
+    axis.appendChild(tick);
+  }
   const box = $("#c-songs");
   box.innerHTML = "";
   state.picks.forEach((p, i) => {
     const row = document.createElement("div");
-    row.className = "c-song";
-    row.innerHTML = `<input type="checkbox" ${p.on ? "checked" : ""}>
-      <input class="name" placeholder="${i + 1}번째 곡 (제목을 적어 두면 좋아요)">
-      <span class="meta"></span>
-      <span class="small">시작 <input type="number" class="st" min="0" step="1"> 끝 <input type="number" class="en" min="1" step="1"></span>
-      <button class="ghost">▶ 들어보기</button>`;
+    row.className = "c-song" + (p.on ? "" : " off");
+    row.innerHTML = `<label class="c-pick"><input type="checkbox" ${p.on ? "checked" : ""}><span class="c-num">${i + 1}</span></label>
+      <input class="name" aria-label="${i + 1}번째 곡 제목" placeholder="${i + 1}번째 곡 — 제목을 적어 두면 좋아요">
+      <div class="c-meta"></div>
+      <div class="c-times"><label>시작<input type="number" class="st" min="0" step="1"><small>초</small></label>
+        <label>끝<input type="number" class="en" min="1" step="1"><small>초</small></label></div>
+      <button type="button" class="ghost c-play"></button>`;
     row.querySelector(".name").value = p.title || "";
-    row.querySelector(".meta").textContent =
-      `${fmtTime(p.start)}~${fmtTime(p.end)} · ${fmtTime(p.end - p.start)}` + (p.key ? ` · 키 ${p.key}` : "") + (p.tempo ? ` · 약 ${Math.round(p.tempo)} BPM` : "");
+    const meta = row.querySelector(".c-meta");
+    for (const text of [`${fmtTime(p.start)} – ${fmtTime(p.end)}`, `${fmtTime(p.end - p.start)}`,
+      p.key ? `키 ${p.key}` : null, p.tempo ? `${Math.round(p.tempo)} BPM` : null]) {
+      if (!text) continue;
+      const chip = document.createElement("span");
+      chip.textContent = text;
+      meta.appendChild(chip);
+    }
     row.querySelector(".st").value = Math.round(p.start);
     row.querySelector(".en").value = Math.round(p.end);
-    row.querySelector("input[type=checkbox]").addEventListener("change", (e) => { p.on = e.target.checked; renderChooseTimeline(job); });
+    row.querySelector("input[type=checkbox]").addEventListener("change", (e) => {
+      p.on = e.target.checked;
+      row.classList.toggle("off", !p.on);
+      renderChooseTimeline(job);
+    });
     row.querySelector(".name").addEventListener("input", (e) => { p.title = e.target.value; });
     row.querySelector(".st").addEventListener("change", (e) => { p.start = Math.max(0, +e.target.value); renderChoose(job); });
     row.querySelector(".en").addEventListener("change", (e) => { p.end = Math.max(p.start + 5, +e.target.value); renderChoose(job); });
-    row.querySelector("button").addEventListener("click", () => previewSong(i));
+    row.querySelector(".c-play").addEventListener("click", () => previewSong(i));
     box.appendChild(row);
   });
+  updatePreviewButtons();
   $("#c-make").disabled = !state.picks.some((p) => p.on);
+}
+
+function updatePreviewButtons() {
+  const a = state.chooseAudio;
+  const playing = a && !a.paused ? state.previewing : -1;
+  $$("#c-songs .c-play").forEach((b, i) => {
+    b.textContent = i === playing ? "❚❚ 멈춤" : "▶ 들어보기";
+    b.setAttribute("aria-pressed", String(i === playing));
+  });
+  $$("#c-timeline .seg").forEach((el, i) => el.classList.toggle("playing", i === playing));
 }
 
 function renderChooseTimeline(job) {
@@ -1135,30 +1202,83 @@ function renderScorePane() {
   loadSheet();
 }
 
+const FILE_GROUPS = [
+  ["sheet", "악보", "MuseScore·Finale·Sibelius 에서 열어 고칠 수 있어요"],
+  ["pdf", "PDF 악보", "바로 인쇄"],
+  ["chords", "코드표", "찬양팀·밴드 공유용"],
+  ["midi", "MIDI", "DAW·건반으로 다시 연주"],
+  ["source", "원본", ""],
+  ["other", "그 밖의 파일", ""],
+];
+const PART_ORDER = ["full_score", "lead_sheet", "all", "vocals", "backing_vocals", "guitar", "piano", "other", "bass", "drums"];
+
+function partLabel(stem) {
+  return { full_score: "총보 (모든 악기)", lead_sheet: "리드시트 (멜로디·코드·가사)", all: "전체 (모든 악기)" }[stem] ||
+    STEM_LABELS[stem] || stem;
+}
+
+function fileInfo(f) {
+  const base = f.split("/").pop();
+  const ext = (base.includes(".") ? base.split(".").pop() : "").toLowerCase();
+  const stem = base.slice(0, base.length - (ext ? ext.length + 1 : 0));
+  if (["musicxml", "mxl", "xml"].includes(ext)) return { group: "sheet", label: partLabel(stem), type: "MusicXML", stem };
+  if (ext === "pdf") return { group: "pdf", label: partLabel(stem), type: "PDF", stem };
+  if (ext === "mid" || ext === "midi") return { group: "midi", label: partLabel(stem), type: "MIDI", stem };
+  if (base === "chords.txt") return { group: "chords", label: "코드표", type: "TXT", stem: "a" };
+  if (base === "chords_nashville.txt") return { group: "chords", label: "내슈빌 넘버 (1·4·5)", type: "TXT", stem: "b" };
+  if (ext === "chordpro") return { group: "chords", label: "ChordPro (가사+코드 앱)", type: "ChordPro", stem: "c" };
+  return { group: "other", label: base, type: ext.toUpperCase(), stem };
+}
+
+function fileLink(href, info, download, title) {
+  const a = document.createElement("a");
+  a.className = "file";
+  a.href = href;
+  a.download = download;
+  a.title = title;
+  const label = document.createElement("span");
+  label.className = "file-label";
+  label.textContent = info.label;
+  const type = document.createElement("span");
+  type.className = "file-type";
+  type.textContent = info.type;
+  a.append(label, type);
+  return a;
+}
+
 function renderFiles() {
   const r = state.result;
   const job = state.job;
   $("#r-zip").href = `/api/jobs/${job.id}/zip/${r.sheet_dir}`;
-  $("#files").innerHTML = "";
+  const groups = new Map(FILE_GROUPS.map(([id]) => [id, []]));
   for (const [kind, label] of [["video", "원본 영상"], ["audio", "추출한 음성"]]) {
     const name = job.source && job.source[kind];
     if (!name) continue;
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = `/api/jobs/${job.id}/source/${kind}`;
-    a.textContent = `${label} (${name.split(".").pop()})`;
-    a.download = "";
-    li.appendChild(a);
-    $("#files").appendChild(li);
+    groups.get("source").push(fileLink(`/api/jobs/${job.id}/source/${kind}`,
+      { label, type: name.split(".").pop().toUpperCase() }, "", name));
   }
-  for (const f of r.files) {
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = `/api/jobs/${job.id}/files/${r.sheet_dir}/${f}`;
-    a.textContent = f;
-    a.download = f.split("/").pop();
-    li.appendChild(a);
-    $("#files").appendChild(li);
+  const rank = (st) => (PART_ORDER.includes(st) ? PART_ORDER.indexOf(st) : PART_ORDER.length);
+  const infos = r.files.map((f) => ({ f, ...fileInfo(f) }))
+    .sort((x, y) => rank(x.stem) - rank(y.stem) || x.stem.localeCompare(y.stem));
+  for (const it of infos) {
+    groups.get(it.group).push(fileLink(`/api/jobs/${job.id}/files/${r.sheet_dir}/${it.f}`, it, it.f.split("/").pop(), it.f));
+  }
+  const box = $("#files");
+  box.replaceChildren();
+  for (const [id, title, hint] of FILE_GROUPS) {
+    const links = groups.get(id);
+    if (!links.length) continue;
+    const sec = document.createElement("section");
+    sec.className = "file-group";
+    const h = document.createElement("h4");
+    h.textContent = title;
+    if (hint) {
+      const sm = document.createElement("small");
+      sm.textContent = hint;
+      h.append(" ", sm);
+    }
+    sec.append(h, ...links);
+    box.appendChild(sec);
   }
 }
 
@@ -1662,6 +1782,7 @@ function updateDownloads() {
   $("#dl-inst").href = `${base}&kind=inst`;
   $("#dl-mr").classList.toggle("hidden", !stems.includes("vocals"));
   $("#dl-inst").classList.toggle("hidden", !stems.includes("backing_vocals"));
+  $(".dl-sep").classList.toggle("hidden", !(stems.includes("vocals") && stems.includes("backing_vocals")));
   $(".mr-dl").classList.toggle("hidden", !stems.includes("vocals"));
 }
 

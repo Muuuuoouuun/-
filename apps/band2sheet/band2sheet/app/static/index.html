@@ -184,7 +184,7 @@
         </div>
         <div class="actions">
           <a id="x-dl" class="button primary">⬇ 후보정 영상 받기</a>
-          <button id="x-delete" class="ghost danger">삭제</button>
+          <button id="x-delete" class="ghost danger icon-button" aria-label="이 작업 삭제" title="이 작업 삭제"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg></button>
         </div>
       </div>
       <div class="versions" id="x-versions" title="같은 위치에서 바꿔 들으며 비교"></div>
@@ -222,7 +222,7 @@
         </div>
         <div class="card">
           <h3>파일 받기</h3>
-          <ul id="x-files" class="files"></ul>
+          <div id="x-files" class="files"></div>
           <p class="muted small">따로 받은 보컬·화음·반주 트랙과 MIDI 로 다른 편집 프로그램에서 더 다듬을 수 있어요.</p>
         </div>
       </div>
@@ -282,7 +282,7 @@
     <section id="view-choose" class="view hidden">
       <h1 id="c-title"></h1>
       <p class="muted">영상에서 찾은 찬양 구간입니다. 들어 보고 악보로 만들 곡을 고르세요. 시작·끝은 초 단위로 고칠 수 있어요.</p>
-      <div id="c-timeline" class="c-timeline"></div>
+      <div class="c-timeline-wrap"><div id="c-timeline" class="c-timeline" role="group" aria-label="찾은 곡 구간 (누르면 들어보기)"></div><div id="c-axis" class="c-axis" aria-hidden="true"></div></div>
       <div id="c-songs" class="c-songs"></div>
       <div class="c-actions">
         <button id="c-make" class="primary big">선택한 곡 악보 만들기</button>
@@ -398,12 +398,12 @@
           <div id="pb-status" class="hint hidden"></div>
           <div id="mixer"></div>
           <p class="small mr-dl">반주 받기 (MP3, 현재 키):
-            <a id="dl-mr" href="#">MR — 메인 보컬 뺌</a> · <a id="dl-inst" href="#">코러스까지 뺌</a></p>
+            <a id="dl-mr" href="#">MR — 메인 보컬 뺌</a><span class="dl-sep"> · </span><a id="dl-inst" href="#">코러스까지 뺌</a></p>
         </div>
         <div class="card">
           <h3>개별 파일 다운로드</h3>
           <p id="files-stale" class="hint hidden">수정한 내용/현재 키로 파일을 받으려면 <button id="files-refresh">파일 다시 만들기</button></p>
-          <ul id="files" class="files"></ul>
+          <div id="files" class="files"></div>
         </div>
       </div>
       <div class="card bottom" id="sep-card">

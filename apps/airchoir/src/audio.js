@@ -72,7 +72,7 @@ export class ChoirAudio {
     this.recordingContext = null;
     this.outputMuted = false;
     this.dryLevel = 0;
-    this.params = { engine: 'psola', preset: 0, tonic: 0, scale: 'major', lock: true, dryGain: 0, harmGain: 1, windowMs: 40 };
+    this.params = { engine: 'psola', preset: 0, tonic: 0, scale: 'major', lock: true, dryGain: 0, harmGain: 1, windowMs: 40, humanize: 1 };
     this.control = { gain: 0, cutoff: 0, reverb: 0 };
   }
 

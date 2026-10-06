@@ -153,7 +153,7 @@ const Views = (() => {
     if (v.capo) head.push(`기타 카포 ${v.capo.fret} (${esc(v.capo.shape)} 모양)`);
     for (const k of v.key_changes) head.push(`<span class="cs-mod">${k.number}마디부터 ${esc(k.key_short)}</span>`);
     let html = `<div class="cs-title">${esc(v.title)}</div><div class="cs-head">${head.join(" · ")}</div>`;
-    if (v.sections.length) {
+    if (v.sections.length > 1) {
       html += `<div class="cs-flow">${v.sections.map((s) => `<span class="sec-${s.kind}">${esc(s.name_ko)}</span>`).join("")}</div>`;
     }
     const keyChangeAt = new Map(v.key_changes.map((k) => [k.index, k.key_short]));

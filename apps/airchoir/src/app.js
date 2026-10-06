@@ -395,6 +395,11 @@ function bindControls() {
   key.onchange = () => audio.setParams({ tonic: +key.value });
   $('scale').onchange = (e) => audio.setParams({ scale: e.target.value });
   $('lock').onchange = (e) => audio.setParams({ lock: e.target.checked });
+  $('humanize').oninput = (e) => {
+    const v = Math.max(0, Math.min(1, +e.target.value || 0));
+    $('humanize-v').textContent = `${Math.round(v * 100)}%`;
+    audio.setParams({ humanize: v });
+  };
 
   const bpm = $('bpm');
   [70, 80, 90, 100, 110, 120, 130].forEach((b) => bpm.add(new Option(`${b} BPM`, b, b === 90, b === 90)));
@@ -709,7 +714,7 @@ function pausePerformance({ preservePreview = false } = {}) {
 
 function updateProductControls() {
   const chord = performer.state.product === 'chord';
-  for (const id of ['src-mic', 'src-demo', 'src-file', 'dry', 'key', 'scale', 'lock']) $(id).disabled = chord || !sessionActive;
+  for (const id of ['src-mic', 'src-demo', 'src-file', 'dry', 'key', 'scale', 'lock', 'humanize']) $(id).disabled = chord || !sessionActive;
   document.querySelectorAll('[data-engine]').forEach(b => (b.disabled = chord));
   $('source-name').textContent = chord ? '코드 악기 · 마이크 입력 없이 합성' : $('source-name').textContent;
 }
