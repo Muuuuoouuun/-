@@ -66,8 +66,11 @@ function ring(count, labels = null) {
 
 /** UI only: audio ownership, latching and persistence belong to the app callbacks. */
 export class WheelUI {
-  constructor({ host = document.getElementById('performance-controls'), stageHost = document.getElementById('performance-wheels'), config = DEFAULT_CONFIG, ...callbacks } = {}) {
+  constructor({ host = document.getElementById('performance-controls'), stageHost = document.getElementById('performance-wheels'), config = DEFAULT_CONFIG,
+    sensitivity = 'normal', sensitivities = [], ...callbacks } = {}) {
     this.host = host;
+    this.sensitivity = sensitivity;
+    this.sensitivities = sensitivities;
     this.stageHost = stageHost;
     this.callbacks = callbacks;
     this.config = cloneConfig(config);
@@ -117,7 +120,8 @@ export class WheelUI {
     this.inputHint = node('span', 'performance-hint', '손동작은 세션 종료 후 ‘카메라로 코드 연주’로 시작하세요.');
     this.inputHint.id = 'performance-input-hint';
     this.input.setAttribute('aria-describedby', this.inputHint.id);
-    const settings = button('휠 설정', 'wheel-settings', 'quiet');
+    const settings = button('설정', 'wheel-settings', 'quiet');
+    settings.setAttribute('aria-label', '연주 설정: 휠 항목과 손동작 감도');
     settings.setAttribute('aria-haspopup', 'dialog');
     settings.setAttribute('aria-controls', 'wheel-dialog');
     settings.addEventListener('click', () => this.openSettings());
@@ -231,11 +235,35 @@ export class WheelUI {
     this.dialog.setAttribute('aria-labelledby', 'wheel-dialog-title');
     this.dialog.setAttribute('aria-describedby', 'wheel-dialog-description');
     const header = node('div', 'wheel-dialog-header');
-    const title = node('h2', '', '나의 연주 휠'); title.id = 'wheel-dialog-title';
+    const title = node('h2', '', '연주 설정'); title.id = 'wheel-dialog-title';
     const close = button('닫기', 'wheel-close', 'quiet');
-    close.setAttribute('aria-label', '휠 설정 닫기');
+    close.setAttribute('aria-label', '설정 닫기');
     close.addEventListener('click', () => this.closeSettings());
     header.append(title, close);
+
+    // 탭: 연주 휠 · 손동작 감도 (둘 다 '적용'을 눌러야 바뀌고 '취소'로 되돌린다)
+    const tabs = node('div', 'wheel-tabs');
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', '설정 종류');
+    this.tabButtons = {};
+    this.panels = {};
+    for (const [id, label] of [['wheel', '연주 휠'], ['gesture', '손동작 감도']]) {
+      const tab = button(label, `wheel-tab-${id}`, 'wheel-tab');
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', `wheel-panel-${id}`);
+      tab.addEventListener('click', () => this.showTab(id, true));
+      tab.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        this.showTab(id === 'wheel' ? 'gesture' : 'wheel', true);
+      });
+      this.tabButtons[id] = tab;
+      tabs.append(tab);
+    }
+
+    // 연주 휠
+    const wheelPanel = node('section', 'settings-panel');
+    wheelPanel.id = 'wheel-panel-wheel';
     const description = node('p', 'muted', '자주 쓰는 항목을 추가하고 순서를 바꾸세요. 적용 전까지 연주 휠은 바뀌지 않습니다.');
     description.id = 'wheel-dialog-description';
     const group = field('설정할 목록', 'wheel-config-group', Object.entries(GROUPS));
@@ -248,48 +276,121 @@ export class WheelUI {
     this.addButton.addEventListener('click', () => this.addItem());
     this.preview = node('div', 'wheel-preview');
     this.preview.setAttribute('role', 'img');
-    this.error = node('p', 'wheel-config-error');
-    this.error.id = 'wheel-config-error'; this.error.setAttribute('role', 'alert');
-    this.error.setAttribute('aria-live', 'assertive');
-    this.error.hidden = true;
     const editor = node('div', 'wheel-editor');
     const items = node('div', 'wheel-editor-items');
     items.append(group.wrap, this.list, this.addFields, this.addButton);
     const previewWrap = node('aside', 'wheel-preview-wrap');
     previewWrap.append(node('h3', '', '적용 후 미리보기'), this.preview, node('p', 'muted', '위에서 시작해 시계 방향으로 배치됩니다. 중앙 OFF는 항상 유지됩니다.'));
     editor.append(items, previewWrap);
-    const privacy = node('p', 'wheel-storage-note', '이 기기에 목록과 순서만 저장합니다. 이미지·오디오·카메라 영상은 저장하지 않습니다.');
+    const privacy = node('p', 'wheel-storage-note', '이 기기에 목록·순서·감도만 저장합니다. 이미지·오디오·카메라 영상은 저장하지 않습니다.');
+    wheelPanel.append(description, editor, privacy);
+
+    // 손동작 감도
+    const gesturePanel = node('section', 'settings-panel');
+    gesturePanel.id = 'wheel-panel-gesture';
+    const intro = node('p', 'muted', '손가락 개수·핀치·휠 선택을 얼마나 빨리, 얼마나 단단히 판정할지 고르세요. 카메라 영상은 이 기기 안에서만 씁니다.');
+    const group2 = node('div', 'sense-options');
+    group2.setAttribute('role', 'radiogroup');
+    group2.setAttribute('aria-label', '손동작 감도');
+    const meters = { stable: [1, 3], normal: [2, 3], quick: [3, 2] };
+    this.senseInputs = [];
+    for (const item of this.sensitivities) {
+      const card = node('label', 'sense-card');
+      const input = node('input');
+      input.type = 'radio';
+      input.name = 'gesture-sensitivity';
+      input.value = item.id;
+      input.id = `sense-${item.id}`;
+      input.addEventListener('change', () => { if (input.checked) this.draftSensitivity = item.id; });
+      const copy = node('span', 'sense-copy');
+      copy.append(node('strong', 'sense-title', item.label + (item.id === 'normal' ? ' (권장)' : '')), node('span', 'sense-desc', item.description || ''));
+      const [speed, steady] = meters[item.id] || [2, 2];
+      const meter = node('span', 'sense-meters');
+      meter.setAttribute('aria-hidden', 'true');
+      for (const [name, value] of [['반응', speed], ['흔들림 방지', steady]]) {
+        const row = node('span', 'sense-meter');
+        row.append(node('small', '', name));
+        const bar = node('span', 'sense-bar');
+        for (let i = 0; i < 3; i++) bar.append(node('i', i < value ? 'on' : ''));
+        row.append(bar);
+        meter.append(row);
+      }
+      card.append(input, copy, meter);
+      group2.append(card);
+      this.senseInputs.push(input);
+    }
+    const tip = node('p', 'wheel-storage-note', '팁: 손을 카메라에서 50cm~1m 거리에, 밝은 곳에서 손바닥이 보이게 들면 어느 감도에서나 판정이 정확해져요.');
+    gesturePanel.append(intro, group2, tip);
+    for (const [id, panel] of [['wheel', wheelPanel], ['gesture', gesturePanel]]) {
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', `wheel-tab-${id}`);
+      this.panels[id] = panel;
+    }
+
+    const body = node('div', 'wheel-dialog-body');
+    body.append(wheelPanel, gesturePanel);
+    this.body = body;
+    this.error = node('p', 'wheel-config-error');
+    this.error.id = 'wheel-config-error'; this.error.setAttribute('role', 'alert');
+    this.error.setAttribute('aria-live', 'assertive');
+    this.error.hidden = true;
     const footer = node('div', 'wheel-dialog-footer');
     const defaults = button('기본 목록 복원', 'wheel-defaults', 'quiet');
     defaults.addEventListener('click', () => { this.draft = cloneConfig(DEFAULT_CONFIG); this.editError = ''; this.renderEditor(); });
+    this.defaultsButton = defaults;
     const cancel = button('취소', 'wheel-cancel', 'quiet');
     cancel.addEventListener('click', () => this.closeSettings());
     this.apply = button('적용', 'wheel-apply', 'primary');
     this.apply.addEventListener('click', () => this.applySettings());
     const actions = node('div', 'row'); actions.append(cancel, this.apply);
     footer.append(defaults, actions);
-    this.dialog.append(header, description, editor, this.error, privacy, footer);
+    this.dialog.append(header, tabs, body, this.error, footer);
     this.dialog.addEventListener('cancel', (e) => { e.preventDefault(); this.closeSettings(); });
     this.dialog.addEventListener('keydown', (e) => e.stopPropagation());
     document.body.append(this.dialog);
+    this.showTab('wheel');
   }
 
-  openSettings() {
+  showTab(id, focus = false) {
+    if (!this.panels?.[id]) return;
+    this.tab = id;
+    for (const [key, panel] of Object.entries(this.panels)) {
+      const on = key === id;
+      panel.hidden = !on;
+      this.tabButtons[key].setAttribute('aria-selected', String(on));
+      this.tabButtons[key].tabIndex = on ? 0 : -1;
+    }
+    this.defaultsButton && (this.defaultsButton.hidden = id !== 'wheel');
+    this.body && (this.body.scrollTop = 0);
+    if (focus) this.tabButtons[id].focus();
+  }
+
+  setSensitivity(value) {
+    this.sensitivity = value;
+    if (!this.dialog.open) this.draftSensitivity = value;
+  }
+
+  openSettings(tab = 'wheel') {
     if (this.dialog.open) return;
     this.returnFocus = document.activeElement;
     this.call('onSettingsOpen');
     this.draft = cloneConfig(this.config);
+    this.draftSensitivity = this.sensitivity;
+    for (const input of this.senseInputs) input.checked = input.value === this.sensitivity;
     this.editError = '';
     this.groupSelect.value = 'chords';
     this.renderEditor();
+    this.showTab(tab === 'gesture' ? 'gesture' : 'wheel');
     this.dialog.showModal();
-    this.groupSelect.focus();
+    if (this.tab === 'gesture') this.senseInputs.find((i) => i.checked)?.focus();
+    else this.groupSelect.focus();
   }
 
   closeSettings() {
     if (this.saving) return;
     this.dialog.close();
     this.draft = null;
+    this.draftSensitivity = this.sensitivity;
     if (this.returnFocus?.isConnected) this.returnFocus.focus();
   }
 
@@ -374,6 +475,10 @@ export class WheelUI {
     try {
       await this.call('onApply', cloneConfig(result.value));
       this.config = cloneConfig(result.value);
+      if (this.draftSensitivity && this.draftSensitivity !== this.sensitivity) {
+        await this.call('onSensitivity', this.draftSensitivity);
+        this.sensitivity = this.draftSensitivity;
+      }
       this.saving = false;
       this.closeSettings();
       this.render({ config: this.config });

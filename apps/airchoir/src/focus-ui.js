@@ -38,6 +38,14 @@ export class FocusUI {
     this.buildIndicator();
     this.buildResult();
     this.enterButton.addEventListener('click', () => this.call('onEnter'), { signal: this.listeners.signal });
+    // R: 녹화 시작/정지 (한글 입력 상태에서도 같은 자리 키). 입력 칸·대화상자에서는 쓰지 않는다.
+    window.addEventListener('keydown', (event) => {
+      if (!this._active || event.code !== 'KeyR' || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (document.querySelector('dialog[open]') || event.target?.closest?.('input,select,textarea,[contenteditable=true]')) return;
+      if (this.record.disabled) return;
+      event.preventDefault();
+      this.record.click();
+    }, { signal: this.listeners.signal });
     this.resize = new ResizeObserver(() => this.measureToolbar());
     this.resize.observe(this.toolbar);
     this.render();
@@ -50,12 +58,16 @@ export class FocusUI {
   buildToolbar() {
     const identity = element('div', 'focus-identity');
     this.title = element('strong', '', '집중 연주');
+    // 녹화 중 표시: 깜빡이는 점 + '녹화 중' + 경과 시간을 한 덩어리로
+    this.recPill = element('span', 'focus-rec-pill');
+    this.recPill.hidden = true;
     this.liveMarker = element('span', 'focus-live-marker', '녹화 중');
     this.liveMarker.hidden = true;
     this.time = element('time', 'focus-time', '00:00');
     this.time.id = 'focus-time'; this.time.setAttribute('aria-label', '영상 녹화 경과 시간');
     this.time.setAttribute('role', 'timer'); this.time.setAttribute('aria-live', 'off');
-    identity.append(this.title, this.liveMarker, this.time);
+    this.recPill.append(this.liveMarker, this.time);
+    identity.append(this.title, this.recPill);
     this.status = element('p', 'focus-status');
     this.status.id = 'focus-status'; this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
@@ -72,13 +84,21 @@ export class FocusUI {
     const exit = button('focus-exit', '작업 화면', 'quiet', '작업 화면으로 돌아가기');
     exit.setAttribute('aria-keyshortcuts', 'Escape');
     exit.addEventListener('click', () => this.call('onExit'));
-    this.record = button('focus-record', '녹화 시작', 'focus-record-button', '영상 녹화 시작');
+    this.record = button('focus-record', '', 'focus-record-button', '영상 녹화 시작');
+    this.recordLabel = element('span', 'focus-record-label', '녹화 시작');
+    this.record.append(element('span', 'focus-record-dot'), this.recordLabel, element('kbd', 'focus-record-key', 'R'));
+    this.record.setAttribute('aria-keyshortcuts', 'R');
     this.record.setAttribute('aria-describedby', 'focus-record-scope focus-record-hint');
     this.record.addEventListener('click', () => this.call(this.state.recording ? 'onRecordStop' : 'onRecordStart'));
     this.fullscreen = button('focus-fullscreen', '전체 화면', 'quiet', '전체 화면 전환');
     this.fullscreen.addEventListener('click', () => this.call('onFullscreen'));
-    actions.append(settings, stop, exit, this.record, this.fullscreen);
-    const scope = element('p', 'focus-capture-note', '카메라·현재 위젯 + 앱 소리(루프·클릭 포함). 버튼을 눌러 시작하며 서버로 전송하지 않습니다.');
+    // 자주 안 쓰는 것(설정·전체 화면·작업 화면)은 앞에 작게, 정지·녹화는 끝에 크게
+    const secondary = element('div', 'focus-secondary-actions');
+    secondary.append(settings, this.fullscreen, exit);
+    const primary = element('div', 'focus-primary-actions');
+    primary.append(stop, this.record);
+    actions.append(secondary, primary);
+    const scope = element('p', 'focus-capture-note', '카메라 + 화면 속 휠 + 앱 소리를 이 기기에서만 녹화해요. 서버로 보내지 않아요.');
     scope.id = 'focus-record-scope';
     this.recordHint = element('p', 'focus-record-hint'); this.recordHint.id = 'focus-record-hint';
     this.recordHint.hidden = true;
@@ -179,7 +199,10 @@ export class FocusUI {
     setText(this.performanceStatus, this.state.performanceStatus ? `연주 · ${this.state.performanceStatus}` : '');
     this.enterButton.disabled = !ready;
     this.liveMarker.hidden = !recording && !stopping;
+    this.recPill.hidden = !recording && !stopping;
+    this.recPill.dataset.stopping = String(stopping);
     setText(this.liveMarker, stopping ? '마무리 중' : '녹화 중');
+    document.body.dataset.recording = recording ? 'on' : stopping ? 'stopping' : 'off';
     this.toolbar.dataset.recording = String(recording);
     this.toolbar.dataset.stopping = String(stopping);
     this.record.dataset.recording = String(recording);
@@ -189,7 +212,7 @@ export class FocusUI {
     setText(this.status, message);
     this.status.classList.toggle('error', Boolean(recordingError));
     setText(this.workspaceStatus, message);
-    setText(this.record, stopping ? '마무리 중…' : recording ? '녹화 정지' : '녹화 시작');
+    setText(this.recordLabel, stopping ? '마무리 중…' : recording ? '녹화 정지' : '녹화 시작');
     this.record.setAttribute('aria-label', stopping ? '영상 녹화 마무리 중' : recording ? '영상 녹화 정지' : '영상 녹화 시작');
     this.record.disabled = stopping || (!recording && (!ready || !canRecord || Boolean(result)));
     const hint = result ? '기존 영상을 저장하고 버린 뒤 새로 녹화할 수 있어요.' : !canRecord ? '지금은 영상을 녹화할 수 없어요. 상태 안내를 확인하세요.' : '';
@@ -240,6 +263,7 @@ export class FocusUI {
     this.resize.disconnect(); this.listeners.abort();
     this.video.pause(); this.video.removeAttribute('src'); this.video.load();
     this.toolbar.replaceChildren(); this.toolbar.hidden = true;
+    delete document.body.dataset.recording;
     this.indicator.replaceChildren(); this.indicator.hidden = true;
     this.resultPanel.replaceChildren(); this.resultPanel.hidden = true;
     document.body.style.removeProperty('--focus-toolbar-height');

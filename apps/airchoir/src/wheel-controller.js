@@ -1,3 +1,5 @@
+import { OneEuro } from './gestures.js';
+
 // Camera-independent wheel selection. The caller supplies mirrored, aspect-correct
 // Euclidean coordinates (for example x * stageAspect, y). This module never
 // transforms coordinates, opens devices, or starts audio.
@@ -43,15 +45,66 @@ function handLabel(hand) {
  * jitter holds the previous pair. OFF, hand loss and invalid input stop at once.
  * Ambiguous tracking latches OFF until all hands leave or reset() is called.
  * Optional aspect is configuration metadata only; coordinates are already scaled.
+ *
+ * Options (all off by default, so the contract above is unchanged):
+ * - hysteresis (0~0.3): a committed sector stays selected until the hand moves this
+ *   fraction of a sector past its edge, and the OFF disk / outer edge move inward /
+ *   outward by a matching margin. Tracking jitter on a boundary then neither switches
+ *   chords nor cuts the sound. New selections still use the exact geometry.
+ * - smoothing ({ minCutoff, beta }): One Euro filter on each tracked palm.
  */
 export class WheelController {
-  constructor({ dwellMs = 150, lostMs = 250 } = {}) {
-    this.dwellMs = Number.isFinite(dwellMs) && dwellMs >= 0 ? dwellMs : 150;
-    this.lostMs = Number.isFinite(lostMs) && lostMs > 0 ? lostMs : 250;
+  constructor({ dwellMs = 150, lostMs = 250, hysteresis = 0, smoothing = null } = {}) {
+    this.dwellMs = 150;
+    this.lostMs = 250;
+    this.hysteresis = 0;
+    this.smoothing = null;
+    this._filters = [];
+    this.setOptions({ dwellMs, lostMs, hysteresis, smoothing });
     this.config = null;
     this._signature = null;
     this._count = 1;
     this.reset();
+  }
+
+  setOptions({ dwellMs, lostMs, hysteresis, smoothing } = {}) {
+    if (Number.isFinite(dwellMs) && dwellMs >= 0) this.dwellMs = dwellMs;
+    if (Number.isFinite(lostMs) && lostMs > 0) this.lostMs = lostMs;
+    if (Number.isFinite(hysteresis)) this.hysteresis = Math.max(0, Math.min(0.3, hysteresis));
+    if (smoothing !== undefined) {
+      this.smoothing = smoothing && Number.isFinite(smoothing.minCutoff) && smoothing.minCutoff > 0
+        ? { minCutoff: smoothing.minCutoff, beta: Number.isFinite(smoothing.beta) ? smoothing.beta : 0 } : null;
+      this._filters = [];
+    }
+  }
+
+  // Palm smoothing per tracked role; restarted whenever roles are forgotten.
+  _smooth(i, palm, now) {
+    if (!this.smoothing) return copyPoint(palm);
+    if (!this._filters[i]) this._filters[i] = { x: new OneEuro(this.smoothing), y: new OneEuro(this.smoothing) };
+    return { x: this._filters[i].x.filter(palm.x, now), y: this._filters[i].y.filter(palm.y, now) };
+  }
+
+  // Exact hit for new selections; with hysteresis a committed sector extends past its edges.
+  _hit(point, i) {
+    const center = this.config.centers[i];
+    const count = this.config.counts[i];
+    const radius = this.config.radius;
+    const held = this._indices[i];
+    const h = this.hysteresis;
+    if (!(h > 0) || held === null || held === undefined) return wheelHit(point, center, radius, count);
+    const inner = (25 / 48) * (1 - h * 0.5);
+    const outer = 1.06 + h * 0.5;
+    const loose = wheelHit(point, center, radius, count, { innerRatio: inner, outerRatio: outer });
+    if (loose === null) return null;
+    if (loose === held) return held;
+    // Angular distance from the held sector's center, in sector widths.
+    const angle = Math.atan2(point.y - center.y, point.x - center.x) + Math.PI / 2;
+    const heldCenter = held * TAU / count;
+    let d = Math.abs(((angle - heldCenter) % TAU + TAU) % TAU);
+    if (d > Math.PI) d = TAU - d;
+    if (d <= (0.5 + h) * TAU / count) return held;
+    return wheelHit(point, center, radius, count);
   }
 
   configure(input = {}) {
@@ -95,6 +148,7 @@ export class WheelController {
     this._candidateSince = null;
     this._points = Array(this._count).fill(null);
     this._roles = null;
+    this._filters = [];
     this._blocked = false;
     this._lastFrame = null;
     this._lastTime = null;
@@ -107,7 +161,10 @@ export class WheelController {
     this._candidate = null;
     this._candidateSince = null;
     this._points = points ?? Array(this._count).fill(null);
-    if (forgetRoles) this._roles = null;
+    if (forgetRoles) {
+      this._roles = null;
+      this._filters = [];
+    }
     this._reason = reason;
     return this.state();
   }
@@ -198,8 +255,8 @@ export class WheelController {
     this._roles = assigned.map((hand, i) => ({
       palm: copyPoint(hand.palm), label: hand.label ?? this._roles?.[i]?.label ?? null,
     }));
-    this._points = assigned.map((hand) => copyPoint(hand.palm));
-    const candidate = assigned.map((hand, i) => wheelHit(hand.palm, this.config.centers[i], this.config.radius, this.config.counts[i]));
+    this._points = assigned.map((hand, i) => this._smooth(i, hand.palm, now));
+    const candidate = this._points.map((point, i) => this._hit(point, i));
     if (candidate.some((index) => index === null)) {
       return this._stop('off', { forgetRoles: false, points: this._points });
     }

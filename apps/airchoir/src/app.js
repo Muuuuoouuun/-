@@ -1,5 +1,5 @@
 import { PRESETS, NOTE_NAMES, midiName } from '../core/dsp.js';
-import { analyzeHand, GestureTracker } from './gestures.js';
+import { analyzeHand, GestureTracker, SENSITIVITY, loadSensitivity, saveSensitivity } from './gestures.js';
 import { HandCamera } from './hands.js';
 import { ChoirAudio } from './audio.js';
 import { drawStage, coverMapper } from './stage.js';
@@ -34,8 +34,27 @@ const motionPreference = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 let audio = new ChoirAudio();
 const cam = new HandCamera($('video'));
-let tracker = new GestureTracker();
+let appStorage = null;
+try { appStorage = window.localStorage; } catch { appStorage = null; }
+let sensitivity = loadSensitivity(appStorage);
+const makeTracker = () => new GestureTracker(SENSITIVITY[sensitivity].tracker);
+let tracker = makeTracker();
 let gesture = tracker.state();
+// 화면이 세션 단계에 맞춰 배치를 바꿀 수 있게 (좁은 화면에서는 시작 안내를 맨 위에)
+const setSessionPhase = (phase) => { document.body.dataset.session = phase; };
+setSessionPhase('idle');
+
+// 손동작 감도: 이 기기에 저장하고, 추적기·휠에 바로 적용 (진행 중인 손 상태는 새로 시작)
+function applySensitivity(value) {
+  if (!Object.hasOwn(SENSITIVITY, value)) return false;
+  sensitivity = value;
+  const saved = saveSensitivity(appStorage, value);
+  tracker = makeTracker();
+  gesture = tracker.state();
+  if (window.airchoir) window.airchoir.tracker = tracker;
+  performer?.setSensitivity(value);
+  return saved;
+}
 let stats = null;
 let history = [];
 let mode = null; // 'camera' | 'pointer'
@@ -213,6 +232,7 @@ async function start(kind) {
   if (starting || sessionActive) return;
   const request = ++startupRequest;
   starting = true;
+  setSessionPhase('starting');
   $('start-intro').hidden = true;
   $('start-busy').hidden = false;
   $('session-end').disabled = false;
@@ -234,6 +254,7 @@ async function start(kind) {
   if (request !== startupRequest) return;
   if (!ok) {
     starting = false;
+    setSessionPhase('idle');
     $('start-intro').hidden = false;
     $('start-busy').hidden = true;
     $('session-end').disabled = true;
@@ -245,6 +266,7 @@ async function start(kind) {
   if (request !== startupRequest) return;
   starting = false;
   sessionActive = true;
+  setSessionPhase('active');
   $('start').hidden = true;
   audio.setOutputMuted(false);
   performer.sessionStarted();
@@ -265,6 +287,7 @@ function stopSession({ focus = true } = {}) {
   startupRequest++;
   soundRequest++;
   starting = sessionActive = manualRecording = false;
+  setSessionPhase('idle');
   station.clear();
   station.prev = { pinch: false, fist: false };
   station.lastNow = null;
@@ -278,7 +301,7 @@ function stopSession({ focus = true } = {}) {
   audio.setParams({ ...oldAudio.params });
   audio.setProduct(performer?.state.product || 'choir');
   watchAudio(audio);
-  tracker = new GestureTracker();
+  tracker = makeTracker();
   gesture = tracker.state();
   window.airchoir.audio = audio;
   window.airchoir.tracker = tracker;
@@ -772,6 +795,8 @@ function replayCoach() {
 }
 
 performer = new Performance({
+  sensitivity,
+  onSensitivity: value => applySensitivity(value),
   getAudio: () => audio,
   isReady: () => sessionActive && audio.ready,
   hasCamera: () => mode === 'camera',

@@ -1,5 +1,6 @@
 import { chordLabel, chordNotes, cloneConfig, loadConfig, saveConfig, validateConfig } from '../core/chords.js';
 import { WheelController } from './wheel-controller.js';
+import { SENSITIVITY, DEFAULT_SENSITIVITY } from './gestures.js';
 import { WheelUI } from './wheel-ui.js';
 
 const emptySelection = () => ({ chord: null, root: null, quality: null, choir: null });
@@ -8,7 +9,8 @@ const quietGesture = () => ({ present: false, fist: true, pinch: false, preset: 
 // Product, hand count and input ownership are separate from the media session.
 // Only wheel lists are persisted; live notes, streams and device choices are not.
 export class Performance {
-  constructor({ getAudio, isReady, hasCamera, onTransition, onStop, onInterrupt, notify }) {
+  constructor({ getAudio, isReady, hasCamera, onTransition, onStop, onInterrupt, notify,
+    sensitivity = DEFAULT_SENSITIVITY, onSensitivity = null }) {
     this.getAudio = getAudio; this.isReady = isReady; this.onTransition = onTransition;
     this.hasCamera = hasCamera;
     this.onInterrupt = onInterrupt;
@@ -19,10 +21,15 @@ export class Performance {
     const loaded = loadConfig(storage);
     this.state = { product: 'choir', hands: 'one', input: 'hands', config: loaded.config,
       current: emptySelection(), armed: false, status: '콰이어 · 손가락으로 화음을 지휘하세요.' };
-    this.controller = new WheelController();
+    this.sensitivity = Object.hasOwn(SENSITIVITY, sensitivity) ? sensitivity : DEFAULT_SENSITIVITY;
+    this.onSensitivity = onSensitivity;
+    this.controller = new WheelController(SENSITIVITY[this.sensitivity].wheel);
     this.blocked = false;
     this.lastCameraFrame = -Infinity;
     this.ui = new WheelUI({ config: this.state.config,
+      sensitivity: this.sensitivity,
+      sensitivities: Object.entries(SENSITIVITY).map(([id, v]) => ({ id, label: v.label, description: v.description })),
+      onSensitivity: value => (this.onSensitivity ? this.onSensitivity(value) : this.setSensitivity(value)),
       onProduct: value => this.change('product', value),
       onHands: value => this.change('hands', value),
       onInput: value => this.change('input', value),
@@ -37,6 +44,15 @@ export class Performance {
     if (loaded.notice) this.notify(loaded.notice);
   }
 
+  // 휠 판정 감도 (손동작 추적기 쪽은 앱이 맡는다)
+  setSensitivity(value) {
+    if (!Object.hasOwn(SENSITIVITY, value)) return;
+    this.sensitivity = value;
+    this.controller.setOptions(SENSITIVITY[value].wheel);
+    this.controller.reset();
+    this.ui.setSensitivity?.(value);
+  }
+
   get legacy() { return this.state.product === 'choir' && this.state.input === 'hands'; }
   get settingsOpen() { return !!this.ui.settingsOpen; }
 
@@ -44,9 +60,18 @@ export class Performance {
     this.ui.render({ ...this.state, ready: this.isReady(), cameraAvailable: this.hasCamera() });
     document.getElementById('stage').dataset.product = this.state.product;
     const chord = this.state.product === 'chord';
-    document.getElementById('start-pointer').textContent = chord ? '코드 악기로 시작' : '데모로 시작';
+    // 시작 카드: 제목과 한 줄 설명만 바꾼다 (아이콘·구조는 그대로)
+    const setChoice = (id, title, desc) => {
+      const el = document.getElementById(id);
+      const t = el.querySelector('.choice-title');
+      const d = el.querySelector('.choice-desc');
+      if (t) { t.textContent = title; if (d) d.textContent = desc; } else el.textContent = title;
+    };
+    setChoice('start-pointer', chord ? '코드 악기로 시작' : '데모로 바로 시작',
+      chord ? '권한 없이 · 휠을 누르거나 숫자 키로 코드를 연주해요' : '권한 없이 · 마우스와 키보드로 화음과 오브를 만들어요');
     document.getElementById('start-mic').hidden = chord;
-    document.getElementById('start-demo').textContent = chord ? '카메라로 코드 연주' : '데모 + 카메라로 손동작 체험';
+    setChoice('start-demo', chord ? '카메라로 코드 연주' : '손동작 체험',
+      chord ? '카메라 · 휠 위에 손을 올려 코드를 골라요' : '데모 노래 + 카메라 · 손가락 개수로 화음을 지휘해요');
   }
 
   stop(message = '연주 정지', all = false, options = {}) {
