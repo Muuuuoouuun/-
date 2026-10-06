@@ -33,6 +33,8 @@ try {
     return route.fulfill({ body: '', contentType: 'text/css' });
   });
   await page.addInitScript(() => {
+    // The first-run coach has its own check (coach.check.mjs); keep this stage clear.
+    localStorage.setItem('airchoir.coach.v1', 'dismissed');
     navigator.mediaDevices.getUserMedia = async () => { throw new Error('Device access forbidden in offline check'); };
   });
   await page.goto(base);
