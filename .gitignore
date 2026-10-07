@@ -8,3 +8,11 @@ output/
 *.wav
 *.mp3
 *.mid
+node_modules/
+.cache/
+.data/
+build/
+dist/
+screenshot-*.png
+.DS_Store
+apps/airchoir/test/.cache/

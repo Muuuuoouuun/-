@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ko">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1" name="viewport"/>
+  <meta content="#141615" name="theme-color"/>
+  <title>
+   AirChoir · 오브 스튜디오
+  </title>
+  <link href="src/style.css" rel="stylesheet"/>
+ </head>
+ <body>
+  <section aria-label="집중 연주 조작" class="focus-toolbar" hidden="" id="focus-toolbar">
+  </section>
+  <div class="wrap">
+   <header class="app-header">
+    <div class="brand">
+     <h1>
+      AirChoir
+     </h1>
+     <div class="brand-copy">
+      <p class="eyebrow">
+       목소리 · 화음 · 루프
+      </p>
+      <strong>
+       목소리로 만들고, 손으로 쌓으세요.
+      </strong>
+     </div>
+    </div>
+    <div class="header-actions">
+     <button class="focus-entry" disabled="" id="focus-enter" type="button">
+      집중 연주
+     </button>
+     <div aria-live="polite" class="status">
+      <span class="st" data-state="off" id="st-audio">
+       소리 꺼짐
+      </span>
+      <span class="st" data-state="off" id="st-cam">
+       시작 전
+      </span>
+     </div>
+     <button class="quiet session-end" disabled="" id="session-end">
+      세션 종료
+     </button>
+    </div>
+   </header>
+   <div aria-live="polite" class="notice" hidden="" id="notice" role="status">
+   </div>
+   <section aria-label="영상 녹화 상태" class="focus-recording-indicator" hidden="" id="focus-recording-indicator">
+   </section>
+   <main class="main">
+    <section aria-label="연주 모드" class="performance-controls" id="performance-controls">
+    </section>
+    <section aria-label="녹음과 박자" class="transport">
+     <div class="record-actions">
+      <button aria-keyshortcuts="Space" class="record-btn" disabled="" id="record-toggle">
+       <span aria-hidden="true" class="record-dot">
+       </span>
+       <span id="record-label">
+        녹음 시작
+       </span>
+      </button>
+      <button aria-keyshortcuts="Escape" class="quiet" hidden="" id="record-cancel">
+       취소
+      </button>
+     </div>
+     <div aria-live="polite" class="transport-status orb-status" id="hud-orb" role="status">
+      <strong id="hud-orb-text">
+       시작할 준비가 됐어요
+      </strong>
+      <p id="record-detail">
+       데모나 마이크로 세션을 시작하세요.
+      </p>
+     </div>
+     <div class="tempo">
+      <div class="tempo-field">
+       <label class="label" for="bpm">
+        BPM
+       </label>
+       <select aria-label="빠르기" id="bpm">
+       </select>
+      </div>
+      <div>
+       <div aria-hidden="true" class="beat" id="hud-beat">
+        <i>
+        </i>
+        <i>
+        </i>
+        <i>
+        </i>
+        <i>
+        </i>
+       </div>
+       <span class="sr-only" id="hud-bpm">
+        90
+       </span>
+      </div>
+      <label class="check">
+       <input id="metronome" type="checkbox"/>
+       클릭
+      </label>
+      <span class="bpm-lock" hidden="" id="bpm-lock">
+       녹음·루프 중 BPM 고정
+      </span>
+     </div>
+    </section>
+    <section aria-describedby="stage-keyboard-help" aria-label="오브 연주 무대" class="stage" id="stage" tabindex="0">
+     <video hidden="" id="video" muted="" playsinline="">
+     </video>
+     <canvas aria-hidden="true" id="overlay">
+     </canvas>
+     <div class="performance-wheels" hidden="" id="performance-wheels">
+     </div>
+     <div class="hud">
+      <div class="hud-card">
+       <small>
+        입력 음
+       </small>
+       <div class="hud-note off" id="hud-note">
+        —
+       </div>
+      </div>
+      <div class="hud-card">
+       <small>
+        화음
+       </small>
+       <div class="hud-chips" id="hud-chips">
+        <span class="chip idle">
+         시작 전
+        </span>
+       </div>
+      </div>
+      <div class="hud-card">
+       <small>
+        제스처
+       </small>
+       <div class="hud-preset" id="hud-preset">
+        —
+       </div>
+      </div>
+     </div>
+     <div class="stage-empty" hidden="" id="stage-empty">
+      <div aria-hidden="true" class="empty-orb">
+      </div>
+      <strong>
+       첫 번째 오브를 만들어 보세요
+      </strong>
+      <p>
+       녹음 시작 또는
+       <kbd>
+        Space
+       </kbd>
+       . 무대 위에서 누르고 있어도 녹음할 수 있어요.
+      </p>
+     </div>
+     <section aria-label="처음 안내" class="coach" hidden="" id="coach">
+     </section>
+     <div class="start" id="start">
+      <div class="start-card" id="start-intro">
+       <p class="eyebrow">
+        한 목소리, 여섯 개의 오브
+       </p>
+       <h2>
+        목소리 하나에서
+        <br/>
+        나만의 합창으로.
+       </h2>
+       <p>
+        노래에 화음을 더하고, 짧게 녹음한 소리를 오브로 쌓아 보세요. 준비물이 없다면 데모로 시작하세요.
+       </p>
+       <div class="start-choices" role="group" aria-label="시작 방법">
+        <button class="start-choice primary" id="start-pointer" type="button">
+         <svg aria-hidden="true" class="choice-icon" viewBox="0 0 24 24"><path d="M5 3l14 8-6 1.6L10 19z"/></svg>
+         <span class="choice-copy"><strong class="choice-title">데모로 바로 시작</strong><small class="choice-desc">권한 없이 · 마우스와 키보드로 화음과 오브를 만들어요</small></span>
+        </button>
+        <button class="start-choice" id="start-mic" type="button">
+         <svg aria-hidden="true" class="choice-icon" viewBox="0 0 24 24"><rect height="11" rx="3.5" width="7" x="8.5" y="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"/></svg>
+         <span class="choice-copy"><strong class="choice-title">내 목소리로</strong><small class="choice-desc">마이크 + 카메라 · 이어폰을 끼고 '아~' 하고 불러 보세요</small></span>
+        </button>
+        <button class="start-choice" id="start-demo" type="button">
+         <svg aria-hidden="true" class="choice-icon" viewBox="0 0 24 24"><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-6.5V4a1.5 1.5 0 0 1 3 0v7m0-5.5a1.5 1.5 0 0 1 3 0V13a7 7 0 0 1-7 7h-.5A5.5 5.5 0 0 1 5 16.5L3.8 13a1.5 1.5 0 0 1 2.7-1.2L8 14"/></svg>
+         <span class="choice-copy"><strong class="choice-title">손동작 체험</strong><small class="choice-desc">데모 노래 + 카메라 · 손가락 개수로 화음을 지휘해요</small></span>
+        </button>
+       </div>
+       <p class="privacy">
+        데모는 권한 없이 · 마이크는 이어폰 권장 · 녹음은 이 기기 안에서
+       </p>
+      </div>
+      <div class="start-busy" hidden="" id="start-busy">
+       <span class="busy-label">
+        세션 준비 중
+       </span>
+       <h2>
+        입력을 준비하고 있어요
+       </h2>
+       <p id="start-progress" role="status">
+        오디오를 연결하는 중입니다.
+       </p>
+       <button class="quiet" id="start-cancel">
+        시작 취소
+       </button>
+      </div>
+     </div>
+    </section>
+    <section aria-labelledby="loops-title" class="loops">
+     <div class="section-head">
+      <div class="row">
+       <h2 id="loops-title">
+        루프 오브
+       </h2>
+       <span class="data" id="orb-count">
+        0 / 6
+       </span>
+      </div>
+      <button class="quiet" disabled="" id="clear-orbs">
+       모두 지우기
+      </button>
+     </div>
+     <p class="loop-empty" id="loop-empty">
+      녹음이 끝나면 이곳에서 오브를 선택하고 조절할 수 있어요.
+     </p>
+     <div aria-label="오브 선택" class="loop-list" id="loop-list" role="group">
+     </div>
+     <div class="loop-actions" hidden="" id="loop-actions">
+      <p id="selected-orb-name">
+       오브를 선택하세요
+      </p>
+      <div class="row">
+       <button hidden="" id="orb-place">
+        내려놓기
+       </button>
+       <button aria-pressed="false" id="orb-mute">
+        음소거
+       </button>
+       <button class="quiet" id="orb-delete">
+        삭제
+       </button>
+      </div>
+     </div>
+    </section>
+    <aside aria-label="입력과 화음 설정" class="side">
+     <section class="panel" id="input-panel">
+      <div class="section-head">
+       <h2>
+        소리 입력
+       </h2>
+      </div>
+      <div aria-label="소리 입력" class="source-row" role="group">
+       <button aria-pressed="false" disabled="" id="src-mic" type="button">
+        마이크
+       </button>
+       <button aria-pressed="false" disabled="" id="src-demo" type="button">
+        데모
+       </button>
+       <label class="file-btn" id="src-file-label">
+        파일 열기
+        <input accept="audio/*,video/*" aria-label="오디오 파일 열기" disabled="" id="src-file" type="file"/>
+       </label>
+      </div>
+      <p class="source-name" id="source-name">
+       세션을 시작하면 입력을 바꿀 수 있어요.
+      </p>
+      <div class="slider">
+       <label for="dry">
+        입력 모니터
+       </label>
+       <output for="dry" id="dry-v">
+        0.00
+       </output>
+       <input id="dry" max="1" min="0" step="0.05" type="range" value="0"/>
+      </div>
+      <p class="muted">
+       마이크는 이어폰으로 들어 주세요. 모니터를 낮춰도 목소리는 녹음됩니다.
+      </p>
+     </section>
+     <section class="panel">
+      <div class="section-head">
+       <h2>
+        화음
+       </h2>
+      </div>
+      <div class="setting-row">
+       <label>
+        기준 키
+        <select aria-label="키" id="key">
+        </select>
+       </label>
+       <label>
+        스케일
+        <select aria-label="장조 또는 단조" id="scale">
+         <option value="major">
+          장조
+         </option>
+         <option value="minor">
+          단조
+         </option>
+        </select>
+       </label>
+      </div>
+      <div>
+       <p class="label" style="margin-bottom:8px">
+        엔진
+       </p>
+       <div aria-label="화음 엔진" class="seg" role="group">
+        <button aria-pressed="false" data-engine="granular" type="button">
+         그레인
+         <kbd>
+          Q
+         </kbd>
+        </button>
+        <button aria-pressed="true" data-engine="psola" type="button">
+         PSOLA
+         <kbd>
+          W
+         </kbd>
+        </button>
+        <button aria-pressed="false" data-engine="synth" type="button">
+         합성
+         <kbd>
+          E
+         </kbd>
+        </button>
+       </div>
+      </div>
+      <label class="check">
+       <input checked="" id="lock" type="checkbox"/>
+       스케일 음에 화음 고정
+      </label>
+      <div class="slider">
+       <label for="humanize">
+        사람다운 합창
+       </label>
+       <output for="humanize" id="humanize-v">
+        100%
+       </output>
+       <input aria-describedby="humanize-help" id="humanize" max="1" min="0" step="0.05" type="range" value="1"/>
+      </div>
+      <p class="muted" id="humanize-help">
+       성부마다 음정·들어오는 순간이 조금씩 달라 여러 사람이 부르는 느낌. 0%는 기계처럼 딱 맞춤.
+      </p>
+     </section>
+     <section class="panel">
+      <div class="section-head">
+       <h2>
+        최근 음정
+       </h2>
+       <span class="data">
+        6초
+       </span>
+      </div>
+      <canvas aria-label="입력 음과 화음의 최근 6초 음정" class="trace" id="trace">
+      </canvas>
+      <p class="trace-legend">
+       밝은 선 = 입력 · 색 선 = 화음
+      </p>
+     </section>
+    </aside>
+    <details class="help">
+     <summary>
+      손동작과 키보드 안내
+     </summary>
+     <div class="help-body">
+      <div>
+       <h2 style="margin-bottom:12px">
+        화음 지휘하기
+       </h2>
+       <ul class="guide" id="guide">
+        <li data-g="none">
+         <span>
+          손 안 보임
+         </span>
+         <span>
+          입력 목소리만
+         </span>
+        </li>
+        <li data-g="1">
+         <span>
+          손가락 1개
+         </span>
+         <span>
+          3도 위 화음
+         </span>
+        </li>
+        <li data-g="2">
+         <span>
+          손가락 2개
+         </span>
+         <span>
+          3도 + 5도 위
+         </span>
+        </li>
+        <li data-g="3">
+         <span>
+          손가락 3개
+         </span>
+         <span>
+          3·5도 + 베이스
+         </span>
+        </li>
+        <li data-g="4">
+         <span>
+          4~5개
+         </span>
+         <span>
+          풀 합창
+         </span>
+        </li>
+        <li data-g="fist">
+         <span>
+          주먹
+         </span>
+         <span>
+          화음 즉시 정지
+         </span>
+        </li>
+        <li>
+         <span>
+          손 높이 · 좌우
+         </span>
+         <span>
+          합창 음량 · 밝기와 울림
+         </span>
+        </li>
+       </ul>
+       <p class="keyboard-help" hidden="" id="pointer-help">
+        마우스 위치가 손 위치입니다.
+        <kbd>
+         0
+        </kbd>
+        ~
+        <kbd>
+         5
+        </kbd>
+        로 화음을 정하고, 무대에서 누르고 있으면 핀치합니다.
+       </p>
+      </div>
+      <div>
+       <h2 style="margin-bottom:12px">
+        오브 쌓기
+       </h2>
+       <ul class="guide" id="orb-guide">
+        <li data-o="pinch">
+         <span>
+          핀치 유지
+         </span>
+         <span>
+          다음 마디부터 녹음. 놓으면 마디 끝에서 완성, 최대 4마디
+         </span>
+        </li>
+        <li data-o="throw">
+         <span>
+          휙 던지기
+         </span>
+         <span>
+          멈춘 자리에서 반복. 좌우는 패닝, 위로 갈수록 크게
+         </span>
+        </li>
+        <li data-o="drag">
+         <span>
+          오브 핀치
+         </span>
+         <span>
+          잡아서 옮기기
+         </span>
+        </li>
+        <li>
+         <span>
+          주먹 · 편 손
+         </span>
+         <span>
+          오브 삭제 · 1초 대면 음소거
+         </span>
+        </li>
+       </ul>
+       <button class="link coach-replay" id="coach-replay" type="button">
+        처음 안내 다시 보기
+       </button>
+       <p class="keyboard-help" id="stage-keyboard-help">
+        <kbd>
+         Space
+        </kbd>
+        녹음/마치기 ·
+        <kbd>
+         Esc
+        </kbd>
+        모든 소리 정지
+        <br/>
+        오브 선택 후 방향키로 위치를 옮기거나 음소거·삭제 버튼을 쓰세요. 폼 입력 중에는 단축키가 동작하지 않습니다.
+       </p>
+      </div>
+     </div>
+    </details>
+   </main>
+   <details class="focus-recording-result" hidden="" id="focus-recording-result">
+   </details>
+   <footer class="footer">
+    <span>
+     녹음에는 현재 악기만 · 기존 루프와 클릭 소리는 제외
+    </span>
+    <span>
+     세션을 종료하면 오브가 지워집니다.
+    </span>
+   </footer>
+  </div>
+  <script src="src/app.js" type="module">
+  </script>
+ </body>
+</html>

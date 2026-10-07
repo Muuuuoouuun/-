@@ -1,0 +1,181 @@
+"""앱 서버 API 테스트: 멀티트랙 ZIP 업로드 -> 분석 -> 악보 -> 조옮김 -> 파일/음원 받기."""
+
+import importlib.util
+import io
+import time
+import zipfile
+
+import pytest
+
+pytestmark = pytest.mark.skipif(importlib.util.find_spec("fastapi") is None, reason="fastapi 미설치")
+
+
+@pytest.fixture()
+def client(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from band2sheet.app.server import create_app
+
+    return TestClient(create_app(tmp_path / "data"))
+
+
+def _zip_stems(tmp_path) -> bytes:
+    from tests.synth import make_stems
+
+    stems = tmp_path / "stems"
+    make_stems(stems, bars=4, drum_parts=True)
+    (stems / "drums.wav").unlink()  # 드럼은 조각 트랙만 (멀티트랙 녹음처럼)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for f in stems.rglob("*.wav"):
+            zf.write(f, f.relative_to(stems).as_posix())
+    return buf.getvalue()
+
+
+def test_info_and_reject_bad_file(client):
+    info = client.get("/api/info").json()
+    assert any(e["key"] == "demucs" for e in info["engines"])
+    r = client.post("/api/jobs", files={"file": ("notes.txt", b"hello")}, data={"options": "{}"})
+    assert r.status_code == 400
+
+
+def test_static_assets_are_compressed(client):
+    r = client.get("/static/vendor/opensheetmusicdisplay.min.js", headers={"Accept-Encoding": "gzip"})
+    assert r.status_code == 200
+    from starlette.middleware import gzip
+    if hasattr(gzip, "DEFAULT_EXCLUDED_CONTENT_TYPES"):
+        assert r.headers["content-encoding"] == "gzip"
+
+
+def test_path_traversal_blocked(client):
+    assert client.get("/api/jobs/../../etc/passwd").status_code in (404, 400)
+    assert client.get("/api/jobs/abc/files/sheets_G/..%2F..%2Fjob.json").status_code in (400, 404)
+
+
+@pytest.mark.slow
+def test_full_job_flow(client, tmp_path):
+    data = _zip_stems(tmp_path)
+    opts = '{"title": "테스트 곡", "stems": ["vocals", "bass", "drums"]}'
+    r = client.post("/api/jobs", files={"file": ("multitrack.zip", data)}, data={"options": opts})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    for _ in range(600):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.5)
+    assert job["status"] == "done", job.get("error")
+    res = job["result"]
+    assert res["key_short"] == "G"
+    assert {p["name"] for p in res["parts"]} == {"vocals", "bass", "drums"}
+    drums = next(p for p in res["parts"] if p["name"] == "drums")
+    assert {"Kick", "Snare", "Hi-hat"} <= set(drums["pieces"])
+    assert "vocals" in res["stems"] and "mix" in res["stems"]
+    assert len(res["measures"]) >= 4
+
+    xml = client.get(f"/api/jobs/{job_id}/files/{res['sheet_dir']}/bass.musicxml")
+    assert xml.status_code == 200 and "<staff-lines>4</staff-lines>" in xml.text
+    assert client.get(f"/api/jobs/{job_id}/audio/vocals").status_code == 200
+    # 음원은 구간 요청으로 재생하므로 압축하지 않는다
+    r = client.get(f"/api/jobs/{job_id}/audio/vocals", headers={"Accept-Encoding": "gzip", "Range": "bytes=0-99"})
+    assert r.status_code == 206 and "content-encoding" not in r.headers
+    assert "mr" in res["stems"]  # 반주(MR): 원곡 - 메인 보컬
+    mr = client.get(f"/api/jobs/{job_id}/mr", params={"kind": "mr"})
+    assert mr.status_code == 200 and "attachment" in mr.headers["content-disposition"]
+
+    # 조옮김한 키로 듣기: 백그라운드에서 만들고 다 되면 ready
+    st = client.post(f"/api/jobs/{job_id}/playback", json={"semitones": 2}).json()
+    for _ in range(300):
+        if st["status"] != "working":
+            break
+        time.sleep(0.5)
+        st = client.get(f"/api/jobs/{job_id}/playback", params={"semitones": 2}).json()
+    assert st["status"] == "ready" and {"vocals", "mix", "mr"} <= set(st["tracks"])
+    assert client.get(f"/api/jobs/{job_id}/audio/bass", params={"semitones": 2}).status_code == 200
+
+    t = client.post(f"/api/jobs/{job_id}/render", json={"target_key": "A"}).json()
+    assert t["key_short"] == "A" and t["semitones"] == 2 and t["sheet_dir"] == "sheets_A"
+    t = client.post(f"/api/jobs/{job_id}/render", json={"semitones": -1}).json()
+    assert t["key_short"] == "F#" and t["semitones"] == -1
+
+    # 자체 화면 데이터 + 수정
+    v = client.get(f"/api/jobs/{job_id}/view", params={"semitones": 2}).json()
+    assert v["key_short"] == "A" and v["bars"] and "vocals" in v["tracks"] and "vocals" in v["stems"]
+    r = client.put(f"/api/jobs/{job_id}/chord", json={"bar": 1, "beat": 2, "name": "Bm", "semitones": 2})
+    assert r.status_code == 200, r.text
+    v = client.get(f"/api/jobs/{job_id}/view", params={"semitones": 2}).json()
+    assert any(c["name"] == "Bm" and c["beat"] == 2 for c in v["bars"][1]["chords"]) and v["stale"]
+    assert client.put(f"/api/jobs/{job_id}/chord", json={"bar": 1, "name": "Q#zz"}).status_code == 400
+    assert client.put(f"/api/jobs/{job_id}/lyrics", json={"bar": 2, "text": "할렐루야"}).status_code == 200
+    notes = v["tracks"]["bass"]["notes"][:3]
+    assert client.put(f"/api/jobs/{job_id}/notes/bass", json={"notes": notes, "semitones": 2}).status_code == 200
+    assert client.put(f"/api/jobs/{job_id}/notes/nope", json={"notes": []}).status_code == 404
+    v = client.get(f"/api/jobs/{job_id}/view").json()
+    assert v["bars"][2]["lyrics"] == "할렐루야" and len(v["tracks"]["bass"]["notes"]) == 3
+    t = client.post(f"/api/jobs/{job_id}/render", json={"semitones": 2}).json()
+    assert not t.get("stale") and "할렐루야" in t["chord_chart"]
+
+    z = client.get(f"/api/jobs/{job_id}/zip/sheets_A")
+    names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
+    assert "lead_sheet.musicxml" in names and "chords.txt" in names
+
+    assert job_id in [j["id"] for j in client.get("/api/jobs").json()]
+    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_midi_job(client, tmp_path):
+    """MIDI 파일 올리기 -> 변환 (오디오 분석 없이)."""
+    from tests.test_recognition import _demo_midi
+
+    data = _demo_midi(tmp_path / "song.mid", True).read_bytes()
+    r = client.post("/api/jobs", files={"file": ("song.mid", data)}, data={"options": '{"title": "미디 곡"}'})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    for _ in range(300):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.3)
+    assert job["status"] == "done", job.get("error")
+    res = job["result"]
+    assert res["key_short"] == "G" and "song.chordpro" in res["files"]
+    assert {p["name"] for p in res["parts"]} >= {"vocals", "piano", "bass"}
+    v = client.get(f"/api/jobs/{job_id}/view").json()
+    assert v["bars"] and v["key_changes"]
+    info = client.get("/api/info").json()
+    if info["synth"]:  # 원곡 음원이 없어도 악보 소리는 들을 수 있다
+        assert client.get(f"/api/jobs/{job_id}/audio/score").status_code == 200
+
+
+@pytest.mark.slow
+def test_split_songs_job(client, tmp_path):
+    """곡 나누기: 긴 실황 -> 곡 고르기(choose) -> 고른 곡마다 새 작업 (시작/길이 지정)."""
+    from tests.song import make_song
+    from tests.song_live import make_live_song
+    from tests.song_service import make_service
+
+    make_live_song(tmp_path / "a")
+    make_song(tmp_path / "b")
+    wav, truth = make_service(tmp_path / "service.wav", tmp_path / "a", tmp_path / "b")
+    r = client.post("/api/jobs", files={"file": ("service.wav", wav.read_bytes())},
+                    data={"options": '{"title": "예배", "split_songs": true, "stems": ["vocals"]}'})
+    job_id = r.json()["id"]
+    for _ in range(300):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] in ("choose", "error", "done"):
+            break
+        time.sleep(0.5)
+    assert job["status"] == "choose", job.get("error")
+    assert len(job["songs"]) == 2 and job["duration"] > 150
+    assert client.get(f"/api/jobs/{job_id}/audio/full").status_code == 200
+    second = job["songs"][1]
+    # 새 작업은 만들기만 하고 실제 분석(분리 모델)은 돌리지 않는다
+    client.app.state.manager.pool.submit = lambda *a, **k: None
+    r = client.post(f"/api/jobs/{job_id}/songs", json={"songs": [{"start": second["start"], "end": second["end"],
+                                                                  "title": "둘째 곡", "index": 1}]})
+    child_id = r.json()["jobs"][0]
+    child = client.get(f"/api/jobs/{child_id}").json()
+    assert child["title"] == "둘째 곡" and child["parent"] == job_id
+    assert abs(child["options"]["start"] - (second["start"] - 1)) < 0.01
+    assert "split_songs" not in child["options"]

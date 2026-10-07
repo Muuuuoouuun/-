@@ -1,0 +1,14 @@
+{
+  "name": "airchoir",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node test/pointer.check.mjs && node test/phase0.check.mjs && node test/controls.check.mjs && node test/coach.check.mjs",
+    "check:performance": "node test/performance.check.mjs",
+    "check:focus": "node test/focus.check.mjs",
+    "check:camera": "node test/app.check.mjs --allow-fixture-downloads",
+    "start": "python3 -m http.server 8000 --bind 127.0.0.1"
+  },
+  "devDependencies": { "playwright": "1.58.2" }
+}
