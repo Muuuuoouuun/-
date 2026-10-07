@@ -109,7 +109,7 @@ test('감도: 휠 OFF 경계 근처에 손을 두어도 소리가 끊기지 않�
     for (let i = 0; i < 12 * fps; i++) {
       const s = r.u() < 0.03 ? 0.045 : 0.012;
       const p = at(rad);
-      const st = c.update([{ palm: { x: p.x + r.g() * s, y: p.y + r.g() * s } }], i * 1000 / fps);
+      const st = c.update([{ pinch: true, palm: { x: p.x + r.g() * s, y: p.y + r.g() * s } }], i * 1000 / fps);
       if (st.active) armed = true;
       else if (armed && st.reason === 'off') { offs++; armed = false; }
     }
@@ -126,10 +126,10 @@ test('감도: 휠 OFF 경계 근처에 손을 두어도 소리가 끊기지 않�
   // 중앙 OFF 로 손을 옮기면 한 프레임 안에 꺼진다
   const c = new WheelController(SENSITIVITY[DEFAULT_SENSITIVITY].wheel);
   c.configure({ hands: 'one', counts: [8], centers: [center], radius: 1 });
-  for (let i = 0; i <= 10; i++) c.update([{ palm: at(0.75) }], i * 33);
+  for (let i = 0; i <= 10; i++) c.update([{ pinch: true, palm: at(0.75) }], i * 33);
   assert.equal(c.state().active, true);
-  const off = c.update([{ palm: at(0.05) }], 400);
-  const off2 = off.active ? c.update([{ palm: at(0.05) }], 433) : off;
+  const off = c.update([{ pinch: true, palm: at(0.05) }], 400);
+  const off2 = off.active ? c.update([{ pinch: true, palm: at(0.05) }], 433) : off;
   assert.equal(off2.active, false);
 });
 
@@ -148,3 +148,21 @@ test('감도 설정 저장: 알 수 없는 값·저장 실패에도 기본값으
   assert.equal(saveSensitivity(broken, 'stable'), false);
   assert.equal(loadSensitivity(null), DEFAULT_SENSITIVITY);
 });
+
+for (const [name, preset] of Object.entries(SENSITIVITY)) {
+  test(`${name}: releasing or losing a pinch discards dwell despite smoothing`, () => {
+    const controller = new WheelController(preset.wheel);
+    controller.configure({ hands: 'one', counts: [8], centers: [{ x: 1, y: 1 }], radius: 1 });
+    const held = [{ palm: { x: 1, y: .25 }, pinch: true }];
+    const dwell = Math.max(150, preset.wheel.dwellMs);
+    controller.update(held, 0);
+    assert.equal(controller.update(held, dwell).active, true);
+    for (const [i, released] of [[0, [{ ...held[0], pinch: false }]], [1, []]]) {
+      const start = 200 + i * 300;
+      assert.equal(controller.update(released, start).active, false);
+      controller.update(held, start + 10);
+      assert.equal(controller.update(held, start + 159).active, false);
+      assert.equal(controller.update(held, start + 10 + dwell).active, true);
+    }
+  });
+}

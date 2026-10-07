@@ -77,6 +77,7 @@ export class WheelUI {
     this.state = { product: 'choir', hands: 'one', input: 'hands', ready: false, cameraAvailable: false, armed: false, current: {} };
     this.signature = '';
     this.choices = [];
+    this.panels = [];
     this.saving = false;
     this.events = new AbortController();
     this.buildControls();
@@ -159,7 +160,7 @@ export class WheelUI {
     const mode = product === 'choir' ? '목소리 합창' : '코드 악기';
     const instruction = input === 'manual'
       ? (product === 'chord' && hands === 'two' ? '근음과 코드 종류를 하나씩 클릭하세요. 중앙 OFF로 멈춥니다.' : '항목을 클릭하거나 키보드로 선택하세요. 중앙 OFF로 멈춥니다.')
-      : (product === 'choir' ? '손가락 수로 화음을 지휘하세요.' : '휠 안으로 손을 움직여 선택하세요. 중앙은 OFF입니다.');
+      : (product === 'choir' ? '손가락 수로 화음을 지휘하세요.' : `${hands === 'two' ? '양손 핀치' : '핀치'}를 유지하며 휠에서 선택하세요. 놓으면 소리가 멈춥니다.`);
     const text = status || `${mode} · ${ready ? (armed ? '연주 중' : '선택 대기') : '세션 시작 전'} · ${instruction}`;
     if (this.modeStatus.textContent !== text) this.modeStatus.textContent = text;
     const visible = ready && (product === 'chord' || input === 'manual');
@@ -168,7 +169,7 @@ export class WheelUI {
     if (this.stageHost.parentElement) this.stageHost.parentElement.dataset.product = product;
     this.stageHost.dataset.input = input;
     this.stageHost.dataset.product = product;
-    const signature = JSON.stringify([product, hands, this.config]);
+    const signature = JSON.stringify([product, hands, input, this.config]);
     if (signature !== this.signature) {
       this.signature = signature;
       this.buildWheels();
@@ -180,28 +181,43 @@ export class WheelUI {
       entry.path?.classList.toggle('selected', selected);
       entry.path?.classList.toggle('sounding', selected && armed);
     }
-    for (const off of this.stageHost.querySelectorAll('.wheel-off')) {
-      off.disabled = !ready;
-      off.dataset.armed = String(armed);
+    for (const center of this.stageHost.querySelectorAll('.wheel-off, .wheel-center-hint')) {
+      if (center.tagName === 'BUTTON') center.disabled = !ready;
+      center.dataset.armed = String(armed);
+    }
+    for (const panel of this.panels) {
+      const value = current[panel.type];
+      const selected = value != null;
+      const text = selected ? `${labelFor(panel.group, value)} · ${armed ? '연주 중' : '선택'}` : '선택 대기';
+      if (panel.selection.textContent !== text) panel.selection.textContent = text;
+      panel.selection.dataset.selected = String(selected);
+      panel.selection.dataset.armed = String(selected && armed);
     }
     this.stageHost.dataset.armed = String(armed);
   }
 
   buildWheels() {
-    const { product, hands } = this.state;
+    const { product, hands, input } = this.state;
+    const holdInput = product === 'chord' && input === 'hands';
     const specifications = product === 'choir'
       ? [['choir', '합창', 'choir']]
       : hands === 'two' ? [['root', '근음', 'roots'], ['quality', '코드 종류', 'qualities']] : [['chord', '코드', 'chords']];
     this.stageHost.replaceChildren();
     this.choices = [];
+    this.panels = [];
     this.stageHost.classList.toggle('two-wheels', specifications.length === 2);
     for (const [type, title, group] of specifications) {
       const panel = node('section', 'wheel-panel');
       panel.setAttribute('aria-label', `${title} 선택`);
       const heading = node('h2', 'wheel-title', title);
+      const header = node('div', 'wheel-heading');
+      const selection = node('span', 'wheel-selection', '선택 대기');
+      header.append(heading, selection);
+      this.panels.push({ type, group, selection });
       const circle = node('div', 'wheel-circle');
       const values = this.config[group];
       circle.style.setProperty('--wheel-count', values.length);
+      circle.dataset.manyQualities = String(type === 'quality' && values.length > 4);
       const dense = values.length > 8 && (type === 'chord' || type === 'root');
       circle.dataset.dense = String(dense);
       const svg = ring(values.length);
@@ -219,12 +235,14 @@ export class WheelUI {
         circle.append(el);
         this.choices.push({ type, value, button: el, path: svg.querySelector(`path[data-index="${i}"]`) });
       });
-      const off = button('OFF', null, 'wheel-off');
-      off.setAttribute('aria-label', `${title} 휠 소리 끄기`);
-      off.append(node('small', '', '소리 끄기'));
-      off.addEventListener('click', () => this.call('onOff'));
-      circle.append(off);
-      panel.append(heading, circle);
+      const center = holdInput ? node('div', 'wheel-center-hint', '핀치') : button('OFF', null, 'wheel-off');
+      center.append(node('small', '', holdInput ? '놓으면 쉼' : '소리 끄기'));
+      if (!holdInput) {
+        center.setAttribute('aria-label', `${title} 휠 소리 끄기`);
+        center.addEventListener('click', () => this.call('onOff'));
+      }
+      circle.append(center);
+      panel.append(header, circle);
       this.stageHost.append(panel);
     }
   }
@@ -269,6 +287,9 @@ export class WheelUI {
     const group = field('설정할 목록', 'wheel-config-group', Object.entries(GROUPS));
     this.groupSelect = group.select;
     this.groupSelect.addEventListener('change', () => { this.editError = ''; this.renderEditor(); });
+    this.groupCount = node('span', 'wheel-group-count');
+    const groupHeader = node('div', 'wheel-editor-heading');
+    groupHeader.append(group.wrap, this.groupCount);
     this.list = node('ol', 'wheel-config-list'); this.list.id = 'wheel-config-list';
     this.list.setAttribute('aria-label', '휠 항목 순서');
     this.addFields = node('div', 'wheel-add-fields');
@@ -278,12 +299,12 @@ export class WheelUI {
     this.preview.setAttribute('role', 'img');
     const editor = node('div', 'wheel-editor');
     const items = node('div', 'wheel-editor-items');
-    items.append(group.wrap, this.list, this.addFields, this.addButton);
+    items.append(this.list, this.addFields, this.addButton);
     const previewWrap = node('aside', 'wheel-preview-wrap');
-    previewWrap.append(node('h3', '', '적용 후 미리보기'), this.preview, node('p', 'muted', '위에서 시작해 시계 방향으로 배치됩니다. 중앙 OFF는 항상 유지됩니다.'));
+    previewWrap.append(node('h3', '', '적용 후 미리보기'), this.preview, node('p', 'muted', '위에서 시작해 시계 방향으로 배치됩니다. 클릭·키보드는 중앙 OFF, 코드 손동작은 핀치를 놓아 멈춥니다.'));
     editor.append(items, previewWrap);
     const privacy = node('p', 'wheel-storage-note', '이 기기에 목록·순서·감도만 저장합니다. 이미지·오디오·카메라 영상은 저장하지 않습니다.');
-    wheelPanel.append(description, editor, privacy);
+    wheelPanel.append(description, groupHeader, editor, privacy);
 
     // 손동작 감도
     const gesturePanel = node('section', 'settings-panel');
@@ -397,6 +418,8 @@ export class WheelUI {
   renderEditor(focus = null) {
     const group = this.groupSelect.value;
     const items = this.draft[group];
+    const maximum = group === 'choir' ? CHOIR_OPTIONS.length : group === 'qualities' ? QUALITIES.length : 12;
+    this.groupCount.textContent = `${items.length} / ${maximum}개`;
     this.list.replaceChildren();
     items.forEach((value, index) => {
       const row = node('li', 'wheel-config-row'); row.dataset.index = index;
@@ -429,8 +452,9 @@ export class WheelUI {
       const add = field(label, `wheel-add-${id}`, options.map((item) => [item.id, item.label]));
       this.addFields.append(add.wrap);
     }
-    this.preview.replaceChildren(ring(items.length, items.map((value) => labelFor(group, value))), node('span', 'wheel-preview-off', 'OFF'));
-    this.preview.setAttribute('aria-label', `${GROUPS[group]} 미리보기: ${items.map((value) => labelFor(group, value)).join(', ') || '비어 있음'}. 중앙 OFF.`);
+    const holdPreview = this.state.input === 'hands' && group !== 'choir';
+    this.preview.replaceChildren(ring(items.length, items.map((value) => labelFor(group, value))), node('span', 'wheel-preview-off', holdPreview ? '핀치' : 'OFF'));
+    this.preview.setAttribute('aria-label', `${GROUPS[group]} 미리보기: ${items.map((value) => labelFor(group, value)).join(', ') || '비어 있음'}. ${holdPreview ? '핀치를 놓으면 쉼.' : '클릭·키보드에서 중앙 OFF.'}`);
     this.updateValidation();
     if (focus) {
       const target = this.list.querySelector(`[data-index="${focus.index}"] [data-action="${focus.action}"]:not(:disabled)`)

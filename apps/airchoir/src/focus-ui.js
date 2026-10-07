@@ -61,13 +61,29 @@ export class FocusUI {
     // 녹화 중 표시: 깜빡이는 점 + '녹화 중' + 경과 시간을 한 덩어리로
     this.recPill = element('span', 'focus-rec-pill');
     this.recPill.hidden = true;
+    this.source = element('span', 'focus-source');
+    this.source.id = 'focus-source';
     this.liveMarker = element('span', 'focus-live-marker', '녹화 중');
     this.liveMarker.hidden = true;
     this.time = element('time', 'focus-time', '00:00');
     this.time.id = 'focus-time'; this.time.setAttribute('aria-label', '영상 녹화 경과 시간');
     this.time.setAttribute('role', 'timer'); this.time.setAttribute('aria-live', 'off');
     this.recPill.append(this.liveMarker, this.time);
-    identity.append(this.title, this.recPill);
+    identity.append(this.title, this.source, this.recPill);
+    const topline = element('div', 'focus-topline');
+    const modes = element('div', 'focus-modes');
+    const modeSwitch = element('div', 'focus-mode-switch');
+    modeSwitch.setAttribute('role', 'group');
+    modeSwitch.setAttribute('aria-label', '연주 모드');
+    this.modeButtons = new Map();
+    for (const [value, label] of [['chord-one', '한 손 코드'], ['chord-two', '두 손 코드'], ['choir', '목소리 합창']]) {
+      const choice = button(`focus-mode-${value}`, label, 'quiet');
+      choice.setAttribute('aria-pressed', 'false');
+      choice.addEventListener('click', () => this.call('onMode', value));
+      this.modeButtons.set(value, choice);
+      modeSwitch.append(choice);
+    }
+    modes.append(modeSwitch);
     this.status = element('p', 'focus-status');
     this.status.id = 'focus-status'; this.status.setAttribute('role', 'status');
     this.status.setAttribute('aria-live', 'polite');
@@ -76,6 +92,16 @@ export class FocusUI {
     this.performanceStatus.setAttribute('role', 'status');
     this.performanceStatus.hidden = true;
     const actions = element('div', 'focus-main-actions');
+    const inputField = element('label', 'focus-input-field');
+    const inputLabel = element('span', '', '조작');
+    this.input = element('select'); this.input.id = 'focus-input';
+    this.input.setAttribute('aria-label', '집중 연주 조작 방식');
+    for (const [value, label] of [['hands', '손동작'], ['manual', '클릭 · 키보드']]) {
+      const option = element('option', '', label); option.value = value;
+      this.input.append(option);
+    }
+    this.input.addEventListener('change', () => this.call('onInput', this.input.value));
+    inputField.append(inputLabel, this.input);
     const settings = button('focus-settings', '설정', 'quiet', '휠 설정');
     settings.setAttribute('aria-haspopup', 'dialog'); settings.setAttribute('aria-controls', 'wheel-dialog');
     settings.addEventListener('click', () => this.call('onSettings'));
@@ -94,15 +120,19 @@ export class FocusUI {
     this.fullscreen.addEventListener('click', () => this.call('onFullscreen'));
     // 자주 안 쓰는 것(설정·전체 화면·작업 화면)은 앞에 작게, 정지·녹화는 끝에 크게
     const secondary = element('div', 'focus-secondary-actions');
-    secondary.append(settings, this.fullscreen, exit);
+    secondary.append(inputField, settings, this.fullscreen, exit);
     const primary = element('div', 'focus-primary-actions');
     primary.append(stop, this.record);
     actions.append(secondary, primary);
-    const scope = element('p', 'focus-capture-note', '카메라 + 화면 속 휠 + 앱 소리를 이 기기에서만 녹화해요. 서버로 보내지 않아요.');
+    topline.append(identity);
+    const feedback = element('div', 'focus-feedback');
+    feedback.append(this.performanceStatus, this.status);
+    this.scope = element('p', 'focus-capture-note', '카메라·위젯 + 앱 소리(루프·클릭 포함) · 이 기기에만 녹화');
+    const scope = this.scope;
     scope.id = 'focus-record-scope';
     this.recordHint = element('p', 'focus-record-hint'); this.recordHint.id = 'focus-record-hint';
     this.recordHint.hidden = true;
-    this.toolbar.append(identity, actions, this.status, this.performanceStatus, scope, this.recordHint);
+    this.toolbar.append(topline, modes, actions, feedback, scope, this.recordHint);
   }
 
   buildIndicator() {
@@ -130,7 +160,7 @@ export class FocusUI {
 
   buildResult() {
     const summary = element('summary', 'focus-result-summary');
-    summary.append(element('strong', '', '녹화 영상 준비됨'), element('span', '', '미리보기 · 저장'));
+    summary.append(element('strong', '', '녹화 완료'), element('span', '', '미리보기 · 다운로드'));
     const body = element('div', 'focus-result-body');
     this.video = element('video', 'focus-result-video'); this.video.id = 'focus-result-video';
     this.video.controls = true; this.video.playsInline = true; this.video.preload = 'metadata';
@@ -152,7 +182,7 @@ export class FocusUI {
     const discard = button('focus-result-discard', '영상 버리기', 'quiet');
     discard.addEventListener('click', () => this.call('onDiscard'));
     actions.append(download, discard);
-    const note = element('p', 'focus-result-note', '새로고침하거나 페이지를 닫으면 사라집니다. 다운로드 후에도 새 녹화 전에 이 영상을 버려 주세요. 저장하지 않고 버리면 복구할 수 없습니다.');
+    const note = element('p', 'focus-result-note', '새로고침·닫기 전 다운로드하세요. 저장 후 영상을 버리면 새로 녹화할 수 있습니다. 저장하지 않고 버린 영상은 복구할 수 없습니다.');
     body.append(this.video, this.filename, meta, actions, note);
     this.resultPanel.append(summary, body);
     this.resultPanel.setAttribute('aria-label', '녹화 영상 파일');
@@ -191,10 +221,21 @@ export class FocusUI {
     if (next.active !== undefined && Boolean(next.active) !== this._active) next.active ? this.enter() : this.exit();
     const { ready, recording, elapsedMs, canRecord, result, recordingError, status } = this.state;
     const stopping = this.state.stopping || this.state.statusPhase === 'stopping';
+    const selectedMode = this.state.product === 'choir' ? 'choir' : `chord-${this.state.hands || 'one'}`;
+    for (const [value, choice] of this.modeButtons) {
+      choice.setAttribute('aria-pressed', String(value === selectedMode));
+      choice.disabled = !ready || stopping;
+    }
+    const input = this.state.input || 'hands';
+    if (this.input.value !== input) this.input.value = input;
+    this.input.disabled = !ready || stopping;
+    this.input.querySelector('option[value="hands"]').disabled = this.state.product === 'chord' && !this.state.cameraAvailable;
+    setText(this.scope, recording ? '모드·조작·설정을 바꾸면 녹화를 마무리합니다.' : '카메라·위젯 + 앱 소리(루프·클릭 포함) · 이 기기에만 녹화');
     setText(this.fullscreen, this.state.fullscreen ? '화면 복귀' : '전체 화면');
     this.fullscreen.setAttribute('aria-label', this.state.fullscreen ? '전체 화면 종료' : '전체 화면 전환');
     this.fullscreen.setAttribute('aria-pressed', String(Boolean(this.state.fullscreen)));
     setText(this.title, this.state.modeLabel || '집중 연주');
+    setText(this.source, this.state.sourceLabel || '소리 준비 전');
     this.performanceStatus.hidden = !this.state.performanceStatus;
     setText(this.performanceStatus, this.state.performanceStatus ? `연주 · ${this.state.performanceStatus}` : '');
     this.enterButton.disabled = !ready;

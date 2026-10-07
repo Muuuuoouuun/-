@@ -361,3 +361,22 @@ def test_remix_new_styles(tmp_path, style, harmony):
     assert ("harmony_up.wav" in names) == harmony
     y, _ = sf.read(res.audio)
     assert np.isfinite(y).all() and np.abs(y).max() < 1.0 and np.sqrt(np.mean(y ** 2)) > 0.03
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg 미설치")
+def test_mux_preserves_full_video_when_replacement_audio_is_short(tmp_path):
+    from band2sheet.remix import mux_video
+
+    video, audio = tmp_path / "source.mp4", tmp_path / "short.wav"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=160x120:rate=25:duration=2", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(video)], check=True)
+    sf.write(audio, np.zeros(int(.4 * SR)), SR)
+    result = mux_video(video, audio, tmp_path / "output")
+    assert abs(float(_probe(result)["format"]["duration"]) - 2) < .1
+
+    def frames(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v:0",
+                               "-f", "framemd5", "-"], check=True, capture_output=True).stdout
+
+    assert frames(result) == frames(video), "All original video frames must remain unchanged"

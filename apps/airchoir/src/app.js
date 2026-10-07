@@ -204,7 +204,7 @@ async function startCamera(request) {
   mode = 'camera';
   cam.onResult = (list, aspect) => {
     const hands = list.map((lm) => ({ ...analyzeHand(lm, aspect), landmarks: lm }));
-    gesture = tracker.update(hands, performance.now());
+    gesture = tracker.update(hands, performance.now(), { immediateRelease: true });
     const r = $('stage').getBoundingClientRect();
     const video = $('video');
     const mapper = coverMapper(r.width, r.height, video.videoWidth, video.videoHeight);
@@ -465,7 +465,7 @@ function bindControls() {
 
   window.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || performer.settingsOpen) return;
-    if (e.target.closest?.('input, select, textarea, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    if (e.target.closest?.('input, select, textarea, video, audio, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const k = e.key.toLowerCase();
     if (k === 'escape') {
       if (starting) { e.preventDefault(); stopSession(); }
@@ -475,7 +475,11 @@ function bindControls() {
         performer.stop('전체 정지 · 기존 오브는 보관했어요.', true);
         if (wasRecording) $('record-toggle').focus();
       }
-    } else if (k === ' ' && !e.target.closest?.('button, a, summary')) { e.preventDefault(); recordAction(); }
+    } else if (k === ' ' && !e.target.closest?.('button, a, summary')) {
+      e.preventDefault();
+      // The loop transport is hidden in focus; media previews own their native keys.
+      if (!focusSession?.active) recordAction();
+    }
     else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && e.target.closest?.('#stage, #loop-list')) {
       const orb = station.orbs.find((o) => o.id === selectedOrbId && o.state === 'placed');
       if (!orb) return;
@@ -799,7 +803,8 @@ performer = new Performance({
   onSensitivity: value => applySensitivity(value),
   getAudio: () => audio,
   isReady: () => sessionActive && audio.ready,
-  hasCamera: () => mode === 'camera',
+  hasCamera: () => mode === 'camera' && cam.running
+    && !!cam.stream?.getVideoTracks().some(track => track.readyState === 'live' && !track.muted),
   notify: text => notice(text),
   onStop: pausePerformance,
   onInterrupt: reason => focusSession?.boundary(reason),
@@ -817,13 +822,21 @@ window.airchoir.performance = performer.state;
 window.airchoir.performanceController = performer;
 focusSession = new FocusSession({
   video: $('video'), overlay, stage: $('stage'), getAudio: () => audio,
-  getPerformance: () => ({ ...performer.state, ready: sessionActive && audio.ready }),
+  getPerformance: () => ({ ...performer.state, ready: sessionActive && audio.ready, sourceKind: audio.source?.kind }),
   getWheelGeometry: () => performer.ui.getWheelGeometry(),
   getTheme: () => theme,
   isReady: () => sessionActive && audio.ready,
   isCameraReady: () => mode === 'camera' && cam.running,
   onStop: () => performer.stop('전체 정지 · 다시 선택하거나 손을 내렸다 올리세요.', true),
   onPreviewPlay: () => performer.stop('영상 미리보기 중 · 다시 선택하면 연주합니다.', true, { preservePreview: true }),
+  onMode: value => {
+    if (value === 'choir') performer.change('product', 'choir');
+    else if (value === 'chord-one' || value === 'chord-two') {
+      performer.change('product', 'chord');
+      performer.change('hands', value === 'chord-two' ? 'two' : 'one');
+    }
+  },
+  onInput: value => performer.change('input', value),
   onSettings: () => performer.ui.openSettings(), notify: text => notice(text),
 });
 window.airchoir.focus = focusSession;

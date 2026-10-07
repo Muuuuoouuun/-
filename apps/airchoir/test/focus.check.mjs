@@ -36,6 +36,7 @@ const mockVision = `
   export class FilesetResolver { static async forVisionTasks() { return {}; } }
   export class HandLandmarker { static async createFromOptions() { return {
     detectForVideo() { window.__detectorCalls = (window.__detectorCalls || 0) + 1;
+      window.__fixtureFirstSeenAt ??= performance.now();
       return { landmarks: window.__testLandmarks || [] }; }, close() {} };
   } }
 `;
@@ -102,16 +103,79 @@ async function setHands(page, specs) {
     const dw = video.videoWidth * scale, dh = video.videoHeight * scale;
     const ox = (b.width - dw) / 2, oy = (b.height - dh) / 2;
     const f = fixtures.open_two_hands;
-    window.__testLandmarks = specs.map(({ wheel = 0, sector = 0, count = 7, hand = 0, ratio = .76 }) => {
+    window.__testLandmarks = specs.map(({ wheel = 0, sector = 0, count = 7, hand = 0, ratio = .76, pinch = true }) => {
       const g = geometry[wheel], angle = sector * Math.PI * 2 / count;
       const point = { x: g.center.x + Math.sin(angle) * g.radius * ratio, y: g.center.y - Math.cos(angle) * g.radius * ratio };
       const target = [((b.width - (point.x - b.left)) - ox) / dw, ((point.y - b.top) - oy) / dh];
-      const raw = f.hands[hand].landmarks;
+      const raw = f.hands[hand].landmarks.map(q => [...q]);
+      // Same nondegenerate OK-sign construction as gestures.test.mjs. Palm
+      // coordinates stay fixed, so only the hold gesture changes on release.
+      if (pinch) {
+        const thumb = raw[4], pip = raw[6];
+        raw[8] = thumb.map((v, k) => v + (pip[k] - v) * .05);
+        raw[7] = pip.map((v, k) => (v + raw[8][k]) / 2 + (raw[5][k] - raw[0][k]) * .15);
+      }
       const center = [0, 1].map(k => [0, 5, 9, 13, 17].reduce((sum, i) => sum + raw[i][k], 0) / 5);
       return raw.map(q => ({ x: target[0] + (q[0] - center[0]) * (f.width / f.height) * .25 / aspect,
         y: target[1] + (q[1] - center[1]) * .25, z: q[2] * (f.width / f.height) * .25 / aspect }));
     });
+    window.__fixtureFirstSeenAt = null;
+    window.__firstHeldAt = null;
+    const generation = window.__fixtureGeneration = (window.__fixtureGeneration || 0) + 1;
+    const sample = () => {
+      if (window.__fixtureGeneration !== generation) return;
+      if (window.airchoir.performance.armed) window.__firstHeldAt ??= performance.now();
+      else requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
   }, { specs, fixtures });
+}
+
+async function accompanimentSignal(page) {
+  return page.evaluate(async () => {
+    const audio = window.airchoir.audio;
+    if (audio.ctx?.state !== 'running') return { running: false, peak: 0, rms: 0 };
+    const analyser = audio.ctx.createAnalyser();
+    const silentSink = audio.ctx.createGain();
+    silentSink.gain.value = 0;
+    analyser.fftSize = 2048;
+    audio.accompaniment.output.connect(analyser);
+    analyser.connect(silentSink).connect(audio.ctx.destination);
+    const startedAt = audio.ctx.currentTime;
+    try {
+      await new Promise(done => setTimeout(done, 160));
+      const samples = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(samples);
+      return { running: true, peak: Math.max(...samples.map(Math.abs)),
+        rms: Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length),
+        audioSeconds: audio.ctx.currentTime - startedAt, outputGain: audio.accompaniment.output.gain.value,
+        voiceGains: [...audio.accompaniment._held.values()].map(voice => voice.node.gain.value) };
+    } finally { audio.accompaniment.output.disconnect(analyser); analyser.disconnect(); silentSink.disconnect(); }
+  });
+}
+
+async function assertLiveReleased(page) {
+  await page.waitForFunction(() => !window.airchoir.performance.armed
+    && window.airchoir.audio.accompaniment.count === 0);
+  await page.waitForTimeout(180); // Longer than the actual 80 ms release envelope.
+  const released = await state(page);
+  assert.equal(released.armed, false);
+  assert.deepEqual(released.voices, []);
+  const signal = await accompanimentSignal(page);
+  assert.ok(signal.running && signal.peak < .0001 && signal.rms < .0001,
+    `Live instrument must be silent after release: ${JSON.stringify(signal)}`);
+  return signal;
+}
+
+async function assertFreshHold(page, specs, notes = [48, 52, 55]) {
+  await setHands(page, specs);
+  await page.waitForFunction(() => window.airchoir.performance.armed && window.__firstHeldAt !== null);
+  assert.deepEqual((await state(page)).voices, notes);
+  const dwell = await page.evaluate(() => window.__firstHeldAt - window.__fixtureFirstSeenAt);
+  assert.ok(dwell >= 140, `Fresh pinch must complete the 150 ms dwell (observed ${dwell} ms)`);
+  const signal = await accompanimentSignal(page);
+  assert.ok(signal.running && signal.rms > .001, `Held chord must sound: ${JSON.stringify(signal)}`);
+  return { dwellMs: dwell, rms: signal.rms };
 }
 
 async function selectChord(page) {
@@ -326,12 +390,73 @@ try {
     await shot(page, 'desktop-live');
   });
 
+  await check('Space on the focused stage never starts the hidden loop recorder', async () => {
+    await page.focus('#stage');
+    assert.equal(await page.locator('#stage').evaluate(element => document.activeElement === element), true);
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(100);
+    assert.deepEqual(await page.evaluate(() => ({
+      mode: window.airchoir.station.mode, loops: window.airchoir.station.count,
+      video: window.airchoir.focus.recorder.state.status,
+    })), { mode: 'idle', loops: 0, video: 'idle' });
+  });
+
+  await check('one-hand chord requires a held pinch and every release requires a fresh dwell', async () => {
+    await setHands(page, [{ pinch: false }]);
+    await assertLiveReleased(page);
+    // The palm remains over the same C sector throughout open/pinch changes.
+    await page.waitForTimeout(220);
+    assert.equal((await state(page)).armed, false, 'An open hand must not sound after dwelling');
+    const first = await assertFreshHold(page, [{ pinch: true }]);
+    await setHands(page, [{ pinch: false }]);
+    const silent = await assertLiveReleased(page);
+    const repeated = await assertFreshHold(page, [{ pinch: true }]);
+    return { first, repeated, releasedRms: silent.rms };
+  });
+
+  await check('both assigned hands must hold a pinch; either release or loss silences only live sound while video continues', async () => {
+    await activate(page, '#focus-mode-chord-two');
+    await beginRecording(page);
+    const pair = [{ wheel: 0, sector: 0, count: 7, hand: 0 },
+      { wheel: 1, sector: 0, count: 4, hand: 1 }];
+    await setHands(page, []);
+    await page.waitForFunction(() => !window.airchoir.performanceController.blocked);
+    const held = await assertFreshHold(page, pair);
+    const releases = [];
+    for (const [label, released] of [
+      ['root pinch release', pair.map((hand, i) => ({ ...hand, pinch: i !== 0 }))],
+      ['quality pinch release', pair.map((hand, i) => ({ ...hand, pinch: i !== 1 }))],
+      ['root hand loss', [pair[1]]],
+      ['quality hand loss', [pair[0]]],
+    ]) {
+      const elapsed = (await state(page)).elapsedMs;
+      await setHands(page, released);
+      const signal = await assertLiveReleased(page);
+      const s = await state(page);
+      assert.equal(s.status, 'recording', `${label} must keep video recording`);
+      assert.ok(s.elapsedMs > elapsed, `${label} must not freeze the recording timer`);
+      assert.equal(downloads.length, 0);
+      releases.push({ label, releasedRms: signal.rms, resumed: await assertFreshHold(page, pair) });
+    }
+    await activate(page, '#focus-record');
+    await recorderStatus(page, 'ready');
+    assert.ok((await state(page)).blobSize > 0);
+    assert.equal(downloads.length, 0);
+    await discard(page);
+    await activate(page, '#focus-mode-chord-one');
+    return { held, releases };
+  });
+
   await check('native recorder continues through hand loss, then yields an explicit downloadable audiovisual result', async () => {
     await beginRecording(page);
     await selectChord(page);
     await page.waitForTimeout(650);
+    await setHands(page, [{ pinch: false }]);
+    await assertLiveReleased(page);
+    assert.equal((await state(page)).status, 'recording', 'Pinch release must not stop the video recording');
+    await assertFreshHold(page, [{ pinch: true }]);
     await setHands(page, []);
-    await page.waitForFunction(() => !window.airchoir.performance.armed);
+    await assertLiveReleased(page);
     assert.equal((await state(page)).status, 'recording', 'Hand loss must not stop the video recording');
     assert.deepEqual((await state(page)).voices, []);
     await selectChord(page);
@@ -395,6 +520,91 @@ try {
         document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'));
       });
     }
+  });
+
+  await check('Space on the native video preview toggles playback without recording a loop', async () => {
+    await page.evaluate(() => { const video = document.getElementById('focus-result-video'); video.pause(); video.currentTime = 0; });
+    await page.focus('#focus-result-video');
+    assert.equal(await page.locator('#focus-result-video').evaluate(element => document.activeElement === element), true);
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => !document.getElementById('focus-result-video').paused, null, { timeout: 2000 });
+    assert.deepEqual(await page.evaluate(() => ({ mode: window.airchoir.station.mode, count: window.airchoir.station.count })),
+      { mode: 'idle', count: 0 });
+    await page.keyboard.press('Space');
+    await page.waitForFunction(() => document.getElementById('focus-result-video').paused, null, { timeout: 2000 });
+    await discard(page);
+  });
+
+  await check('visible quick mode buttons finalize recording, retain the clip, and keep choir one-hand with its demo source named', async () => {
+    await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
+    await activate(page, '#focus-mode-chord-two');
+    await recorderStatus(page, 'ready');
+    const clip = await state(page);
+    assert.ok(clip.blobSize > 0);
+    assert.equal(clip.reason, 'mode-change');
+    assert.equal(clip.handCount, 'two');
+    assert.equal(clip.armed, false);
+    assert.equal(await page.locator('#focus-mode-chord-two').getAttribute('aria-pressed'), 'true');
+    await activate(page, '#focus-mode-choir');
+    await page.waitForFunction(() => window.airchoir.audio.source?.kind === 'demo'
+      && document.getElementById('focus-source').textContent.includes('목소리 데모'));
+    assert.deepEqual(await page.evaluate(() => ({
+      product: window.airchoir.performance.product, hands: window.airchoir.performance.hands,
+      twoDisabled: document.querySelector('#performance-hands option[value="two"]').disabled,
+    })), { product: 'choir', hands: 'one', twoDisabled: true });
+    assert.equal(await page.locator('#focus-mode-choir').getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#focus-source').isVisible(), true);
+    assert.equal((await state(page)).blobSize, clip.blobSize);
+    assert.equal((await state(page)).url, clip.url);
+    await shot(page, 'desktop-choir-source');
+    assert.equal(downloads.length, 1);
+    await discard(page);
+
+    // Choir -> two-hand chord performs two ordinary Performance.change calls.
+    // Observe the real callback after UI rendering to verify one final result
+    // and disabled controls while the native recorder supplies its last chunk.
+    await page.evaluate(() => {
+      const recorder = window.airchoir.focus.recorder;
+      window.__focusTransitions = [];
+      window.__originalRecorderOnChange = recorder.onChange;
+      recorder.onChange = state => {
+        window.__originalRecorderOnChange(state);
+        window.__focusTransitions.push({ status: state.status,
+          modeDisabled: [...document.querySelectorAll('.focus-mode-switch button')].every(button => button.disabled),
+          inputDisabled: document.getElementById('focus-input').disabled });
+      };
+    });
+    await beginRecording(page); await page.waitForTimeout(650);
+    await activate(page, '#focus-mode-chord-two');
+    await recorderStatus(page, 'ready');
+    const transition = await page.evaluate(() => {
+      window.airchoir.focus.recorder.onChange = window.__originalRecorderOnChange;
+      return window.__focusTransitions;
+    });
+    assert.equal(transition.filter(item => item.status === 'ready').length, 1);
+    assert.ok(transition.some(item => item.status === 'stopping' && item.modeDisabled && item.inputDisabled));
+    assert.equal((await state(page)).handCount, 'two');
+    assert.ok((await state(page)).blobSize > 0);
+    await discard(page);
+    await activate(page, '#focus-mode-chord-one');
+    await page.selectOption('#focus-input', 'hands');
+    assert.equal((await state(page)).handCount, 'one');
+  });
+
+  await check('the visible focus input selector finalizes recording and keeps its clip through subsequent input changes', async () => {
+    await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
+    await page.selectOption('#focus-input', 'manual');
+    await recorderStatus(page, 'ready');
+    const clip = await state(page);
+    assert.ok(clip.blobSize > 0);
+    assert.equal(clip.input, 'manual'); assert.equal(clip.armed, false);
+    assert.equal(clip.reason, 'mode-change');
+    assert.equal(await page.locator('#focus-input').inputValue(), 'manual');
+    await page.selectOption('#focus-input', 'hands');
+    assert.equal((await state(page)).input, 'hands');
+    assert.equal((await state(page)).blobSize, clip.blobSize);
+    assert.equal((await state(page)).url, clip.url);
+    assert.equal(downloads.length, 1);
     await discard(page);
   });
 
@@ -413,7 +623,22 @@ try {
     await page.evaluate(() => {
       window.__focusSavedOrb = window.airchoir.station.orbs[0];
       window.__focusSavedBuffer = window.__focusSavedOrb.buffer;
+      window.__focusSavedSource = window.airchoir.audio.orbNodes.values().next().value.src;
     });
+    await selectChord(page);
+    await setHands(page, [{ pinch: false }]);
+    await assertLiveReleased(page);
+    const releasedLoop = await page.evaluate(() => ({
+      count: window.airchoir.station.count,
+      sameOrb: window.airchoir.station.orbs[0] === window.__focusSavedOrb,
+      sameBuffer: window.airchoir.station.orbs[0].buffer === window.__focusSavedBuffer,
+      sameSource: window.airchoir.audio.orbNodes.values().next().value?.src === window.__focusSavedSource,
+      nodes: window.airchoir.audio.orbNodes.size,
+      muted: window.airchoir.station.orbs[0].muted,
+      outputMuted: window.airchoir.audio.outputMuted,
+    }));
+    assert.deepEqual(releasedLoop, { count: 1, sameOrb: true, sameBuffer: true, sameSource: true,
+      nodes: 1, muted: false, outputMuted: false }, 'Pinch release must preserve the running loop and its exact buffer/source');
     await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
     await activate(page, '#focus-exit');
     await recorderStatus(page, 'ready');
@@ -430,7 +655,7 @@ try {
     });
     assert.ok(preserved.frames > 0);
     await discard(page); await page.click('#clear-orbs');
-    return preserved;
+    return { ...preserved, pinchRelease: releasedLoop };
   });
 
   const boundaries = [
@@ -442,12 +667,7 @@ try {
       await activate(page, '#focus-settings');
       await page.waitForFunction(() => document.getElementById('wheel-dialog').open);
     }],
-    ['mode change', () => page.evaluate(() => {
-      // Focus hides workspace mode controls; dispatch their ordinary change event
-      // to exercise the application's interruption boundary without exiting first.
-      const select = document.getElementById('performance-hands');
-      select.value = 'two'; select.dispatchEvent(new Event('change', { bubbles: true }));
-    })],
+    ['mode change', () => activate(page, '#focus-mode-chord-two')],
     ['window blur', () => page.evaluate(() => window.dispatchEvent(new Event('blur')))],
     ['hidden document', () => page.evaluate(() => {
       Object.defineProperty(document, 'hidden', { configurable: true, value: true });
@@ -457,10 +677,8 @@ try {
   ];
   for (const [label, action] of boundaries) {
     await check(`${label} stops recording, preserves its result and keeps session source tracks alive`, async () => {
-      await page.evaluate(() => {
-        const select = document.getElementById('performance-hands');
-        select.value = 'one'; select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await enterFocus(page);
+      await activate(page, '#focus-mode-chord-one');
       await beginRecording(page);
       await selectChord(page);
       await page.waitForTimeout(650);
@@ -477,6 +695,18 @@ try {
         delete document.hidden; delete document.visibilityState;
         document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'));
       });
+      if (label === 'window blur' || label === 'hidden document') {
+        // The same held fixture keeps arriving before and after the boundary.
+        // Return/focus alone must never silently start the previous chord.
+        await page.waitForTimeout(350);
+        await assertLiveReleased(page);
+        assert.equal((await state(page)).url, s.url);
+        assert.equal((await state(page)).blobSize, s.blobSize);
+        await setHands(page, [{ pinch: false }]);
+        await assertLiveReleased(page);
+        await assertFreshHold(page, [{ pinch: true }]);
+        assert.equal((await state(page)).url, s.url, 'Explicit new pinch must preserve the completed clip');
+      }
       if (await page.locator('#wheel-dialog').evaluate(dialog => dialog.open)) await page.click('#wheel-cancel');
       await discard(page);
       return { reason: s.reason, bytes: s.blobSize, tracks: s.tracks };
@@ -484,13 +714,11 @@ try {
   }
 
   await check('camera track loss finalizes the recording without downloading or discarding it', async () => {
-    await page.evaluate(() => {
-      const select = document.getElementById('performance-hands');
-      select.value = 'one'; select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await activate(page, '#focus-mode-chord-one');
     await beginRecording(page); await selectChord(page); await page.waitForTimeout(650);
     await page.evaluate(() => document.getElementById('video').srcObject.getVideoTracks().forEach(track => track.stop()));
     await recorderStatus(page, 'ready');
+    await assertLiveReleased(page);
     assert.ok((await state(page)).blobSize > 0);
     assert.equal(downloads.length, 1);
     await discard(page);
@@ -518,7 +746,8 @@ try {
     await page.setViewportSize({ width: 390, height: 844 });
     await startCamera(page);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    for (const selector of ['#focus-settings', '#focus-exit', '#focus-record', '#focus-all-stop']) {
+    for (const selector of ['#focus-mode-chord-one', '#focus-mode-chord-two', '#focus-mode-choir', '#focus-input',
+      '#focus-settings', '#focus-exit', '#focus-record', '#focus-all-stop']) {
       assert.equal(await page.locator(selector).evaluate(button => {
         const r = button.getBoundingClientRect(); return r.width > 0 && r.height > 0
           && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;

@@ -49,7 +49,7 @@ function setup(t, state = {}) {
   return { p, page, env, events };
 }
 
-const atTop = [{ palm: { x: 100, y: 40 } }];
+const atTop = [{ palm: { x: 100, y: 40 }, pinch: true }];
 const identity = point => point;
 const sounds = events => events.filter(event => event[0] === 'chord');
 
@@ -250,4 +250,96 @@ test('camera watchdog releases active sound and requires a fresh hand after inpu
   p.cameraHands(atTop, identity, 720);
   p.cameraHands(atTop, identity, 900);
   assert.equal(sounds(events).length, 2);
+});
+
+for (const count of ['one', 'two']) {
+  test(`${count} camera hands release notes without stopping loops or interrupting video, then require fresh dwell`, t => {
+    const { p, events } = setup(t, { hands: count });
+    p.onInterrupt = reason => events.push(['interrupt', reason]);
+    const hands = count === 'one' ? atTop : [...atTop, { palm: { x: 300, y: 40 }, pinch: true }];
+    p.cameraHands(hands, identity, 0);
+    p.cameraHands(hands, identity, 150);
+    assert.equal(p.state.armed, true);
+    for (let i = 0; i < hands.length; i++) {
+      const start = 200 + i * 300;
+      const before = events.length;
+      p.cameraHands(hands.map((hand, j) => ({ ...hand, pinch: j !== i })), identity, start);
+      assert.equal(p.state.armed, false);
+      assert.deepEqual(p.state.current, { chord: null, root: null, quality: null, choir: null });
+      assert.equal(p.blocked, false);
+      assert.ok(events.slice(before).some(event => event[0] === 'release'));
+      assert.ok(!events.slice(before).some(event => ['muted', 'stop-all', 'interrupt'].includes(event[0])));
+      p.cameraHands(hands, identity, start + 10);
+      p.cameraHands(hands, identity, start + 159);
+      assert.equal(p.state.armed, false, 'old selection/dwell is not reused');
+      p.cameraHands(hands, identity, start + 160);
+      assert.equal(p.state.armed, true);
+    }
+  });
+}
+
+test('one or both missing camera hands clear the complete chord and require a new pair', t => {
+  const { p } = setup(t, { hands: 'two' });
+  const hands = [...atTop, { palm: { x: 300, y: 40 }, pinch: true }];
+  p.cameraHands(hands, identity, 0);
+  p.cameraHands(hands, identity, 150);
+  for (const [index, remaining] of [[0, hands.slice(0, 1)], [1, hands.slice(1)], [2, []]]) {
+    const now = 200 + index * 300;
+    p.cameraHands(remaining, identity, now);
+    assert.equal(p.state.armed, false);
+    assert.equal(p.state.current.chord, null);
+    p.cameraHands(hands, identity, now + 10);
+    assert.equal(p.state.armed, false);
+    p.cameraHands(hands, identity, now + 160);
+    assert.equal(p.state.armed, true);
+  }
+});
+
+test('after blur stop, releasing the pinch rearms without a separate OFF or removing the hand', t => {
+  const { p } = setup(t);
+  p.cameraHands(atTop, identity, 0);
+  p.cameraHands(atTop, identity, 150);
+  p.stop('blur', true);
+  p.cameraHands(atTop, identity, 200);
+  p.cameraHands(atTop, identity, 400);
+  assert.equal(p.state.armed, false);
+  p.cameraHands([{ ...atTop[0], pinch: false }], identity, 410);
+  assert.equal(p.blocked, false);
+  p.cameraHands(atTop, identity, 420);
+  assert.equal(p.state.armed, false);
+  p.cameraHands(atTop, identity, 570);
+  assert.equal(p.state.armed, true);
+});
+
+test('camera termination and watchdog release the live instrument without a global stop', t => {
+  for (const terminated of [true, false]) {
+    const { p, env, events } = setup(t);
+    p.cameraHands(atTop, identity, 0);
+    p.cameraHands(atTop, identity, 150);
+    const before = events.length;
+    if (terminated) env.camera = false;
+    p.tick(terminated ? 160 : 401, true);
+    assert.equal(p.state.armed, false);
+    assert.equal(p.state.current.chord, null);
+    assert.equal(p.blocked, true);
+    assert.ok(!events.slice(before).some(event => ['muted', 'stop-all'].includes(event[0])));
+    env.camera = true;
+    p.cameraHands(atTop, identity, 450);
+    p.cameraHands(atTop, identity, 650);
+    assert.equal(p.state.armed, false, 'held input cannot revive the old chord after an interruption');
+  }
+});
+
+test('choir camera loss/fist clears the preset without assigning pinch to a new gesture', t => {
+  const { p } = setup(t, { product: 'choir' });
+  const singing = { present: true, fist: false, pinch: false, preset: 2, level: .7, brightness: .5 };
+  assert.equal(p.routeLegacy(singing).preset, 2);
+  assert.equal(p.state.armed, true);
+  p.routeLegacy({ ...singing, present: false });
+  assert.equal(p.state.armed, false);
+  assert.equal(p.state.current.choir, null);
+  p.routeLegacy({ ...singing, preset: 3 });
+  p.routeLegacy({ ...singing, fist: true, preset: 0 });
+  assert.equal(p.state.armed, false);
+  assert.equal(p.state.current.choir, null);
 });

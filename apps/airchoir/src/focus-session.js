@@ -17,7 +17,7 @@ const REASONS = {
 // Owns the view/recording boundary, never opens devices or stores a file itself.
 export class FocusSession {
   constructor({ video, overlay, stage, getAudio, getPerformance, getWheelGeometry, getTheme,
-    isReady, isCameraReady, onStop, onPreviewPlay = onStop, onSettings, notify }) {
+    isReady, isCameraReady, onStop, onPreviewPlay = onStop, onMode, onInput, onSettings, notify }) {
     Object.assign(this, { video, getAudio, getPerformance, isReady, isCameraReady, onStop, onSettings, notify });
     this.active = false;
     this.message = '';
@@ -39,6 +39,8 @@ export class FocusSession {
       onDownload: () => this.recorder.download(),
       onDiscard: () => { this.ui.pausePreview?.(); this.recorder.discard(); this.message = ''; this.render(); },
       onPreviewPlay,
+      onMode: value => { onMode?.(value); this.render(); },
+      onInput: value => { onInput?.(value); this.render(); },
     });
     this.events = new AbortController();
     document.addEventListener('fullscreenchange', () => this.render(), { signal: this.events.signal });
@@ -168,6 +170,10 @@ export class FocusSession {
     const result = state.blob ? { url: state.url, filename: state.filename,
       mimeType: state.mime, durationMs: state.elapsedMs, size: state.sizeBytes } : null;
     this.ui.render({ active: this.active, ready: this.isReady(),
+      product: performanceState.product, hands: performanceState.hands, input: performanceState.input,
+      cameraAvailable: this.isCameraReady(),
+      sourceLabel: performanceState.product === 'chord' ? '소리 · 합성 코드'
+        : `소리 · ${{ mic: '마이크', demo: '목소리 데모', file: '오디오 파일' }[performanceState.sourceKind] || '준비 전'}`,
       recording: state.status === 'recording', stopping: state.status === 'stopping',
       elapsedMs: state.elapsedMs, canRecord: this.active && live && capability.supported && !result,
       status: recordingMessage || this.message || problem || '카메라 + 현재 위젯 + 앱 소리를 녹화합니다.',

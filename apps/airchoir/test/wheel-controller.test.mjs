@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { wheelHit, WheelController } from '../src/wheel-controller.js';
 
 const center = { x: 1, y: 1 };
-const hand = (x, y, handedness, size = 0.2) => ({ palm: { x, y }, handedness, size });
+const hand = (x, y, handedness, size = 0.2) => ({ palm: { x, y }, handedness, size, pinch: true });
 const pointAt = (c, angle, r = 0.7) => ({ x: c.x + Math.sin(angle) * r, y: c.y - Math.cos(angle) * r });
-const handAt = (c, angle, label, r = 0.7) => ({ palm: pointAt(c, angle, r), handedness: label });
+const handAt = (c, angle, label, r = 0.7) => ({ palm: pointAt(c, angle, r), handedness: label, pinch: true });
 const oneConfig = { hands: 'one', counts: [8], centers: [center], radius: 1 };
 const twoConfig = { hands: 'two', counts: [8, 4], centers: [{ x: 1, y: 1 }, { x: 4, y: 1 }], radius: 1 };
 const make = (config = oneConfig) => { const controller = new WheelController(); controller.configure(config); return controller; };
@@ -68,6 +68,76 @@ test('one hand: dwell needs observations, and repeat stable frames keep one comm
     assert.equal(result.pending, false);
     assert.deepEqual(result.indices, [0]);
   }
+});
+
+test('one hand: open, missing or nonboolean pinch input never starts a chord', () => {
+  for (const pinch of [false, undefined, null, 0, 1, 'true']) {
+    const controller = make();
+    const hands = [{ ...handAt(center, 0), pinch }];
+    controller.update(hands, 0);
+    const result = controller.update(hands, 200);
+    assert.equal(result.active, false, `pinch=${String(pinch)}`);
+    assert.equal(result.reason, 'released');
+    assert.deepEqual(result.indices, [null]);
+    assert.deepEqual(result.candidates, [null]);
+  }
+});
+
+test('one hand: releasing a pinch immediately clears sounding and pending sectors, then requires a fresh dwell', () => {
+  const controller = make();
+  activate(controller, [handAt(center, 0)]);
+  const next = handAt(center, Math.PI / 4);
+  const pending = controller.update([next], 180);
+  assert.deepEqual(pending.indices, [0]);
+  assert.deepEqual(pending.candidates, [1]);
+  const release = controller.update([{ ...next, pinch: false }], 181);
+  assert.equal(release.active, false);
+  assert.equal(release.pending, false);
+  assert.deepEqual(release.indices, [null]);
+  assert.deepEqual(release.candidates, [null]);
+  assert.equal(controller.update([next], 200).active, false);
+  assert.equal(controller.update([next], 349).active, false);
+  assert.deepEqual(controller.update([next], 350).indices, [1]);
+});
+
+test('pinch distance hysteresis prevents threshold jitter without delaying release', () => {
+  const controller = make();
+  const atDistance = distance => [{ ...handAt(center, 0), pinchDist: distance, pinchShape: true, pinch: distance < .32 }];
+  controller.update(atDistance(.32), 0);
+  assert.equal(controller.update(atDistance(.32), 200).active, false);
+  assert.equal(controller.update(atDistance(.31), 210).active, false);
+  assert.equal(controller.update(atDistance(.31), 360).active, true);
+  assert.equal(controller.update(atDistance(.33), 380).active, true);
+  assert.equal(controller.update(atDistance(.49), 400).active, true);
+  assert.equal(controller.update(atDistance(.5), 401).active, false, 'one released frame stops, without 120ms delay');
+  assert.equal(controller.update(atDistance(.49), 430).active, false, 'the hold range cannot restart a released pinch');
+  assert.equal(controller.update(atDistance(.31), 450).active, false);
+  assert.equal(controller.update(atDistance(.31), 600).active, true);
+});
+
+test('malformed pinch metrics and a lost pinch shape release rather than falling back to a stale boolean', () => {
+  for (const metrics of [
+    { pinchShape: false }, { pinchDist: NaN, pinchShape: true }, { pinchDist: Infinity, pinchShape: true },
+    { pinchDist: -.1, pinchShape: true }, { pinchDist: null, pinchShape: true },
+    { pinchDist: '0.1', pinchShape: true }, { pinchDist: .1 },
+  ]) {
+    const controller = make();
+    activate(controller, [handAt(center, 0)]);
+    const result = controller.update([{ ...handAt(center, 0), ...metrics }], 151);
+    assert.equal(result.active, false, JSON.stringify(metrics));
+    assert.equal(result.reason, 'released');
+  }
+});
+
+test('one hand: releasing an unassigned second hand cannot mute the selected hand', () => {
+  const controller = make();
+  const selected = handAt(center, 0, 'Left');
+  const other = hand(4, .3, 'Right', 10);
+  activate(controller, [selected, other]);
+  assert.equal(controller.update([{ ...other, pinch: false }, selected], 180).active, true);
+  const result = controller.update([{ ...selected, pinch: false }, other], 200);
+  assert.equal(result.active, false, 'the assigned hand owns the gate even if the other hand remains pinched');
+  assert.equal(result.reason, 'released');
 });
 
 test('boundary jitter keeps the old active sector; a stable new sector commits once', () => {
@@ -192,6 +262,52 @@ test('two hands: losing one hand stops immediately and returning needs a fresh p
   assert.deepEqual(stopped.indices, [null, null]);
   assert.equal(controller.update(pair().reverse(), 200).active, false);
   assert.equal(controller.update(pair(), 350).active, true);
+});
+
+test('two hands: both assigned pinches must be held; either release clears the complete pair', () => {
+  for (const releasedRole of [0, 1]) {
+    const controller = make(twoConfig);
+    const held = pair();
+    const half = held.map((h, i) => ({ ...h, pinch: i !== releasedRole }));
+    controller.update(half, 0);
+    assert.equal(controller.update(half, 200).active, false);
+    assert.equal(activate(controller, held, 210).active, true);
+    const released = controller.update([...half].reverse(), 361);
+    assert.equal(released.active, false);
+    assert.deepEqual(released.indices, [null, null]);
+    assert.deepEqual(released.candidates, [null, null]);
+    assert.equal(controller.update(held, 380).active, false);
+    assert.equal(controller.update([...held].reverse(), 529).active, false);
+    assert.equal(controller.update(held, 530).active, true);
+  }
+});
+
+test('two hands: occlusion clears old pinch hysteresis and requires a fresh complete pair', () => {
+  const controller = make(twoConfig);
+  const atDistance = distance => pair().map(h => ({ ...h, pinchDist: distance, pinchShape: true, pinch: distance < .32 }));
+  activate(controller, atDistance(.2));
+  assert.equal(controller.update(atDistance(.4), 180).active, true);
+  assert.equal(controller.update(atDistance(.4).slice(0, 1), 181).active, false);
+  assert.equal(controller.update(atDistance(.4).reverse(), 200).active, false);
+  assert.equal(controller.update(atDistance(.4), 400).active, false, 'old hold thresholds cannot rearm lost hands');
+  assert.equal(controller.update(atDistance(.2), 410).active, false);
+  assert.equal(controller.update(atDistance(.2), 559).active, false);
+  assert.equal(controller.update(atDistance(.2).reverse(), 560).active, true);
+});
+
+test('empty frames and a stalled stream cannot reuse an old pinch hold or selection', () => {
+  for (const loss of ['empty', 'stale']) {
+    const controller = make();
+    const atDistance = distance => [{ ...handAt(center, 0), pinchDist: distance, pinchShape: true, pinch: distance < .32 }];
+    activate(controller, atDistance(.2));
+    assert.equal(controller.update(atDistance(.4), 180).active, true);
+    if (loss === 'empty') controller.update([], 181);
+    else controller.tick(431);
+    assert.equal(controller.update(atDistance(.4), 450).active, false);
+    assert.equal(controller.update(atDistance(.4), 650).active, false);
+    assert.equal(controller.update(atDistance(.2), 660).active, false);
+    assert.equal(controller.update(atDistance(.2), 810).active, true);
+  }
 });
 
 test('two hands: crossing labelled hands releases, without silently swapping their roles', () => {

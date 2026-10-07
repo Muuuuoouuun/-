@@ -414,7 +414,9 @@ def mux_video(video: Path, audio: Path, dst_stem: Path) -> Path:
     else:
         dst, acodec = dst_stem.with_suffix(".mkv"), ["-c:a", "aac", "-b:a", "256k"]
     base = [ffmpeg, "-y", "-loglevel", "error", "-i", str(video), "-i", str(audio),
-            "-map", "0:v:0", "-map", "1:a:0"]
+            "-map", "0:v:0", "-map", "1:a:0", "-af", "apad"]
+    # The source video can outlast its audio (including encoder buffering).
+    # Pad the replacement audio so -shortest ends at the final video frame.
     tail = [*acodec, "-shortest"] + (["-movflags", "+faststart"] if dst.suffix in (".mp4", ".mov", ".m4v") else [])
     if subprocess.run(base + ["-c:v", "copy", *tail, str(dst)], capture_output=True).returncode != 0:
         dst = dst_stem.with_suffix(".mp4")  # 화면 코덱을 그대로 담을 수 없으면 H.264 로
