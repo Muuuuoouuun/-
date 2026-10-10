@@ -152,6 +152,7 @@ def harmony_shift(track: PitchTrack, key: Key, direction: int, chord_at=None,
 #   perfect=n: 완전4도(±3)·완전5도(±4). 키 밖으로 나가면 같은 방향의 다른 완전음정으로
 #   close=k: 멜로디 바로 아래 k번째 '색깔 음'(코드 구성음 + 7음). 가스펠·재즈 4성 밀집 화음
 #   pedal=d: 음계 d번째 음(0 = 으뜸음, 4 = 딸림음)을 멜로디 아래에 길게. octave 로 옥타브 이동
+#   harmonic=True: 단조에서 화성단음계(7음을 반음 올림, A단조의 G#)로 쌓기 — 트로트의 꺾이는 맛
 # ---------------------------------------------------------------------------
 
 HARMONY_STYLES: dict[str, dict] = {
@@ -164,6 +165,18 @@ HARMONY_STYLES: dict[str, dict] = {
         "label": "가요 발라드", "desc": "멜로디는 맨 위, 3도·6도 아래에서 따뜻하게",
         "voices": [{"chord": (-3, -5), "steps": -2, "pan": -0.4, "name": "third_below"},
                    {"chord": (-7, -10), "steps": -5, "pan": 0.4, "name": "sixth_below", "gain": 0.85}],
+    },
+    "trot": {
+        "label": "트로트", "desc": "3도 아래 듀엣을 옥타브로 겹쳐 구성지게 (단조는 화성단음계)",
+        "voices": [{"chord": (-3, -5), "steps": -2, "harmonic": True, "pan": -0.4, "name": "third_below"},
+                   {"semis": -12, "harmonic": True, "pan": 0.4, "name": "octave_below", "gain": 0.8},
+                   {"chord": (8, 9), "steps": 5, "harmonic": True, "pan": 0.0, "name": "sixth_up", "gain": 0.5}],
+    },
+    "ccm": {
+        "label": "CCM·워십", "desc": "찬양팀처럼 하이·로우 화음 사이에 멜로디 + 회중 옥타브",
+        "voices": [{"chord": (3, 9), "steps": 2, "pan": -0.45, "name": "high"},
+                   {"chord": (-3, -9), "steps": -2, "pan": 0.45, "name": "low"},
+                   {"semis": -12, "pan": 0.0, "name": "congregation", "gain": 0.6}],
     },
     "kpop": {
         "label": "아이돌 훅", "desc": "옥타브로 겹쳐 두껍게 + 3도 위",
@@ -206,6 +219,14 @@ def harmony_voices(style: str = "classic", parts: str = "both") -> list[dict]:
         keep = CLASSIC_PARTS.get(parts, CLASSIC_PARTS["both"])
         voices = [v for v in voices if v["name"] in keep]
     return [dict(v) for v in voices]
+
+
+def harmonic_pcs(key: Key) -> list[int]:
+    """단조면 화성단음계(7음을 반음 올림), 장조는 그대로."""
+    pcs = scale_pcs(key)
+    if key.mode != "major":
+        pcs = sorted((key.tonic + 11) % 12 if p == (key.tonic + 10) % 12 else p for p in pcs)
+    return pcs
 
 
 def _chord_root(tones: set[int]) -> int | None:
@@ -264,7 +285,7 @@ def _voice_note(q: int, voice: dict, tones: set[int] | None, pcs: list[int]) -> 
 def voice_shift(track: PitchTrack, key: Key, voice: dict, chord_at=None,
                 lead_shift: np.ndarray | None = None) -> np.ndarray:
     """화음 성격의 성부 하나의 이동량(반음, 프레임별). 화음 음은 늘 음계·코드에 맞추고, 부른 비브라토는 그대로 따라간다."""
-    pcs = scale_pcs(key)
+    pcs = harmonic_pcs(key) if voice.get("harmonic") else scale_pcs(key)
     ref = _reference(track)
     melody = nearest_in_scale(ref + (lead_shift if lead_shift is not None else 0.0), pcs)
     out = np.zeros(len(ref))

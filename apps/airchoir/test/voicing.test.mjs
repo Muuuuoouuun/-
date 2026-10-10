@@ -62,6 +62,15 @@ test('기본(밀집) 첫 코드는 예전과 같은 근음 위치 · 성격마�
     const notes = voiceChord({ root: 0, quality }, 'power').notes;
     assert.ok(!rel(notes, 0).has(3) && !rel(notes, 0).has(4), `${quality}: ${notes}`);
   }
+  // 트로트: 장3화음은 6화음(A), 딸림화음은 b9(Ab)을 얹은 7화음
+  assert.ok(rel(voiceChord(C, 'trot').upper, 0).has(9));
+  const e7 = voiceChord({ root: 4, quality: '7' }, 'trot');
+  assert.deepEqual([...rel(e7.upper, 4)].sort((a, b) => a - b), [1, 4, 7, 10]); // G# B D F
+  assert.equal(e7.bass[0] % 12, 4);
+  // CCM: 왼손 근음·5도, 오른손 5·1·2·3 (add2)
+  const ccm = voiceChord(C, 'ccm');
+  assert.deepEqual(ccm.bass, [36, 43]);
+  assert.deepEqual([...rel(ccm.upper, 0)].sort((a, b) => a - b), [0, 2, 4, 7]);
   // 4도 쌓기: Dm → 소 왓(So What) 모양, 위 네 음이 4도·4도·4도·3도
   const dm = voiceChord({ root: 2, quality: 'min' }, 'quartal').upper;
   assert.deepEqual(dm.slice(1).map((n, i) => n - dm[i]), [5, 5, 4]);

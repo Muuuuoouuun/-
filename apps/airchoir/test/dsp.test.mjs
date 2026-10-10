@@ -111,6 +111,31 @@ test('화음 성격: 발라드는 멜로디가 늘 맨 위, 가스펠은 2도가
   assert.deepEqual(harmonyTargets(64, 2, 0, 'major', 'kpop').targets, [52, 67]);
 });
 
+test('화음 성격: 트로트는 3도 아래 듀엣을 옥타브로 겹치고, 단조에서는 화성단음계(G#)로 쌓는다', () => {
+  assert.deepEqual(harmonyTargets(64, 2, 0, 'major', 'trot').targets, [60, 52]); // E4: C4 + 멜로디 옥타브 아래 E3
+  assert.deepEqual(harmonyTargets(64, 3, 0, 'major', 'trot').targets, [60, 52, 72]); // + 6도 위 = 3도 아래의 옥타브 위
+  // A단조 B4 위의 3도 아래: 자연단음계면 G4, 트로트는 G#4
+  assert.equal(harmonyTargets(71, 2, 9, 'minor', 'ballad').targets[0], 67); // 발라드의 3도 아래
+  assert.deepEqual(harmonyTargets(71, 1, 9, 'minor', 'trot').targets, [68]);
+  assert.deepEqual(harmonyTargets(80, 1, 9, 'minor', 'trot').targets, [76], 'G# 멜로디도 화성단음계 안에서');
+  // 장조는 화성단음계를 쓰지 않는다
+  for (let m = 60; m <= 72; m++) {
+    for (const t of harmonyTargets(m, 4, 0, 'major', 'trot').targets) assert.ok(C_MAJOR.has(pcOf(t)), `${m} → ${t}`);
+  }
+});
+
+test('화음 성격: CCM은 하이·로우 화음 사이에 멜로디, 회중 옥타브와 으뜸음 패드를 더한다', () => {
+  for (let m = 60; m <= 72; m++) {
+    if (!C_MAJOR.has(pcOf(m))) continue;
+    const [high, low] = harmonyTargets(m, 2, 0, 'major', 'ccm').targets;
+    assert.ok(high > m && low < m, `${m}: ${high}/${low}`); // 멜로디가 가운데
+  }
+  assert.deepEqual(harmonyTargets(64, 2, 0, 'major', 'ccm').targets, [67, 60]); // E4: G4 + C4 → C 화음
+  const memo = {};
+  const pads = [64, 65, 67, 69, 67, 64].map((m) => harmonyTargets(m, 4, 0, 'major', 'ccm', memo).targets[3]);
+  assert.ok(pads.every((p) => p === pads[0] && pcOf(p) === 0), `패드는 같은 C 그대로: ${pads}`);
+});
+
 test('화음 성격: 파워는 3도 없이 완전음정만, 키 밖으로 나가지 않는다', () => {
   for (const [tonic, scale] of [[0, 'major'], [9, 'minor'], [7, 'major']]) {
     const inKey = new Set(SCALES[scale].map((d) => (tonic + d) % 12));

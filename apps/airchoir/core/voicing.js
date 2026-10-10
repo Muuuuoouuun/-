@@ -5,6 +5,8 @@ import { QUALITIES } from './chords.js';
 export const VOICING_STYLES = Object.freeze([
   { id: 'close', label: '기본 (밀집)', short: '기본', desc: '근음 위에 3화음·7화음을 촘촘히. 가장 또렷한 기본 소리.' },
   { id: 'ballad', label: '가요 발라드', short: '발라드', desc: '낮은 근음 위로 add9을 펼쳐 맑고 따뜻하게. 발라드 피아노 느낌.' },
+  { id: 'trot', label: '트로트', short: '트로트', desc: '장조는 6화음, 딸림화음은 7(b9)로 구성지게. 아코디언·오르간 반주 느낌.' },
+  { id: 'ccm', label: 'CCM·워십', short: 'CCM', desc: '왼손 근음·5도를 열어 두고 오른손 5·1·2·3(add2). 찬양 건반 느낌.' },
   { id: 'citypop', label: '시티팝·R&B', short: '텐션', desc: '7·9·11·13 텐션을 얹어 세련되게. 근음은 아래, 위는 루트리스.' },
   { id: 'open', label: '오픈 (웅장)', short: '오픈', desc: '근음·5도를 아래에 넓게, 3도는 위로. 오케스트라·워십 패드 느낌.' },
   { id: 'power', label: '파워 코드', short: '파워', desc: '3도 없이 근음·5도·옥타브. 락 기타처럼 비고 단단하게.' },
@@ -58,6 +60,32 @@ const SHAPES = {
       aug: [4, 8, 12],
     }[q.family];
     return { bass: [-12], upper, invert: true, center: 65, bassCenter: 40, minUpper: 52 };
+  },
+  trot(q) {
+    // 옛 가요·트로트 반주: 장3화음은 6화음(C6), 딸림화음은 b9을 얹은 7화음(E7b9 — 감7 울림), 단조는 3화음 그대로
+    const upper = {
+      maj: q.seventh ? [4, 7, 11, 12] : [4, 7, 9, 12],
+      min: q.seventh ? [3, 7, 10, 12] : [3, 7, 12],
+      dom: [4, 7, 10, 13],
+      sus: q.seventh ? [5, 7, 10, 12] : [5, 7, 12],
+      halfdim: [3, 6, 10, 12],
+      dim: [3, 6, 9, 12],
+      aug: [4, 8, 12],
+    }[q.family];
+    return { bass: [-12], upper, invert: true, center: 61, bassCenter: 40, minUpper: 50 };
+  },
+  ccm(q) {
+    // 찬양 건반: 왼손은 근음·5도로 열고, 오른손은 5·1·2·3 덩어리(add2). 3도를 위에 두어 맑게
+    const upper = {
+      maj: q.seventh ? [7, 11, 14, 16] : q.sixth ? [7, 9, 14, 16] : [7, 12, 14, 16],
+      min: q.seventh ? [7, 10, 14, 15] : [7, 12, 14, 15],
+      dom: q.ninth ? [4, 7, 10, 14] : [7, 10, 14, 16],
+      sus: q.sus === 2 ? [7, 12, 14] : q.seventh ? [5, 10, 14, 19] : [5, 7, 12, 14],
+      halfdim: [3, 6, 10, 12],
+      dim: [3, 6, 12],
+      aug: [4, 8, 12],
+    }[q.family];
+    return { bass: [-12, q.fifth - 12], upper, invert: true, center: 66, bassCenter: 40, minUpper: 55 };
   },
   citypop(q) {
     const upper = {

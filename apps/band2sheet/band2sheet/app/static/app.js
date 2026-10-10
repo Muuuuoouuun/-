@@ -462,7 +462,8 @@ const HARMONY_STEMS = {
   harmony_octave_below: "옥타브 아래 화음", harmony_octave_up: "옥타브 위 화음",
   harmony_close1: "밀집 화음 1", harmony_close2: "밀집 화음 2", harmony_close3: "밀집 화음 3",
   harmony_fifth_below: "5도 아래 화음", harmony_fourth_up: "4도 위 화음", harmony_fourth_below: "4도 아래 화음",
-  harmony_tonic: "으뜸음 지속", harmony_fifth: "딸림음 지속",
+  harmony_tonic: "으뜸음 지속", harmony_fifth: "딸림음 지속", harmony_sixth_up: "6도 위 코러스",
+  harmony_high: "하이 하모니", harmony_low: "로우 하모니", harmony_congregation: "회중 옥타브",
 };
 
 // 다시 만들기 패널: 선택한 버전의 설정으로 채움

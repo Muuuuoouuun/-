@@ -6,6 +6,8 @@ export const SCALES = {
   major: [0, 2, 4, 5, 7, 9, 11],
   minor: [0, 2, 3, 5, 7, 8, 10],
 };
+// 화성단음계: 단조의 7음을 반음 올린 것 (A단조의 G#). 트로트·엔카 단조의 '꺾이는' 맛
+const HARMONIC_MINOR = [0, 2, 3, 5, 7, 8, 11];
 
 export const hzToMidi = (hz) => 69 + 12 * Math.log2(hz / 440);
 export const midiToHz = (m) => 440 * Math.pow(2, (m - 69) / 12);
@@ -46,6 +48,29 @@ export const HARMONY_STYLES = Object.freeze([
       voices('3도 + 6도 아래', [{ steps: -2 }, { steps: -5 }]),
       voices('3·6도 아래 + 옥타브', [{ steps: -2 }, { steps: -5 }, { semis: -12 }]),
       voices('+ 3도 위 하이', [{ steps: -2 }, { steps: -5 }, { semis: -12 }, { steps: 2, gain: 0.45 }]),
+    ],
+  },
+  {
+    // 3도 아래 듀엣을 옥타브로 겹친다 (트로트 브라스·코러스가 3도 병행을 옥타브로 부는 모양).
+    // 단조에서는 화성단음계로 쌓아 이끈음(A단조의 G#)이 살아 있다.
+    id: 'trot', label: '트로트', short: '트로트', harmonicMinor: true,
+    desc: '3도 아래 듀엣을 옥타브로 겹쳐 구성지게. 단조에서는 화성단음계로 꺾이는 맛.',
+    presets: [
+      voices('3도 아래 듀엣', [{ steps: -2 }]),
+      voices('+ 옥타브 아래', [{ steps: -2 }, { semis: -12 }]),
+      voices('+ 6도 위 코러스', [{ steps: -2 }, { semis: -12 }, { steps: 5, gain: 0.55 }]),
+      voices('+ 옥타브 위', [{ steps: -2 }, { semis: -12 }, { steps: 5, gain: 0.55 }, { semis: 12, gain: 0.4 }]),
+    ],
+  },
+  {
+    // 찬양팀 3성부: 하이(3도 위)·로우(3도 아래) 사이에 멜로디. 회중 옥타브와 으뜸음 패드를 더한다
+    id: 'ccm', label: 'CCM·워십', short: 'CCM',
+    desc: '찬양팀처럼 하이·로우 화음 사이에 멜로디. 회중 옥타브와 으뜸음 패드까지.',
+    presets: [
+      voices('하이 하모니', [{ steps: 2 }]),
+      voices('하이 + 로우', [{ steps: 2 }, { steps: -2 }]),
+      voices('+ 회중 옥타브', [{ steps: 2 }, { steps: -2 }, { semis: -12, gain: 0.7 }]),
+      voices('+ 으뜸음 패드', [{ steps: 2 }, { steps: -2 }, { semis: -12, gain: 0.7 }, { pedal: 0, octave: -1, gain: 0.45 }]),
     ],
   },
   {
@@ -171,7 +196,7 @@ function pedalTarget(melody, pc, prev) {
  * memo: 지속음 자리를 프레임 사이에 기억할 객체 (없으면 매번 새로 고른다).
  */
 export function harmonyTargets(midi, presetIndex, tonic, scaleName, styleId = DEFAULT_HARMONY_STYLE, memo = null) {
-  const scale = SCALES[scaleName] || SCALES.major;
+  const scale = scaleName === 'minor' && harmonyStyle(styleId).harmonicMinor ? HARMONIC_MINOR : SCALES[scaleName] || SCALES.major;
   const snap = snapToScale(midi, tonic, scale);
   const preset = harmonyPreset(styleId, presetIndex);
   const targets = [];
@@ -181,7 +206,7 @@ export function harmonyTargets(midi, presetIndex, tonic, scaleName, styleId = DE
       const pc = (((tonic + scale[v.pedal % scale.length]) % 12) + 12) % 12;
       const key = `${styleId}:${v.pedal}`;
       const base = pedalTarget(snap.midi, pc, memo?.[key]);
-      if (memo && !v.octave) memo[key] = base;
+      if (memo) memo[key] = base; // 옥타브만 다른 성부도 같은 자리를 이어 쓴다
       t = base + 12 * (v.octave || 0);
     } else if (v.steps != null) {
       const chained = v.on != null && targets[v.on] != null;

@@ -235,6 +235,8 @@ sh dev.sh                # 앱 전용 .venv · .data · .cache 사용, http://12
 |---|---|---|
 | `classic` 정석 3도 (기본) | 3도 위 + 아래 (`--harmony up/down` 으로 한쪽만) | 기존과 같음 |
 | `ballad` 가요 발라드 | 3도 아래 + 6도 아래 | 멜로디가 늘 맨 위, 아래에서 따뜻하게 |
+| `trot` 트로트 | 3도 아래 + 옥타브 아래 + 6도 위 | 3도 듀엣을 옥타브로 겹쳐 구성지게. 단조는 화성단음계(코드를 몰라도 A단조의 G#) |
+| `ccm` CCM·워십 | 하이(코드 구성음 위) + 로우(아래) + 회중 옥타브 | 찬양팀처럼 멜로디가 가운데 |
 | `kpop` 아이돌 훅 | 옥타브 아래 더블 + 3도 위 + 옥타브 위 | 후렴 훅이 꽉 차게 |
 | `gospel` 가스펠·재즈 | 멜로디 바로 아래로 7화음 세 성부 (코드 + 그 코드의 7음) | 2도가 부딪히는 진한 텐션 |
 | `power` 파워 5도 | 5도 아래 + 옥타브 아래 (키 밖이면 4도로) | 3도 없이 웅장하게 |
@@ -246,6 +248,7 @@ sh dev.sh                # 앱 전용 .venv · .data · .cache 사용, http://12
 ```bash
 band2sheet remix 내노래.mp4                                  # 화음 넣기 (기본)
 band2sheet remix 내노래.mp4 --harmony-style ballad           # 가요 발라드 화음 (3·6도 아래)
+band2sheet remix 내노래.mp4 --harmony-style trot --key Am    # 트로트 화음 (단조는 화성단음계)
 band2sheet remix 내노래.mp4 --style pad --with-harmony --harmony-style drone   # 워십 패드 + 드론 화음
 band2sheet remix 내노래.mp4 --autotune                       # + 오토튠 (강도 0.7)
 band2sheet remix 내노래.mp4 --autotune 1 --hard-tune         # 로봇 보이스

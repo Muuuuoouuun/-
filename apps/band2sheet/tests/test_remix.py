@@ -120,7 +120,7 @@ def test_harmony_styles_follow_their_character():
     def sung(style, chord_at=None, parts="both"):
         return [[_sung(tr, voice_shift(tr, key, v, chord_at), t) for t in at] for v in harmony_voices(style, parts)]
 
-    assert set(HARMONY_STYLES) == {"classic", "ballad", "kpop", "gospel", "power", "quartal", "drone"}
+    assert set(HARMONY_STYLES) == {"classic", "ballad", "trot", "ccm", "kpop", "gospel", "power", "quartal", "drone"}
     # 정석 3도는 예전 harmony_shift 와 똑같다
     for d, part in ((1, "up"), (-1, "down")):
         (v,) = harmony_voices("classic", part)
@@ -146,6 +146,20 @@ def test_harmony_styles_follow_their_character():
     # 드론: 멜로디가 움직여도 G·D 지속음은 그대로
     tonic, dominant = sung("drone")
     assert tonic == [67] * 4 and dominant == [62] * 4
+    # 트로트: 3도 아래 듀엣 + 옥타브 아래 + 6도 위(= 3도 아래의 옥타브 위)
+    third, octave, sixth = sung("trot", c_chord)
+    assert third[0] == 72 and octave[0] == 64 and sixth[0] == 84
+    # 트로트 단조: A단조 B4 위의 3도 아래는 화성단음계 G#4 (코드를 몰라도)
+    am = Key.parse("Am")
+    tb = _track([(71, 0.5)])
+    (v3,) = [v for v in harmony_voices("trot") if v["name"] == "third_below"]
+    assert _sung(tb, voice_shift(tb, am, v3), 0.25) == 68
+    (b3,) = [v for v in harmony_voices("ballad") if v["name"] == "third_below"]
+    assert _sung(tb, voice_shift(tb, am, b3), 0.25) == 67  # 발라드는 자연단음계 G4
+    # CCM: 하이·로우 화음 사이에 멜로디 + 회중 옥타브
+    high, low, congregation = sung("ccm", c_chord)
+    assert all(lo < m < hi for hi, lo, m in zip(high, low, (76, 74, 72, 71)))
+    assert high[0] == 79 and low[0] == 72 and congregation == [64, 62, 60, 59]
     with pytest.raises(ValueError):
         harmony_voices("없는 성격")
 
@@ -375,7 +389,7 @@ def test_app_remix_job(tmp_path):
     assert client.post("/api/remix", files={"file": ("a.mp4", data)},
                        data={"options": '{"style": "rock"}'}).status_code == 400
     assert client.post("/api/remix", files={"file": ("a.mp4", data)},
-                       data={"options": '{"harmony_style": "trot"}'}).status_code == 400
+                       data={"options": '{"harmony_style": "polka"}'}).status_code == 400
 
     opts = json.dumps({"style": "harmony", "harmony": "up", "autotune": True, "autotune_strength": 0.9,
                        "title": "주일 찬양"})
