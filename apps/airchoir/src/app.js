@@ -489,9 +489,11 @@ function bindControls() {
       station.keepInside(orb);
       audio.mix(orb);
     }
+    // 클릭·키보드 조작: 숫자 줄로 휠 항목 (두 손 코드 종류는 Z~/ 줄). 같은 키를 다시 누르면 OFF
+    else if (!e.shiftKey && performer.keySelect(e.code)) e.preventDefault();
     else if (ENGINE_KEYS[k] && performer.state.product === 'choir') setEngine(ENGINE_KEYS[k]);
-    // H: 화음 성격 바꾸기 (한글 입력 상태에서도 같은 자리 키)
-    else if (e.code === 'KeyH') { e.preventDefault(); performer.cycleStyle(); }
+    // H: 다음 화음 성격, Shift+H: 이전 (한글 입력 상태에서도 같은 자리 키)
+    else if (e.code === 'KeyH') { e.preventDefault(); performer.cycleStyle(e.shiftKey ? -1 : 1); }
     else if (mode === 'pointer' && performer.legacy && k >= '0' && k <= '5') { pointer.fingers = +k; performer.rearmLegacy(); }
   });
 }
@@ -836,7 +838,7 @@ window.airchoir.performance = performer.state;
 window.airchoir.performanceController = performer;
 focusSession = new FocusSession({
   video: $('video'), overlay, stage: $('stage'), getAudio: () => audio,
-  getPerformance: () => ({ ...performer.state, ready: sessionActive && audio.ready, sourceKind: audio.source?.kind }),
+  getPerformance: () => ({ ...performer.state, styles: performer.styles, ready: sessionActive && audio.ready, sourceKind: audio.source?.kind }),
   getWheelGeometry: () => performer.ui.getWheelGeometry(),
   getTheme: () => theme,
   isReady: () => sessionActive && audio.ready,
@@ -851,6 +853,7 @@ focusSession = new FocusSession({
     }
   },
   onInput: value => performer.change('input', value),
+  onStyle: (kind, value) => performer.setStyle(kind, value),
   onSettings: () => performer.ui.openSettings(), notify: text => notice(text),
 });
 window.airchoir.focus = focusSession;

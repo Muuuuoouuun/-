@@ -19,11 +19,11 @@ export function validateStyles(input) {
   };
 }
 
-/** 다음 성격 (마지막 다음은 처음). */
-export function nextStyle(kind, id) {
+/** 다음 성격 (마지막 다음은 처음). step = -1 이면 이전 성격. */
+export function nextStyle(kind, id, step = 1) {
   const list = STYLE_LISTS[kind];
-  const index = list.findIndex((style) => style.id === id);
-  return list[(index + 1) % list.length].id;
+  const index = Math.max(0, list.findIndex((style) => style.id === id));
+  return list[(((index + step) % list.length) + list.length) % list.length].id;
 }
 
 export function loadStyles(storage) {

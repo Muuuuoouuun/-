@@ -1308,6 +1308,35 @@ button.wheel-off[data-armed=true],.wheel-center-hint[data-armed=true] { border-c
 .wheel-center-hint { pointer-events:none; font-family:var(--font-body); }
 button.wheel-off:hover:not(:disabled) { background:#342a25; border-color:var(--bad); }
 .performance-wheels[data-input=hands] .wheel-title::after { content:" · 손동작"; }
+/* 클릭·키보드 조작에서 항목마다 누르는 키 */
+.wheel-choice .wheel-key {
+  position:absolute; top:-7px; right:-7px;
+  min-width:18px; height:18px; padding:0 4px;
+  display:grid; place-items:center;
+  border:1px solid var(--wheel-line); border-radius:5px;
+  background:var(--wheel-center); color:#c5d0c3;
+  font:600 10px/1 var(--font-data); text-shadow:none; pointer-events:none;
+}
+button.wheel-choice[aria-pressed=true] .wheel-key { border-color:var(--wheel-selected-line); background:var(--wheel-selected-line); color:var(--wheel-center); }
+/* 합창 휠: 인원 아래 쌓는 방식 */
+.wheel-choice .wheel-choice-sub {
+  display:block; margin-top:2px; max-width:84px;
+  font:500 10px/1.2 var(--font-body); color:inherit; opacity:.85; overflow-wrap:anywhere;
+}
+/* 화음 성격을 바꿀 때 무대 위에 잠깐 */
+.style-flash {
+  position:absolute; z-index:4; left:50%; top:14px; transform:translateX(-50%);
+  display:grid; gap:2px; max-width:min(420px,calc(100% - 32px)); padding:9px 14px;
+  border:1px solid var(--wheel-selected-line, var(--line)); border-radius:10px;
+  background:color-mix(in srgb, var(--panel) 92%, transparent); box-shadow:0 8px 24px #0006;
+  text-align:center; pointer-events:none;
+}
+.style-flash[hidden] { display:none; }
+.style-flash strong { font-size:15px; color:var(--fg); }
+.style-flash span { font-size:12px; color:var(--muted); }
+.style-flash.show { animation:style-flash 1.8s ease both; }
+@keyframes style-flash { 0% { opacity:0; transform:translate(-50%,-6px); } 10%,80% { opacity:1; transform:translate(-50%,0); } 100% { opacity:0; } }
+@media(prefers-reduced-motion:reduce) { .style-flash.show { animation:none; } }
 
 .wheel-dialog {
   width:min(860px,calc(100% - 32px));

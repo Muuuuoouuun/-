@@ -2,6 +2,7 @@ import { chordLabel, cloneConfig, loadConfig, saveConfig, validateConfig } from 
 import { Voicer } from '../core/voicing.js';
 import { loadStyles, saveStyles, validateStyles, nextStyle, styleInfo } from '../core/styles.js';
 import { WheelController } from './wheel-controller.js';
+import { wheelKey } from './wheel-keys.js';
 import { SENSITIVITY, DEFAULT_SENSITIVITY } from './gestures.js';
 import { WheelUI } from './wheel-ui.js';
 
@@ -34,7 +35,8 @@ export class Performance {
     this.ui = new WheelUI({ config: this.state.config,
       styles: this.styles,
       onStyle: (kind, value) => this.setStyle(kind, value),
-      onCycleStyle: () => this.cycleStyle(),
+      onCycleStyle: (step) => this.cycleStyle(step),
+      onKey: (code) => this.keySelect(code),
       sensitivity: this.sensitivity,
       sensitivities: Object.entries(SENSITIVITY).map(([id, v]) => ({ id, label: v.label, description: v.description })),
       onSensitivity: value => (this.onSensitivity ? this.onSensitivity(value) : this.setSensitivity(value)),
@@ -77,9 +79,10 @@ export class Performance {
       voicer.setSmooth(next.smooth);
       if (this.state.armed && this.state.current.chord) this.playCurrentChord();
     }
-    if (kind !== 'smooth' && !(this.state.armed && this.state.product === 'chord')) {
+    if (kind !== 'smooth') {
       const info = styleInfo(kind, next[kind]);
-      this.state.status = `화음 성격 · ${info.label}`;
+      if (!(this.state.armed && this.state.product === 'chord')) this.state.status = `화음 성격 · ${info.label}`;
+      this.ui.flashStyle?.(info); // 무대 위에 잠깐: 집중 화면·키보드로 바꿀 때도 무엇이 됐는지 보이게
     }
     const saved = this.storage ? saveStyles(this.storage, next) : { ok: false };
     if (!saved.ok && saved.error && !this.styleSaveWarned) { this.styleSaveWarned = true; this.notify(saved.error); }
@@ -87,10 +90,31 @@ export class Performance {
     return true;
   }
 
-  /** 지금 악기의 화음 성격을 다음 것으로 (H 키). */
-  cycleStyle() {
+  /** 지금 악기의 화음 성격을 다음 것으로 (H 키, Shift+H 는 step = -1 로 이전). */
+  cycleStyle(step = 1) {
     const kind = this.state.product === 'choir' ? 'choir' : 'voicing';
-    return this.setStyle(kind, nextStyle(kind, this.styles[kind]));
+    return this.setStyle(kind, nextStyle(kind, this.styles[kind], step));
+  }
+
+  /**
+   * 클릭·키보드 조작에서 숫자 줄(1~0, -, =)은 첫째 휠, 아래 줄(Z~/)은 두 손의 코드 종류 휠.
+   * 지금 울리는 항목의 키를 다시 누르면 OFF. 처리한 키면 true.
+   */
+  keySelect(code) {
+    if (this.state.input !== 'manual' || this.settingsOpen || !this.isReady()) return false;
+    const { product, hands, config, current, armed } = this.state;
+    const hit = wheelKey(code, { product, hands });
+    if (!hit) return false;
+    const [type, values] = product === 'choir' ? ['choir', config.choir]
+      : hands === 'one' ? ['chord', config.chords]
+        : hit.wheel === 0 ? ['root', config.roots] : ['quality', config.qualities];
+    if (hit.index >= values.length) return true; // 휠에 없는 자리: 다른 단축키로 넘기지 않고 무시
+    const value = values[hit.index];
+    const same = type === 'chord' ? current.chord?.root === value.root && current.chord?.quality === value.quality
+      : current[type] === value;
+    if (armed && same) this.stop('OFF · 같은 키를 다시 누르면 연주합니다.');
+    else this.select({ type, value });
+    return true;
   }
 
   chordVoicer() {

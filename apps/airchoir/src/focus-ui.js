@@ -1,4 +1,5 @@
 // Presentation only. The caller owns camera/audio, recording, blobs and fullscreen.
+import { STYLE_LISTS, styleInfo } from '../core/styles.js';
 const element = (tag, className = '', text = '') => {
   const el = document.createElement(tag);
   if (className) el.className = className;
@@ -102,6 +103,13 @@ export class FocusUI {
     }
     this.input.addEventListener('change', () => this.call('onInput', this.input.value));
     inputField.append(inputLabel, this.input);
+    // 화음 성격: 키보드 없는 휴대폰에서도 집중 화면을 벗어나지 않고 바꾼다 (H / Shift+H 와 같음)
+    const styleField = element('label', 'focus-input-field focus-style-field');
+    this.style = element('select'); this.style.id = 'focus-style';
+    this.style.setAttribute('aria-keyshortcuts', 'H');
+    this.styleKind = null;
+    this.style.addEventListener('change', () => this.call('onStyle', this.styleKind, this.style.value));
+    styleField.append(element('span', '', '화음 성격'), this.style);
     const settings = button('focus-settings', '설정', 'quiet', '휠 설정');
     settings.setAttribute('aria-haspopup', 'dialog'); settings.setAttribute('aria-controls', 'wheel-dialog');
     settings.addEventListener('click', () => this.call('onSettings'));
@@ -120,7 +128,7 @@ export class FocusUI {
     this.fullscreen.addEventListener('click', () => this.call('onFullscreen'));
     // 자주 안 쓰는 것(설정·전체 화면·작업 화면)은 앞에 작게, 정지·녹화는 끝에 크게
     const secondary = element('div', 'focus-secondary-actions');
-    secondary.append(inputField, settings, this.fullscreen, exit);
+    secondary.append(inputField, styleField, settings, this.fullscreen, exit);
     const primary = element('div', 'focus-primary-actions');
     primary.append(stop, this.record);
     actions.append(secondary, primary);
@@ -230,6 +238,17 @@ export class FocusUI {
     if (this.input.value !== input) this.input.value = input;
     this.input.disabled = !ready || stopping;
     this.input.querySelector('option[value="hands"]').disabled = this.state.product === 'chord' && !this.state.cameraAvailable;
+    const kind = this.state.product === 'chord' ? 'voicing' : 'choir';
+    if (this.styleKind !== kind) {
+      this.styleKind = kind;
+      this.style.replaceChildren(...STYLE_LISTS[kind].map(({ id, label }) => {
+        const option = element('option', '', label); option.value = id; return option;
+      }));
+      this.style.setAttribute('aria-label', kind === 'choir' ? '화음 성격: 목소리를 쌓는 방식' : '화음 성격: 코드 보이싱');
+    }
+    const styleId = styleInfo(kind, this.state.styles?.[kind]).id;
+    if (this.style.value !== styleId) this.style.value = styleId;
+    this.style.disabled = !ready || stopping;
     setText(this.scope, recording ? '모드·조작·설정을 바꾸면 녹화를 마무리합니다.' : '카메라·위젯 + 앱 소리(루프·클릭 포함) · 이 기기에만 녹화');
     setText(this.fullscreen, this.state.fullscreen ? '화면 복귀' : '전체 화면');
     this.fullscreen.setAttribute('aria-label', this.state.fullscreen ? '전체 화면 종료' : '전체 화면 전환');

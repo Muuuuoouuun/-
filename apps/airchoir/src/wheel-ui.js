@@ -1,5 +1,7 @@
 import { ROOTS, QUALITIES, CHOIR_OPTIONS, DEFAULT_CONFIG, cloneConfig, validateConfig, chordKey, chordLabel } from '../core/chords.js';
 import { DEFAULT_STYLES, STYLE_LISTS, styleInfo } from '../core/styles.js';
+import { harmonyPreset } from '../core/dsp.js';
+import { keyFor as wheelKeyCode, keyLabel } from './wheel-keys.js';
 
 const GROUPS = { chords: '한 손 코드', roots: '두 손 · 근음', qualities: '두 손 · 코드 종류', choir: '합창 프리셋' };
 const OPTIONS = { roots: ROOTS, qualities: QUALITIES, choir: CHOIR_OPTIONS };
@@ -91,10 +93,14 @@ export class WheelUI {
       if (e.key === 'Escape') {
         e.preventDefault();
         this.call('onStop');
-      } else if (e.code === 'KeyH' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        // 휠 버튼에 초점이 있어도 H로 화음 성격을 넘긴다 (페이지 단축키는 여기까지 오지 않음)
+      } else if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) {
+        // 누르고 있는 키·조합 키는 휠이 쓰지 않는다
+      } else if (e.code === 'KeyH') {
+        // 휠 버튼에 초점이 있어도 H(다음)·Shift+H(이전)로 화음 성격을 넘긴다 (페이지 단축키는 여기까지 오지 않음)
         e.preventDefault();
-        this.call('onCycleStyle');
+        this.call('onCycleStyle', e.shiftKey ? -1 : 1);
+      } else if (!e.shiftKey && this.call('onKey', e.code)) {
+        e.preventDefault();
       }
     }, { signal: this.events.signal });
     this.stageHost.addEventListener('pointerleave', () => this.call('onPointerLeave'), { signal: this.events.signal });
@@ -102,6 +108,26 @@ export class WheelUI {
   }
 
   call(name, ...args) { return (this.callbacks[name] || noop)(...args); }
+
+  /** 화음 성격이 바뀌면 무대 가운데 위에 잠깐 이름과 설명을 띄운다 (집중 화면에서도 보이게). */
+  flashStyle(info) {
+    const stage = this.stageHost.parentElement;
+    if (!stage) return;
+    if (!this.flash) {
+      this.flash = node('div', 'style-flash');
+      this.flash.setAttribute('role', 'status');
+      this.flash.setAttribute('aria-live', 'polite');
+      this.flash.hidden = true;
+      stage.append(this.flash);
+    }
+    this.flash.replaceChildren(node('strong', '', info.label), node('span', '', info.desc));
+    this.flash.hidden = false;
+    this.flash.classList.remove('show');
+    void this.flash.offsetWidth; // 같은 이름을 연달아 눌러도 다시 나타나게
+    this.flash.classList.add('show');
+    clearTimeout(this.flashTimer);
+    this.flashTimer = setTimeout(() => { this.flash.hidden = true; this.flash.classList.remove('show'); }, 1800);
+  }
 
   get settingsOpen() { return this.dialog.open; }
 
@@ -212,6 +238,7 @@ export class WheelUI {
       this.signature = signature;
       this.buildWheels();
     }
+    this.renderChoirNames(this.state.styles || DEFAULT_STYLES);
     for (const entry of this.choices) {
       const selected = current[entry.type] != null && keyFor(entry.type, current[entry.type]) === keyFor(entry.type, entry.value);
       entry.button.setAttribute('aria-pressed', String(selected));
@@ -234,6 +261,18 @@ export class WheelUI {
     this.stageHost.dataset.armed = String(armed);
   }
 
+  // 합창 휠: '2명' 아래에 지금 화음 성격에서 무엇을 쌓는지 (예: 3도 + 6도 아래)
+  renderChoirNames(styles) {
+    for (const entry of this.choices) {
+      if (entry.type !== 'choir' || !entry.sub) continue;
+      const name = harmonyPreset(styles.choir, entry.value).name;
+      if (entry.sub.textContent !== name) {
+        entry.sub.textContent = name;
+        entry.button.setAttribute('aria-label', `합창 ${labelFor('choir', entry.value)} · ${name}`);
+      }
+    }
+  }
+
   buildWheels() {
     const { product, hands, input } = this.state;
     const holdInput = product === 'chord' && input === 'hands';
@@ -244,7 +283,7 @@ export class WheelUI {
     this.choices = [];
     this.panels = [];
     this.stageHost.classList.toggle('two-wheels', specifications.length === 2);
-    for (const [type, title, group] of specifications) {
+    for (const [wheelIndex, [type, title, group]] of specifications.entries()) {
       const panel = node('section', 'wheel-panel');
       panel.setAttribute('aria-label', `${title} 선택`);
       const heading = node('h2', 'wheel-title', title);
@@ -270,8 +309,19 @@ export class WheelUI {
         const p = point(dense ? 40 : 36.5, i * 360 / values.length);
         el.style.left = `${p[0]}%`; el.style.top = `${p[1]}%`;
         el.addEventListener('click', () => this.call('onSelection', { type, value }));
+        let sub = null;
+        if (type === 'choir') {
+          sub = node('small', 'wheel-choice-sub');
+          el.append(sub);
+        }
+        // 클릭·키보드 조작: 이 항목을 누르는 키 (숫자 줄 / 두 손의 코드 종류는 아래 줄)
+        const code = input === 'manual' ? wheelKeyCode(wheelIndex, i) : null;
+        if (code) {
+          el.append(node('kbd', 'wheel-key', keyLabel(code)));
+          el.setAttribute('aria-keyshortcuts', keyLabel(code));
+        }
         circle.append(el);
-        this.choices.push({ type, value, button: el, path: svg.querySelector(`path[data-index="${i}"]`) });
+        this.choices.push({ type, value, button: el, sub, path: svg.querySelector(`path[data-index="${i}"]`) });
       });
       const center = holdInput ? node('div', 'wheel-center-hint', '핀치') : button('OFF', null, 'wheel-off');
       center.append(node('small', '', holdInput ? '놓으면 쉼' : '소리 끄기'));

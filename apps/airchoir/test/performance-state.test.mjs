@@ -393,3 +393,59 @@ test('화음 성격: 합창에서 H는 합창 쌓기 방식을 바꾸고 설명�
   assert.match(p.state.status, /정석 3도/);
   assert.equal(p.styles.voicing, 'close');
 });
+
+test('키보드 연주: 숫자 줄로 휠 항목을 고르고, 울리는 항목의 키를 다시 누르면 OFF', t => {
+  const { p, events } = setup(t, { input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: false };
+  assert.equal(p.keySelect('Digit1'), true);
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+  assert.equal(p.state.armed, true);
+  p.keySelect('Digit6'); // 기본 휠 여섯째 = Am
+  assert.deepEqual(p.state.current.chord, { root: 9, quality: 'min' });
+  const before = sounds(events).length;
+  assert.equal(p.keySelect('Digit6'), true);
+  assert.equal(p.state.armed, false, '같은 키 = OFF');
+  assert.equal(sounds(events).length, before);
+  assert.equal(p.keySelect('Digit9'), true, '휠에 없는 자리는 다른 단축키로 넘기지 않고 무시');
+  assert.equal(p.state.armed, false);
+  assert.equal(p.keySelect('KeyZ'), false, '한 손 코드는 아래 줄을 쓰지 않음');
+
+  // 두 손: 숫자 줄 = 근음, 아래 줄 = 코드 종류
+  p.change('hands', 'two');
+  p.keySelect('Digit4');
+  assert.equal(p.state.armed, false, '근음만으로는 소리 나지 않음');
+  p.keySelect('KeyX');
+  assert.deepEqual(p.state.current.chord, { root: 5, quality: 'min' });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [53, 56, 60]]);
+});
+
+test('키보드 연주: 손동작 조작·설정 중·세션 전에는 키를 가로채지 않는다', t => {
+  const { p, env, events } = setup(t, { input: 'hands' });
+  assert.equal(p.keySelect('Digit1'), false);
+  p.state.input = 'manual';
+  p.ui.settingsOpen = true;
+  assert.equal(p.keySelect('Digit1'), false);
+  p.ui.settingsOpen = false;
+  env.ready = false;
+  assert.equal(p.keySelect('Digit1'), false);
+  assert.deepEqual(sounds(events), []);
+});
+
+test('키보드 연주: 합창 휠은 숫자로 인원을 고르고, Shift+H(이전)로 화음 성격을 되돌린다', t => {
+  const { p, events } = setup(t, { product: 'choir', input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true };
+  p.getAudio().setParams = () => {};
+  const flashes = [];
+  p.ui.flashStyle = info => flashes.push(info.id);
+  p.keySelect('Digit3');
+  const gesture = events.filter(event => event[0] === 'gesture').at(-1)[1];
+  assert.equal(gesture.preset, 3);
+  assert.equal(p.state.current.choir, 3);
+  p.keySelect('Digit3');
+  assert.equal(p.state.current.choir, null, '같은 키 = OFF');
+  assert.equal(p.cycleStyle(-1), true);
+  assert.equal(p.styles.choir, 'drone', '처음의 이전은 마지막');
+  p.cycleStyle(1);
+  assert.equal(p.styles.choir, 'classic');
+  assert.deepEqual(flashes, ['drone', 'classic'], '바꿀 때마다 무대에 이름을 띄운다');
+});
