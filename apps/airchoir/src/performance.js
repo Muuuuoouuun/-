@@ -68,18 +68,18 @@ export class Performance {
 
   // 화음 성격: 합창은 쌓는 음(core/dsp.js), 코드 악기는 보이싱(core/voicing.js). 연주 중에도 바로 바뀐다.
   setStyle(kind, value) {
-    if (!['choir', 'voicing', 'smooth'].includes(kind)) return false;
+    if (!['choir', 'voicing', 'smooth', 'swipe'].includes(kind)) return false;
     const next = validateStyles({ ...this.styles, [kind]: value });
     if (next[kind] !== value || this.styles[kind] === value) return false;
     this.styles = next;
     const voicer = this.chordVoicer();
     if (kind === 'choir') this.getAudio().setParams?.({ style: next.choir });
-    else {
+    else if (kind !== 'swipe') {
       voicer.setStyle(next.voicing);
       voicer.setSmooth(next.smooth);
       if (this.state.armed && this.state.current.chord) this.playCurrentChord();
     }
-    if (kind !== 'smooth') {
+    if (kind === 'choir' || kind === 'voicing') {
       const info = styleInfo(kind, next[kind]);
       if (!(this.state.armed && this.state.product === 'chord')) this.state.status = `화음 성격 · ${info.label}`;
       this.ui.flashStyle?.(info); // 무대 위에 잠깐: 집중 화면·키보드로 바꿀 때도 무엇이 됐는지 보이게
@@ -94,6 +94,16 @@ export class Performance {
   cycleStyle(step = 1) {
     const kind = this.state.product === 'choir' ? 'choir' : 'voicing';
     return this.setStyle(kind, nextStyle(kind, this.styles[kind], step));
+  }
+
+  /**
+   * 카메라 앞에서 편 손을 옆으로 휙: +1 다음 / -1 이전 화음 성격 (src/motion.js SwipeDetector).
+   * 손동작 조작일 때만, 꺼 두었거나 설정·정지 중이면 넘기지 않는다.
+   */
+  swipeStyle(dir) {
+    if (!dir || this.styles?.swipe === false || this.state.input !== 'hands') return false;
+    if (this.settingsOpen || document.hidden || !this.isReady()) return false; // 소리를 내지 않으므로 정지 뒤에도 바꿀 수 있다
+    return this.cycleStyle(dir);
   }
 
   /**
@@ -266,6 +276,7 @@ export class Performance {
       centers: geometry.map(g => g.center), radius: Math.min(...geometry.map(g => g.radius)),
     });
     const points = hands.map(h => ({ ...h, palm: mapPoint(h.palm) }));
+    this.ui.showHands?.(points.map(h => ({ x: h.palm.x, y: h.palm.y, pinch: !!h.pinch })));
     const result = this.controller.update(points, now);
     if (this.blocked) {
       // A visible release is fresh intent after a blur/watchdog/global stop.

@@ -357,7 +357,7 @@ test('화음 성격: 보이싱을 바꾸면 들고 있는 코드를 바로 다�
   assert.equal(p.state.armed, true);
   assert.match(p.state.status, /C · 오픈 연주 중/);
   const saved = events.filter(event => event[0] === 'save' && event[1] === 'airchoir.harmony.v1').at(-1);
-  assert.deepEqual(JSON.parse(saved[2]), { choir: 'classic', voicing: 'open', smooth: true });
+  assert.deepEqual(JSON.parse(saved[2]), { choir: 'classic', voicing: 'open', smooth: true, swipe: true });
 
   assert.equal(p.setStyle('voicing', 'open'), false, '같은 값은 다시 쌓지 않음');
   assert.equal(p.setStyle('voicing', '없는 성격'), false);
@@ -448,4 +448,36 @@ test('키보드 연주: 합창 휠은 숫자로 인원을 고르고, Shift+H(이
   p.cycleStyle(1);
   assert.equal(p.styles.choir, 'classic');
   assert.deepEqual(flashes, ['drone', 'classic'], '바꿀 때마다 무대에 이름을 띄운다');
+});
+
+test('손 휙으로 화음 성격: 손동작 조작에서만, 끄면 넘기지 않고, 소리 없이 정지 뒤에도 바꿀 수 있다', t => {
+  const { p, page, env } = setup(t, { product: 'choir', input: 'hands' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true, swipe: true };
+  p.getAudio().setParams = () => {};
+  assert.equal(p.swipeStyle(1), true);
+  assert.equal(p.styles.choir, 'ballad');
+  assert.equal(p.swipeStyle(-1), true);
+  assert.equal(p.styles.choir, 'classic');
+  assert.equal(p.swipeStyle(0), false);
+  p.stop('all', true);
+  assert.equal(p.swipeStyle(1), true, '전체 정지 뒤에도');
+  p.setStyle('swipe', false);
+  assert.equal(p.swipeStyle(1), false, '꺼 두면 넘기지 않음');
+  assert.equal(p.styles.choir, 'ballad');
+  p.setStyle('swipe', true);
+  page.hidden = true;
+  assert.equal(p.swipeStyle(1), false, '페이지가 숨겨지면');
+  page.hidden = false;
+  p.ui.settingsOpen = true;
+  assert.equal(p.swipeStyle(1), false, '설정 중');
+  p.ui.settingsOpen = false;
+  env.ready = false;
+  assert.equal(p.swipeStyle(1), false, '세션 전');
+  env.ready = true;
+  p.state.input = 'manual';
+  assert.equal(p.swipeStyle(1), false, '클릭·키보드 조작');
+  // 코드 악기 손동작에서는 보이싱을 넘긴다
+  p.state.product = 'chord'; p.state.input = 'hands';
+  assert.equal(p.swipeStyle(1), true);
+  assert.equal(p.styles.voicing, 'ballad');
 });

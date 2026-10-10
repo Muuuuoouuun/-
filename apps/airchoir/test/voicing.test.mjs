@@ -126,14 +126,18 @@ function fakeStorage(raw = null, { failRead = false, failWrite = false } = {}) {
 test('화음 성격 저장: 알맞은 값만 저장하고, 깨진 값·막힌 저장소는 기본값으로', () => {
   assert.deepEqual(validateStyles(null), DEFAULT_STYLES);
   assert.deepEqual(validateStyles({ choir: 'ballad', voicing: 'citypop', smooth: false, extra: 1 }),
-    { choir: 'ballad', voicing: 'citypop', smooth: false });
-  assert.deepEqual(validateStyles({ choir: 'x', voicing: 'ballad', smooth: 'yes' }),
-    { choir: DEFAULT_STYLES.choir, voicing: 'ballad', smooth: true });
+    { choir: 'ballad', voicing: 'citypop', smooth: false, swipe: true });
+  assert.deepEqual(validateStyles({ choir: 'x', voicing: 'ballad', smooth: 'yes', swipe: 'no' }),
+    { choir: DEFAULT_STYLES.choir, voicing: 'ballad', smooth: true, swipe: true });
+  assert.equal(validateStyles({ swipe: false }).swipe, false, '손으로 넘기기는 끌 수 있다');
   const storage = fakeStorage();
   assert.deepEqual(loadStyles(storage).styles, DEFAULT_STYLES);
   assert.equal(saveStyles(storage, { choir: 'drone', voicing: 'open', smooth: false, secret: 'x' }).ok, true);
-  assert.deepEqual(JSON.parse(storage.raw), { choir: 'drone', voicing: 'open', smooth: false });
-  assert.deepEqual(loadStyles(storage).styles, { choir: 'drone', voicing: 'open', smooth: false });
+  assert.deepEqual(JSON.parse(storage.raw), { choir: 'drone', voicing: 'open', smooth: false, swipe: true });
+  assert.deepEqual(loadStyles(storage).styles, { choir: 'drone', voicing: 'open', smooth: false, swipe: true });
+  // 손으로 넘기기가 생기기 전에 저장한 값도 그대로 읽는다
+  assert.deepEqual(loadStyles(fakeStorage('{"choir":"trot","voicing":"ccm","smooth":true}')).styles,
+    { choir: 'trot', voicing: 'ccm', smooth: true, swipe: true });
   assert.deepEqual(loadStyles(fakeStorage('{나쁜 json')).styles, DEFAULT_STYLES);
   assert.deepEqual(loadStyles(fakeStorage(null, { failRead: true })).styles, DEFAULT_STYLES);
   assert.equal(saveStyles(fakeStorage(null, { failWrite: true }), DEFAULT_STYLES).ok, false);

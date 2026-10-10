@@ -1323,6 +1323,22 @@ button.wheel-choice[aria-pressed=true] .wheel-key { border-color:var(--wheel-sel
   display:block; margin-top:2px; max-width:84px;
   font:500 10px/1.2 var(--font-body); color:inherit; opacity:.85; overflow-wrap:anywhere;
 }
+/* 카메라 코드 연주: 손바닥이 가리키는 곳 */
+.wheel-hand-cursor {
+  position:absolute; left:0; top:0; z-index:3; width:30px; height:30px; margin:-15px 0 0 -15px;
+  border:3px solid var(--wheel-selected-line); border-radius:50%;
+  box-shadow:0 0 0 2px #0008, 0 0 14px #0006; pointer-events:none; will-change:transform;
+}
+.wheel-hand-cursor[hidden] { display:none; }
+.wheel-hand-cursor[data-pinch=true] { background:var(--wheel-selected-line); }
+/* 카메라 안내: 인식이 잘 안 될 조건 */
+.camera-guide {
+  position:absolute; z-index:3; left:50%; bottom:14px; transform:translateX(-50%);
+  max-width:min(460px,calc(100% - 32px)); margin:0; padding:7px 12px;
+  border:1px solid #a6824a; border-radius:999px; background:#2b2418ee; color:#ffe2b0;
+  font-size:12px; line-height:1.35; text-align:center; pointer-events:none;
+}
+.camera-guide[hidden] { display:none; }
 /* 화음 성격을 바꿀 때 무대 위에 잠깐 */
 .style-flash {
   position:absolute; z-index:4; left:50%; top:14px; transform:translateX(-50%);

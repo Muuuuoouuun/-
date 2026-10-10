@@ -15,6 +15,7 @@ const CACHE = join(ROOT, 'test/.cache');
 const MP = join(CACHE, 'package');
 const MODEL = join(CACHE, 'hand_landmarker.task');
 const VIDEO = join(CACHE, 'hands.y4m');
+const SWIPE_VIDEO = join(CACHE, 'swipe.y4m');
 const IMG = 'https://storage.googleapis.com/mediapipe-assets/';
 const SHOTS = process.env.SHOTS || CACHE;
 
@@ -30,14 +31,24 @@ if (!existsSync(VIDEO)) {
   execSync(`ffmpeg -loglevel error -y ${inputs} -filter_complex "${scale};${cat}" -map "[out]" ${VIDEO}`);
 }
 
+// 편 손 사진이 8초마다 한 번 (거울 화면 기준) 오른쪽으로 휙 지나가고, 천천히 돌아오는 영상
+if (!existsSync(SWIPE_VIDEO)) {
+  // 휙은 0.45초 (느린 카메라 7fps에서도 세 프레임 넘게 보이도록 — 사람이 보통 휙 하는 빠르기)
+  const x = "if(lt(t,3),360,if(lt(t,3.45),360-(t-3)/0.45*340,if(lt(t,5.5),20,if(lt(t,7.5),20+(t-5.5)/2*340,360))))";
+  execSync(`ffmpeg -loglevel error -y -f lavfi -i color=c=0x2a2a2a:s=854x480:r=15:d=8 -loop 1 -t 8 -i ${join(CACHE, 'right_hands.jpg')} `
+    + `-filter_complex "[1]scale=-1:260[h];[0][h]overlay=x='${x}':y=110:shortest=1,format=yuv420p" -r 15 ${SWIPE_VIDEO}`);
+}
+
 const server = spawn('python3', ['-m', 'http.server', '8125', '--bind', '127.0.0.1'], { cwd: ROOT, stdio: 'ignore' });
 await new Promise((r) => setTimeout(r, 800));
 let browser;
 const errors = [];
 let failed = [];
 const mime = (p) => (p.endsWith('.wasm') ? 'application/wasm' : p.endsWith('.task') ? 'application/octet-stream' : 'text/javascript');
-async function newPage(viewport) {
-  const page = await browser.newPage({ viewport });
+async function newPage(viewport, on = browser) {
+  const page = await on.newPage({ viewport });
+  // 처음 안내 카드는 coach.check.mjs 가 따로 본다. 여기서는 무대를 비워 둔다 (카드가 오브 핀치를 가로채지 않게)
+  await page.addInitScript(() => localStorage.setItem('airchoir.coach.v1', 'dismissed'));
   page.on('console', (m) => m.type() === 'error' && !/ERR_CERT_AUTHORITY_INVALID|fonts\.g|^INFO:/.test(m.text()) && errors.push(m.text()));
   page.on('pageerror', (e) => errors.push(String(e)));
   // CDN과 모델은 로컬 사본으로 응답 (이 테스트 환경에서는 외부 접속이 막혀 있을 수 있다)
@@ -83,6 +94,9 @@ try {
   }
   console.log('카메라 상태:', await page.textContent('#st-cam'));
   console.log('보인 손동작:', [...seen].join(' | '));
+  // 사진이 바뀔 때 손이 순간이동해도 '옆으로 휙'으로 세지 않는다
+  const styleAfterPhotos = await page.inputValue('#performance-style');
+  if (styleAfterPhotos !== 'classic') failed.push(`사진 전환(손 순간이동)이 화음 성격을 바꿈: ${styleAfterPhotos}`);
   for (const want of ['1개', '2개', '5개', '주먹']) if (![...seen].some((s) => s.startsWith(want))) failed.push(`손동작 "${want}" 인식 안 됨`);
   if (!shot) failed.push('V 손동작에서 화음 2개가 보이지 않음');
 
@@ -164,6 +178,36 @@ try {
   console.log('휴대폰 폭 가로 넘침(px):', overflow);
   await p2.screenshot({ path: join(SHOTS, 'app-mobile.png'), fullPage: true });
   if (overflow > 0) failed.push('휴대폰 폭에서 가로로 넘침');
+
+  // 5) 실제 모델 + 움직이는 손: 편 손을 옆으로 휙 → 화음 성격 넘기기, 코드 악기 손 커서, 카메라 안내
+  const swipeBrowser = await chromium.launch({
+    ...launchOptions,
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${SWIPE_VIDEO}`, '--autoplay-policy=no-user-gesture-required'],
+  });
+  try {
+    const p5 = await newPage({ width: 1366, height: 860 }, swipeBrowser);
+    await p5.goto('http://localhost:8125/index.html#cpu');
+    await p5.click('#start-demo');
+    await p5.waitForFunction(() => /fps/.test(document.getElementById('st-cam').textContent), null, { timeout: 60000 });
+    const before = await p5.inputValue('#performance-style');
+    await p5.waitForFunction((v) => document.getElementById('performance-style').value !== v, before, { timeout: 20000 })
+      .catch(() => failed.push('편 손을 옆으로 휙 움직여도 화음 성격이 바뀌지 않음'));
+    const after = await p5.inputValue('#performance-style');
+    const flash = await p5.locator('.style-flash').textContent().catch(() => '');
+    console.log('손 휙:', before, '→', after, '/', flash.trim());
+    if (after !== before && after !== 'ballad') failed.push(`화면 오른쪽으로 휙은 다음 성격이어야 함 (${before} → ${after})`);
+    await p5.screenshot({ path: join(SHOTS, 'app-swipe.png') });
+    const guide = await p5.evaluate(() => { const el = document.getElementById('camera-guide'); return el.hidden ? '' : el.textContent; });
+    console.log('카메라 안내:', guide || '(없음)');
+    // 코드 악기 손동작: 손바닥 커서가 휠 위에 보인다
+    await p5.click('#focus-mode-chord-one');
+    await p5.selectOption('#focus-input', 'hands');
+    await p5.waitForFunction(() => [...document.querySelectorAll('.wheel-hand-cursor')].some((el) => !el.hidden), null, { timeout: 15000 })
+      .catch(() => failed.push('카메라 코드 연주에서 손 커서가 보이지 않음'));
+    await p5.screenshot({ path: join(SHOTS, 'app-chord-cursor.png') });
+  } finally {
+    await swipeBrowser.close();
+  }
 } finally {
   await browser?.close();
   server.kill();

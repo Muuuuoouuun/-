@@ -109,6 +109,29 @@ export class WheelUI {
 
   call(name, ...args) { return (this.callbacks[name] || noop)(...args); }
 
+  /**
+   * 카메라 코드 연주: 손바닥이 휠 위 어디를 가리키는지 커서로 보여 준다 (핀치 중이면 채운 원).
+   * points: 화면(client) 좌표. 빈 배열이면 숨긴다.
+   */
+  showHands(points) {
+    this.handCursors ??= [];
+    const box = this.stageHost.hidden ? null : this.stageHost.getBoundingClientRect();
+    points.slice(0, 2).forEach((p, i) => {
+      let el = this.handCursors[i];
+      if (!el) {
+        el = node('span', 'wheel-hand-cursor');
+        el.setAttribute('aria-hidden', 'true');
+        this.stageHost.append(el);
+        this.handCursors[i] = el;
+      }
+      if (!box || !el.isConnected) this.stageHost.append(el);
+      el.hidden = !box;
+      if (box) el.style.transform = `translate(${p.x - box.left}px, ${p.y - box.top}px)`;
+      el.dataset.pinch = String(p.pinch);
+    });
+    for (let i = points.length; i < this.handCursors.length; i++) this.handCursors[i].hidden = true;
+  }
+
   /** 화음 성격이 바뀌면 무대 가운데 위에 잠깐 이름과 설명을 띄운다 (집중 화면에서도 보이게). */
   flashStyle(info) {
     const stage = this.stageHost.parentElement;
@@ -179,8 +202,14 @@ export class WheelUI {
     this.smooth.id = 'performance-smooth';
     this.smoothWrap.append(this.smooth, document.createTextNode('부드럽게 잇기'));
     this.smoothWrap.title = '앞 코드와 겹치는 음은 그대로 두고 가장 가깝게 움직여요 (성부 진행).';
+    this.swipeWrap = node('label', 'check performance-smooth');
+    this.swipe = node('input');
+    this.swipe.type = 'checkbox';
+    this.swipe.id = 'performance-swipe';
+    this.swipeWrap.append(this.swipe, document.createTextNode('손 휙으로 넘기기'));
+    this.swipeWrap.title = '카메라 앞에서 편 손을 옆으로 휙: 오른쪽은 다음, 왼쪽은 이전 화음 성격.';
     const fields = node('div', 'performance-fields');
-    fields.append(product.wrap, hands.wrap, input.wrap, style.wrap, this.smoothWrap);
+    fields.append(product.wrap, hands.wrap, input.wrap, style.wrap, this.smoothWrap, this.swipeWrap);
     const actions = node('div', 'performance-actions');
     actions.append(settings, stop);
     const info = node('div', 'performance-info');
@@ -191,6 +220,7 @@ export class WheelUI {
     this.input.addEventListener('change', () => this.call('onInput', this.input.value));
     this.style.addEventListener('change', () => this.call('onStyle', this.styleKind, this.style.value));
     this.smooth.addEventListener('change', () => this.call('onStyle', 'smooth', this.smooth.checked));
+    this.swipe.addEventListener('change', () => this.call('onStyle', 'swipe', this.swipe.checked));
   }
 
   renderStyle(product, styles) {
@@ -206,6 +236,8 @@ export class WheelUI {
     if (this.styleHint.textContent !== hint) this.styleHint.textContent = hint;
     this.smoothWrap.hidden = kind !== 'voicing';
     this.smooth.checked = styles.smooth !== false;
+    this.swipeWrap.hidden = this.state.input !== 'hands';
+    this.swipe.checked = styles.swipe !== false;
   }
 
   render(next = {}) {
@@ -237,7 +269,9 @@ export class WheelUI {
     if (signature !== this.signature) {
       this.signature = signature;
       this.buildWheels();
+      this.handCursors = []; // 휠을 다시 만들면 커서도 새로
     }
+    if (!(product === 'chord' && input === 'hands' && visible)) this.handCursors?.forEach((el) => { el.hidden = true; });
     this.renderChoirNames(this.state.styles || DEFAULT_STYLES);
     for (const entry of this.choices) {
       const selected = current[entry.type] != null && keyFor(entry.type, current[entry.type]) === keyFor(entry.type, entry.value);

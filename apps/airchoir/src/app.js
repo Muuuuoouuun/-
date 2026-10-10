@@ -5,6 +5,7 @@ import { ChoirAudio } from './audio.js';
 import { drawStage, coverMapper } from './stage.js';
 import { Transport, OrbStation } from './orbs.js';
 import { Performance } from './performance.js';
+import { SwipeDetector, CameraGuide, meanLuma } from './motion.js';
 import { FocusSession } from './focus-session.js';
 import { Coach } from './coach.js';
 import { CoachUI } from './coach-ui.js';
@@ -38,6 +39,13 @@ let appStorage = null;
 try { appStorage = window.localStorage; } catch { appStorage = null; }
 let sensitivity = loadSensitivity(appStorage);
 const makeTracker = () => new GestureTracker(SENSITIVITY[sensitivity].tracker);
+// 카메라 움직임: 편 손 옆으로 휙 → 화음 성격, 인식이 잘 안 될 조건 안내 (src/motion.js)
+const swipe = new SwipeDetector();
+const cameraGuide = new CameraGuide();
+let guideHint = null;
+let videoLuma = null;
+let lumaAt = -Infinity;
+let lumaContext = null;
 let tracker = makeTracker();
 let gesture = tracker.state();
 // 화면이 세션 단계에 맞춰 배치를 바꿀 수 있게 (좁은 화면에서는 시작 안내를 맨 위에)
@@ -204,7 +212,14 @@ async function startCamera(request) {
   mode = 'camera';
   cam.onResult = (list, aspect) => {
     const hands = list.map((lm) => ({ ...analyzeHand(lm, aspect), landmarks: lm }));
-    gesture = tracker.update(hands, performance.now(), { immediateRelease: true });
+    const now = performance.now();
+    gesture = tracker.update(hands, now, { immediateRelease: true });
+    // 오브를 잡거나 던지는 동안(빠른 편 손)은 휙으로 세지 않는다
+    if (station.mode === 'idle' && !performer.settingsOpen) {
+      const dir = swipe.update(gesture, now, hands);
+      if (dir) performer.swipeStyle(dir);
+    } else swipe.reset();
+    guideHint = cameraGuide.update({ hands, fps: cam.fps, luma: videoLuma, stable: sensitivity === 'stable' }, now);
     const r = $('stage').getBoundingClientRect();
     const video = $('video');
     const mapper = coverMapper(r.width, r.height, video.videoWidth, video.videoHeight);
@@ -294,6 +309,10 @@ function stopSession({ focus = true } = {}) {
   station.nextId = 1;
   station.lastPoint = { x: 0.5, y: 0.58 };
   cam.stop();
+  swipe.reset();
+  cameraGuide.reset();
+  guideHint = null;
+  videoLuma = null;
   const oldAudio = audio;
   oldAudio.onStats = null;
   void oldAudio.dispose().catch(() => {});
@@ -638,6 +657,10 @@ function renderHud() {
   document.querySelectorAll('#guide li[data-g]').forEach((li) => li.classList.toggle('now', li.dataset.g === g));
 
   if (mode === 'camera' && cam.fps) status('st-cam', `손 인식 ${Math.round(cam.fps)}fps`, 'on');
+  const guide = $('camera-guide');
+  const hint = mode === 'camera' && sessionActive ? guideHint : null;
+  guide.hidden = !hint;
+  if (hint && guide.textContent !== hint.text) { guide.textContent = hint.text; guide.dataset.kind = hint.id; }
   renderLoopHud();
 }
 
@@ -732,6 +755,7 @@ function frame(now) {
   // Video callbacks use performance.now(); use the same clock here rather than
   // the earlier rAF frame timestamp, which can precede a video observation.
   performer.tick(performance.now(), mode === 'camera');
+  sampleLuma(performance.now());
   drawOverlay();
   focusSession.tick(performance.now());
   if (now - lastHud > 70) {
@@ -743,6 +767,21 @@ function frame(now) {
     performer.render();
   }
   frameId = requestAnimationFrame(frame);
+}
+
+// 카메라 영상의 평균 밝기를 1초에 한 번, 32×18 로 줄여 잰다 (어두운 방 안내용)
+function sampleLuma(now) {
+  if (mode !== 'camera' || now - lumaAt < 1000) return;
+  lumaAt = now;
+  const video = $('video');
+  if (video.readyState < 2) return;
+  try {
+    lumaContext ??= Object.assign(document.createElement('canvas'), { width: 32, height: 18 }).getContext('2d', { willReadFrequently: true });
+    lumaContext.drawImage(video, 0, 0, 32, 18);
+    videoLuma = meanLuma(lumaContext.getImageData(0, 0, 32, 18).data);
+  } catch {
+    videoLuma = null; // 읽을 수 없으면 밝기 안내만 건너뛴다
+  }
 }
 
 window.addEventListener('pagehide', () => {
