@@ -137,7 +137,7 @@
           <div class="card span-all">
             <h3>스타일</h3>
             <div class="seg style-grid" id="rm-style">
-              <button data-v="harmony" class="on">🎤 화음 넣기<small>기본 · 3도 위/아래</small></button>
+              <button data-v="harmony" class="on">🎤 화음 넣기<small>기본 · 화음 성격 7가지</small></button>
               <button data-v="orchestra">🎻 오케스트라<small>현악·호른·하프</small></button>
               <button data-v="jazz">🎷 재즈 트리오<small>피아노·워킹 베이스·브러시</small></button>
               <button data-v="acappella">👥 아카펠라<small>내 목소리 화음·베이스 보컬·비트박스</small></button>
@@ -148,7 +148,15 @@
             <label class="check" id="rm-with-harmony-row"><input type="checkbox" id="rm-with-harmony">
               내 목소리 화음도 넣기</label>
             <div class="row" id="rm-harmony-row">
-              <label>화음 성부<select id="rm-harmony">
+              <label>화음 성격<select id="rm-harmony-style">
+                <option value="classic" selected>정석 3도 — 3도 위·아래</option>
+                <option value="ballad">가요 발라드 — 3·6도 아래, 멜로디가 맨 위</option>
+                <option value="kpop">아이돌 훅 — 옥타브 더블 + 3도 위</option>
+                <option value="gospel">가스펠·재즈 — 아래로 촘촘한 7화음</option>
+                <option value="power">파워 5도 — 3도 없이 웅장하게</option>
+                <option value="quartal">몽환 4도 — 4도 위·아래</option>
+                <option value="drone">드론 — 으뜸음·딸림음 지속</option></select></label>
+              <label id="rm-harmony-parts">화음 성부<select id="rm-harmony">
                 <option value="both" selected>3도 위 + 아래 (3성부)</option>
                 <option value="up">위 화음만</option><option value="down">아래 화음만</option></select></label>
             </div>
@@ -196,7 +204,15 @@
         <div class="seg style-grid" id="xa-style"></div>
         <div class="row wrap">
           <label class="check"><input type="checkbox" id="xa-with-harmony"> 내 목소리 화음</label>
-          <label class="inline">화음 성부<select id="xa-harmony">
+          <label class="inline">화음 성격<select id="xa-harmony-style">
+            <option value="classic">정석 3도 — 3도 위·아래</option>
+                <option value="ballad">가요 발라드 — 3·6도 아래, 멜로디가 맨 위</option>
+                <option value="kpop">아이돌 훅 — 옥타브 더블 + 3도 위</option>
+                <option value="gospel">가스펠·재즈 — 아래로 촘촘한 7화음</option>
+                <option value="power">파워 5도 — 3도 없이 웅장하게</option>
+                <option value="quartal">몽환 4도 — 4도 위·아래</option>
+                <option value="drone">드론 — 으뜸음·딸림음 지속</option></select></label>
+          <label class="inline" id="xa-harmony-parts">화음 성부<select id="xa-harmony">
             <option value="both">3도 위 + 아래</option><option value="up">위만</option><option value="down">아래만</option></select></label>
           <label class="check"><input type="checkbox" id="xa-autotune"> 오토튠</label>
           <label class="inline">강도 <input id="xa-strength" type="range" min="10" max="100" value="70"></label>

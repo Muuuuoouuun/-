@@ -21,7 +21,12 @@ test('code names and MIDI notes cover all chord qualities and flat roots', () =>
     ['7', 'C7', [48, 52, 55, 58]], ['maj7', 'Cmaj7', [48, 52, 55, 59]],
     ['m7', 'Cm7', [48, 51, 55, 58]], ['dim', 'Cdim', [48, 51, 54]],
     ['sus4', 'Csus4', [48, 53, 55]],
+    ['add9', 'Cadd9', [48, 52, 55, 62]], ['sus2', 'Csus2', [48, 50, 55]],
+    ['7sus4', 'C7sus4', [48, 53, 55, 58]], ['6', 'C6', [48, 52, 55, 57]],
+    ['maj9', 'Cmaj9', [48, 52, 55, 59, 62]], ['m9', 'Cm9', [48, 51, 55, 58, 62]],
+    ['9', 'C9', [48, 52, 55, 58, 62]], ['m7b5', 'Cm7b5', [48, 51, 54, 58]], ['aug', 'Caug', [48, 52, 56]],
   ];
+  assert.deepEqual(QUALITIES.map((q) => q.id), expected.map(([quality]) => quality));
   for (const [quality, label, notes] of expected) {
     const chord = { root: 0, quality };
     assert.equal(chordKey(chord), `0:${quality}`);

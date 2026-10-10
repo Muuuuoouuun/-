@@ -107,7 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
     hg.add_argument("--no-harmony", dest="with_harmony", action="store_false",
                     help="화음 없이 (아카펠라·풀 스타일에서 화음 빼기)")
     m.add_argument("--harmony", choices=["both", "up", "down"], default="both",
-                   help="화음 성부: 3도 위+아래(기본) | 위만 | 아래만")
+                   help="화음 성부: 3도 위+아래(기본) | 위만 | 아래만 (정석 3도일 때)")
+    m.add_argument("--harmony-style", default="classic",
+                   choices=["classic", "ballad", "kpop", "gospel", "power", "quartal", "drone"],
+                   help="화음 성격: classic 정석 3도(기본) | ballad 가요 발라드(3·6도 아래) | "
+                        "kpop 아이돌 훅(옥타브 더블+3도) | gospel 가스펠·재즈(밀집 7화음) | "
+                        "power 파워 5도 | quartal 몽환 4도 | drone 드론(으뜸음·딸림음 지속)")
     m.add_argument("--autotune", nargs="?", type=float, const=0.7, default=None, metavar="강도",
                    help="오토튠 켜기 (강도 0~1, 기본 0.7 — 1 에 가까울수록 정확히 맞춤)")
     m.add_argument("--hard-tune", action="store_true", help="비브라토까지 펴는 '로봇 보이스' 오토튠")
@@ -235,7 +240,8 @@ def cmd_remix(args) -> int:
 
     out = args.out or Path("output") / f"{safe_name(args.source.stem)}_remix"
     opts = RemixOptions(
-        style=args.style, harmony=args.harmony, autotune=args.autotune is not None,
+        style=args.style, harmony=args.harmony, harmony_style=args.harmony_style,
+        autotune=args.autotune is not None,
         autotune_strength=float(min(max(args.autotune if args.autotune is not None else 0.7, 0.0), 1.0)),
         hard_tune=args.hard_tune, key=args.key, separate=not args.no_separate,
         keep_backing=args.keep_backing, harmony_level=args.harmony_level, with_harmony=args.with_harmony,

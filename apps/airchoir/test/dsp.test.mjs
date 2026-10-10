@@ -10,6 +10,9 @@ import {
   PsolaVoice,
   SynthVoice,
   harmonyTargets,
+  harmonyPreset,
+  HARMONY_STYLES,
+  PRESETS,
   snapToScale,
   SCALES,
   hzToMidi,
@@ -59,6 +62,106 @@ test('스케일 맞추기와 다이아토닉 화음', () => {
   assert.deepEqual(harmonyTargets(72, 2, 9, 'minor').targets, [76, 79]); // A단조 C5 → E5, G5
   assert.deepEqual(harmonyTargets(60, 3, 0, 'major').targets, [64, 67, 48]);
   assert.deepEqual(harmonyTargets(60, 0, 0, 'major').targets, []);
+});
+
+const pcOf = (m) => ((m % 12) + 12) % 12;
+const C_MAJOR = new Set([0, 2, 4, 5, 7, 9, 11]);
+
+test('화음 성격: 모든 성격이 손가락 1~4개에 성부를 하나씩 더하고, 정석 3도는 예전 구성 그대로', () => {
+  assert.ok(HARMONY_STYLES.length >= 7);
+  assert.equal(new Set(HARMONY_STYLES.map((s) => s.id)).size, HARMONY_STYLES.length);
+  for (const style of HARMONY_STYLES) {
+    assert.ok(style.label && style.short && style.desc, style.id);
+    assert.equal(style.presets.length, 5, style.id);
+    style.presets.forEach((preset, n) => {
+      assert.equal(preset.voices.length, n, `${style.id} ${n}개`);
+      assert.ok(preset.name);
+    });
+    // 모든 음에서 성부가 멜로디 근처에 (드론의 낮은 으뜸음만 두 옥타브 남짓 아래까지)
+    for (let m = 55; m <= 79; m++) {
+      const { snapped, targets } = harmonyTargets(m, 4, 0, 'major', style.id, {});
+      assert.equal(targets.length, 4);
+      for (const t of targets) assert.ok(Number.isInteger(t) && Math.abs(t - snapped) <= 26, `${style.id} ${m} → ${t}`);
+    }
+  }
+  assert.equal(PRESETS, HARMONY_STYLES[0].presets);
+  for (let m = 50; m < 80; m++) {
+    for (let p = 0; p <= 4; p++) {
+      assert.deepEqual(harmonyTargets(m, p, 0, 'major', 'classic').targets, harmonyTargets(m, p, 0, 'major').targets);
+    }
+  }
+  assert.equal(harmonyPreset('없는 성격', 2), PRESETS[2], '모르는 성격은 정석 3도');
+});
+
+test('화음 성격: 발라드는 멜로디가 늘 맨 위, 가스펠은 2도가 부딪히는 7·6화음', () => {
+  for (let m = 60; m <= 72; m++) {
+    if (!C_MAJOR.has(pcOf(m))) continue;
+    const ballad = harmonyTargets(m, 2, 0, 'major', 'ballad').targets;
+    assert.ok(ballad.every((t) => t < m), `발라드 ${m}: ${ballad}`);
+    assert.deepEqual(ballad.map((t) => m - t).map((d) => d >= 3 && d <= 9), [true, true]); // 3도·6도 아래
+    const gospel = harmonyTargets(m, 3, 0, 'major', 'gospel').targets;
+    assert.ok([1, 2].includes(m - gospel[0]), `가스펠 ${m}: 바로 아래 2도 ${gospel}`);
+    // 네 음이 3도 간격으로 쌓이는 화음(6·7화음)이 된다: 맨 아래부터 3도·3도·2도
+    const stack = [m, ...gospel].sort((a, b) => a - b);
+    assert.ok(stack[1] - stack[0] >= 3 && stack[2] - stack[1] >= 3 && stack[3] - stack[2] <= 2, `가스펠 ${stack}`);
+  }
+  // E4 위의 발라드: C4·G3 아래 → C장조 화음 (포부르동)
+  assert.deepEqual(harmonyTargets(64, 2, 0, 'major', 'ballad').targets, [60, 55]);
+  // 아이돌 훅: 옥타브 아래 더블 + 3도 위
+  assert.deepEqual(harmonyTargets(64, 2, 0, 'major', 'kpop').targets, [52, 67]);
+});
+
+test('화음 성격: 파워는 3도 없이 완전음정만, 키 밖으로 나가지 않는다', () => {
+  for (const [tonic, scale] of [[0, 'major'], [9, 'minor'], [7, 'major']]) {
+    const inKey = new Set(SCALES[scale].map((d) => (tonic + d) % 12));
+    for (let m = 55; m <= 79; m++) {
+      if (!inKey.has(pcOf(m))) continue;
+      for (const t of harmonyTargets(m, 4, tonic, scale, 'power').targets) {
+        assert.ok([0, 5, 7].includes(pcOf(t - m)), `파워 ${tonic}/${scale} ${m} → ${t}`);
+        assert.ok(inKey.has(pcOf(t)), `키 밖 ${m} → ${t}`);
+      }
+    }
+  }
+  assert.deepEqual(harmonyTargets(67, 2, 0, 'major', 'power').targets, [60, 55]); // G4: C4(5도 아래), G3
+  assert.deepEqual(harmonyTargets(65, 1, 0, 'major', 'power').targets, [60]); // F4: 시♭ 대신 도 (4도 아래)
+});
+
+test('화음 성격: 4도 쌓기는 스케일 4도로 쌓고, 앞 성부 위에 또 4도를 얹는다', () => {
+  const [up, down, upup] = harmonyTargets(62, 3, 0, 'major', 'quartal').targets; // D4
+  assert.deepEqual([up, down, upup], [67, 57, 72]); // G4, A3, C5
+  for (let m = 60; m <= 72; m++) {
+    if (!C_MAJOR.has(pcOf(m))) continue;
+    for (const t of harmonyTargets(m, 4, 0, 'major', 'quartal').targets) assert.ok(C_MAJOR.has(pcOf(t)), `${m} → ${t}`);
+  }
+});
+
+test('화음 성격: 드론은 멜로디가 움직여도 으뜸음·딸림음 자리를 지키고, 너무 멀어지면 옥타브를 옮긴다', () => {
+  const memo = {};
+  const line = [64, 65, 67, 65, 64, 62, 60].map((m) => harmonyTargets(m, 2, 0, 'major', 'drone', memo).targets);
+  assert.ok(line.every(([tonic, fifth]) => tonic === 60 && fifth === 55), JSON.stringify(line)); // C4, G3 그대로
+  const high = harmonyTargets(81, 3, 0, 'major', 'drone', memo).targets; // A5: 한 옥타브 반 위로 가면
+  assert.deepEqual(high, [72, 67, 60]);
+  assert.ok(high.every((t) => t <= 81));
+  // 기억이 없으면 매번 멜로디 아래 3반음 이상에서 새로 고른다
+  assert.deepEqual(harmonyTargets(62, 1, 0, 'major', 'drone').targets, [48]);
+  // 단조: 으뜸음 A, 딸림음 E
+  assert.deepEqual(harmonyTargets(72, 2, 9, 'minor', 'drone').targets.map(pcOf), [9, 4]);
+});
+
+test('하모나이저: 화음 성격을 바꾸면 같은 손가락 수라도 다른 음을 낸다', () => {
+  const h = new Harmonizer(SR);
+  const input = vowel(midiToHz(64), 0.6);
+  const run = (style) => {
+    h.setParams({ engine: 'psola', preset: 2, tonic: 0, scale: 'major', style, dryGain: 0 });
+    for (let i = 0; i + 128 <= input.length; i += 128) {
+      const L = new Float32Array(128);
+      h.process(input.subarray(i, i + 128), L, L);
+    }
+    return h.stats().targets;
+  };
+  assert.deepEqual(run('classic'), [67, 71]);
+  assert.deepEqual(run('ballad'), [60, 55]);
+  assert.deepEqual(run('power'), [57, 52]);
 });
 
 test('음정 검출 정확도 (±10 cent)', () => {

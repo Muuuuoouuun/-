@@ -305,6 +305,8 @@ function updateHarmonyRow() {
   const style = state.rmStyle;
   const voices = style === "harmony" || $("#rm-with-harmony").checked;
   $("#rm-harmony-row").classList.toggle("hidden", !voices);
+  // 위·아래 성부 고르기는 정석 3도에만 (다른 성격은 성부 구성이 정해져 있음)
+  $("#rm-harmony-parts").classList.toggle("hidden", $("#rm-harmony-style").value !== "classic");
 }
 
 function setRemixStyle(style) {
@@ -333,6 +335,7 @@ function initRemix() {
   });
   $$("#rm-style button").forEach((b) => b.addEventListener("click", () => setRemixStyle(b.dataset.v)));
   $("#rm-with-harmony").addEventListener("change", updateHarmonyRow);
+  $("#rm-harmony-style").addEventListener("change", updateHarmonyRow);
   setRemixStyle("harmony");
   $("#rm-autotune").addEventListener("change", () => {
     $("#rm-strength").disabled = $("#rm-hard").disabled = !$("#rm-autotune").checked;
@@ -352,6 +355,7 @@ async function startRemix() {
   const options = {
     style: state.rmStyle,
     harmony: $("#rm-harmony").value,
+    harmony_style: $("#rm-harmony-style").value,
     with_harmony: state.rmStyle === "harmony" ? null : $("#rm-with-harmony").checked,
     keep_backing: $("#rm-keep-backing").checked,
     autotune: $("#rm-autotune").checked,
@@ -443,13 +447,23 @@ function renderVersionInfo(r) {
     const ext = f === "original" ? (state.job.filename.split(".").pop() || "") : name.split(".").pop();
     const label = f === "original" ? "원본 파일" : f === r.video ? "후보정 영상" :
       f === r.audio ? "후보정 음원" : name.endsWith(".mid") ? "반주 편곡" :
-      { "stems/lead_tuned.wav": "오토튠 보컬", "stems/harmony_up.wav": "위 화음",
-        "stems/harmony_down.wav": "아래 화음" }[name] || (name.startsWith("stems/") ? `반주 트랙 (${name.slice(6, -4)})` : name);
+      { "stems/lead_tuned.wav": "오토튠 보컬" }[name] || HARMONY_STEMS[name.slice(6, -4)]
+      || (name.startsWith("stems/") ? `반주 트랙 (${name.slice(6, -4)})` : name);
     group.appendChild(fileLink(remixUrl(f), { label, type: ext.toUpperCase() }, "", name));
   }
   box.appendChild(group);
   fillAgain(r);
 }
+
+// 화음 성부 파일 이름 (vocalfx.HARMONY_STYLES 의 name)
+const HARMONY_STEMS = {
+  harmony_up: "위 화음", harmony_down: "아래 화음", harmony_third_up: "3도 위 화음",
+  harmony_third_below: "3도 아래 화음", harmony_sixth_below: "6도 아래 화음",
+  harmony_octave_below: "옥타브 아래 화음", harmony_octave_up: "옥타브 위 화음",
+  harmony_close1: "밀집 화음 1", harmony_close2: "밀집 화음 2", harmony_close3: "밀집 화음 3",
+  harmony_fifth_below: "5도 아래 화음", harmony_fourth_up: "4도 위 화음", harmony_fourth_below: "4도 아래 화음",
+  harmony_tonic: "으뜸음 지속", harmony_fifth: "딸림음 지속",
+};
 
 // 다시 만들기 패널: 선택한 버전의 설정으로 채움
 function fillAgain(r) {
@@ -457,6 +471,9 @@ function fillAgain(r) {
   $$("#xa-style button").forEach((b) => b.classList.toggle("on", b.dataset.v === r.style));
   $("#xa-with-harmony").checked = r.with_harmony != null ? r.with_harmony : ["harmony", "full", "acappella"].includes(r.style);
   $("#xa-with-harmony").disabled = r.style === "harmony";
+  $("#xa-harmony-style").value = r.harmony_style || "classic";
+  $("#xa-harmony").value = r.harmony || "both";
+  updateAgainHarmony();
   $("#xa-autotune").checked = !!r.autotune;
   $("#xa-bpm").value = r.user_bpm ? r.tempo : "";
   $("#xa-bpm").placeholder = r.tempo ? `자동 (지금 ${Math.round(r.tempo)})` : "자동";
@@ -467,8 +484,13 @@ function fillAgain(r) {
   $("#xa-error").textContent = "";
 }
 
+function updateAgainHarmony() {
+  $("#xa-harmony-parts").classList.toggle("hidden", $("#xa-harmony-style").value !== "classic");
+}
+
 function initAgain() {
   $("#xa-style").innerHTML = $("#rm-style").innerHTML;
+  $("#xa-harmony-style").addEventListener("change", updateAgainHarmony);
   $$("#xa-style button").forEach((b) => b.addEventListener("click", () => {
     state.again.style = b.dataset.v;
     $$("#xa-style button").forEach((x) => x.classList.toggle("on", x === b));
@@ -498,6 +520,7 @@ async function startAgain() {
     style,
     with_harmony: style === "harmony" ? null : $("#xa-with-harmony").checked,
     harmony: $("#xa-harmony").value,
+    harmony_style: $("#xa-harmony-style").value,
     autotune: $("#xa-autotune").checked,
     autotune_strength: Number($("#xa-strength").value) / 100,
     hard_tune: false,

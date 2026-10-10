@@ -16,14 +16,106 @@ export function midiName(m) {
 
 // ───────────────────────── 스케일 · 화음 계산 ─────────────────────────
 
-// 손가락 개수(0~5)에 대응하는 화음 구성. steps = 스케일 안에서 몇 칸, semis = 반음 단위.
-export const PRESETS = [
-  { name: '화음 없음', voices: [] },
-  { name: '3도 위', voices: [{ steps: 2 }] },
-  { name: '3도 + 5도 위', voices: [{ steps: 2 }, { steps: 4 }] },
-  { name: '3·5도 + 베이스', voices: [{ steps: 2 }, { steps: 4 }, { semis: -12 }] },
-  { name: '풀 합창', voices: [{ steps: 2 }, { steps: 4 }, { semis: -12 }, { semis: 12, gain: 0.45 }] },
-];
+// 손가락 개수(0~5)에 대응하는 화음 구성. 성부 하나는 아래 중 하나로 정한다.
+//   steps: 스케일 안에서 몇 칸 (2 = 3도, 4 = 5도, -5 = 6도 아래). perfect: 4·5도를 늘 완전음정으로 (아래 perfectTarget)
+//   semis: 반음 단위로 고정 (-12 = 옥타브 아래)
+//   on: 멜로디 대신 앞 성부(번호)를 기준으로 쌓기 (4도 위에 또 4도)
+//   pedal: 스케일 몇 번째 음(0 = 으뜸음, 4 = 딸림음)을 멜로디 아래에 길게 깔기. octave: 그 음을 몇 옥타브 옮길지
+//   gain: 성부 음량 (기본 1)
+const voices = (name, list) => Object.freeze({ name, voices: Object.freeze(list.map((v) => Object.freeze(v))) });
+const NONE = voices('화음 없음', []);
+
+// 화음 성격: 같은 손가락 수라도 어떤 음을 쌓을지가 성격마다 다르다. 1~4명 순서로 하나씩 더해진다.
+export const HARMONY_STYLES = Object.freeze([
+  {
+    id: 'classic', label: '정석 3도', short: '3도',
+    desc: '교과서 3화음을 위로 쌓아요. 밝고 깔끔한 기본 합창.',
+    presets: [
+      voices('3도 위', [{ steps: 2 }]),
+      voices('3도 + 5도 위', [{ steps: 2 }, { steps: 4 }]),
+      voices('3·5도 + 베이스', [{ steps: 2 }, { steps: 4 }, { semis: -12 }]),
+      voices('풀 합창', [{ steps: 2 }, { steps: 4 }, { semis: -12 }, { semis: 12, gain: 0.45 }]),
+    ],
+  },
+  {
+    // 멜로디 아래 3도·6도 = 병행 6화음(포부르동). 리드가 늘 맨 위라 가사가 묻히지 않는다.
+    id: 'ballad', label: '가요 발라드', short: '발라드',
+    desc: '멜로디를 맨 위에 두고 6도·3도 아래에서 따뜻하게 받쳐요.',
+    presets: [
+      voices('6도 아래', [{ steps: -5 }]),
+      voices('3도 + 6도 아래', [{ steps: -2 }, { steps: -5 }]),
+      voices('3·6도 아래 + 옥타브', [{ steps: -2 }, { steps: -5 }, { semis: -12 }]),
+      voices('+ 3도 위 하이', [{ steps: -2 }, { steps: -5 }, { semis: -12 }, { steps: 2, gain: 0.45 }]),
+    ],
+  },
+  {
+    // 아이돌 후렴처럼 같은 선율을 옥타브로 겹치고 3도를 얹어 꽉 차게
+    id: 'kpop', label: '아이돌 훅', short: '훅',
+    desc: '옥타브로 겹쳐 두껍게, 3도를 얹어 후렴 훅이 꽉 차게.',
+    presets: [
+      voices('옥타브 아래 더블', [{ semis: -12 }]),
+      voices('옥타브 + 3도 위', [{ semis: -12 }, { steps: 2 }]),
+      voices('+ 옥타브 위', [{ semis: -12 }, { steps: 2 }, { semis: 12, gain: 0.55 }]),
+      voices('+ 6도 아래', [{ semis: -12 }, { steps: 2 }, { semis: 12, gain: 0.55 }, { steps: -5 }]),
+    ],
+  },
+  {
+    // 멜로디 바로 아래 2도·4도·6도: 어느 음에서든 6화음·7화음(맨 위 2도 부딪힘)이 된다
+    id: 'gospel', label: '가스펠·재즈', short: '텐션',
+    desc: '2도가 부딪히는 진한 텐션. 멜로디 아래로 6·7·9화음이 빽빽하게.',
+    presets: [
+      voices('3도 아래', [{ steps: -2 }]),
+      voices('2도 + 4도 아래', [{ steps: -1 }, { steps: -3 }]),
+      voices('2·4·6도 아래', [{ steps: -1 }, { steps: -3 }, { steps: -5 }]),
+      voices('+ 옥타브 아래', [{ steps: -1 }, { steps: -3 }, { steps: -5 }, { semis: -12, gain: 0.7 }]),
+    ],
+  },
+  {
+    // 3도 없이 완전5도·옥타브만: 장·단조 구분이 사라진 빈 울림 (파워 코드, 중세 오르가눔)
+    id: 'power', label: '파워 5도', short: '파워',
+    desc: '3도 없이 5도·옥타브만. 락·영화 음악처럼 비고 웅장하게.',
+    presets: [
+      voices('5도 아래', [{ steps: -4, perfect: true }]),
+      voices('5도 + 옥타브 아래', [{ steps: -4, perfect: true }, { semis: -12 }]),
+      voices('+ 옥타브 위', [{ steps: -4, perfect: true }, { semis: -12 }, { semis: 12, gain: 0.5 }]),
+      voices('+ 4도 위', [{ steps: -4, perfect: true }, { semis: -12 }, { semis: 12, gain: 0.5 }, { steps: 3, perfect: true, gain: 0.7 }]),
+    ],
+  },
+  {
+    // 4도 위에 또 4도: 장·단 어느 쪽에도 기대지 않는 모던한 울림 (쿼털 보이싱).
+    // 스케일 안의 4도로 쌓아 키를 벗어나지 않는다 (파↔시 한 곳만 증4도 — 리디안 색깔)
+    id: 'quartal', label: '몽환 4도', short: '4도',
+    desc: '4도로 쌓아 어디에도 기대지 않는 모던한 울림. 시티팝·OST 느낌.',
+    presets: [
+      voices('4도 위', [{ steps: 3 }]),
+      voices('4도 위 + 아래', [{ steps: 3 }, { steps: -3 }]),
+      voices('4도 + 4도 위', [{ steps: 3 }, { steps: -3 }, { steps: 3, on: 0 }]),
+      voices('4도 다섯 겹', [
+        { steps: 3 }, { steps: -3 },
+        { steps: 3, on: 0, gain: 0.7 }, { steps: -3, on: 1, gain: 0.7 },
+      ]),
+    ],
+  },
+  {
+    // 멜로디가 움직여도 으뜸음·딸림음은 그대로: 워십 패드·앰비언트의 지속음
+    id: 'drone', label: '드론', short: '드론',
+    desc: '으뜸음·딸림음을 길게 깔아 몽환적으로. 워십·앰비언트 느낌.',
+    presets: [
+      voices('으뜸음 지속', [{ pedal: 0 }]),
+      voices('으뜸음 + 딸림음', [{ pedal: 0 }, { pedal: 4 }]),
+      voices('+ 낮은 으뜸음', [{ pedal: 0 }, { pedal: 4 }, { pedal: 0, octave: -1 }]),
+      voices('+ 3도 위', [{ pedal: 0 }, { pedal: 4 }, { pedal: 0, octave: -1 }, { steps: 2, gain: 0.5 }]),
+    ],
+  },
+].map((style) => Object.freeze({ ...style, presets: Object.freeze([NONE, ...style.presets]) })));
+
+export const DEFAULT_HARMONY_STYLE = 'classic';
+const STYLE_BY_ID = new Map(HARMONY_STYLES.map((style) => [style.id, style]));
+export const harmonyStyle = (id) => STYLE_BY_ID.get(id) || STYLE_BY_ID.get(DEFAULT_HARMONY_STYLE);
+export const harmonyPreset = (styleId, presetIndex) => harmonyStyle(styleId).presets[presetIndex] || NONE;
+
+// 기존 이름: 정석 3도의 손가락별 구성
+export const PRESETS = harmonyStyle(DEFAULT_HARMONY_STYLE).presets;
 export const MAX_VOICES = 4;
 const VOICE_PAN = [-0.45, 0.45, 0, 0.2];
 // 합창 성부가 들어오는 시차 (ms): 사람마다 숨 쉬고 소리 내는 순간이 조금씩 다르다
@@ -51,13 +143,56 @@ export function fromScaleIndex(index, tonic, scale) {
   return tonic + 12 * oct + scale[index - oct * len];
 }
 
-export function harmonyTargets(midi, presetIndex, tonic, scaleName) {
+// 완전4도·완전5도(반음 5·7개): 파워·4도 성격은 어느 음에서나 같은 빈 울림이어야 한다.
+// 스케일 4·5도는 한 곳(장조의 파↔시)에서 증4도·감5도가 되므로, 완전음정이 키 밖으로 나가면
+// 같은 방향의 다른 완전음정(4도↔5도)으로 바꿔 키 안에 머문다. 예: C장조 파의 5도 아래 시♭ → 4도 아래 도.
+function perfectTarget(from, steps, tonic, scale) {
+  const r = Math.abs(steps) % 7;
+  const size = r === 3 ? 5 : r === 4 ? 7 : null;
+  if (size == null) return null;
+  const sign = Math.sign(steps);
+  const octaves = 12 * Math.floor(Math.abs(steps) / 7);
+  const inKey = (m) => scale.includes((((m - tonic) % 12) + 12) % 12);
+  const pure = from + sign * (size + octaves);
+  if (inKey(pure) || !inKey(from)) return pure;
+  const other = from + sign * (12 - size + octaves);
+  return inKey(other) ? other : pure;
+}
+
+// 지속음: 멜로디 바로 아래(3반음 이상)의 그 음. 이전 자리가 아직 멜로디 아래 한 옥타브 반 안이면 그대로 둔다
+// — 멜로디가 조금 오르내릴 때마다 지속음이 옥타브를 뛰지 않게.
+function pedalTarget(melody, pc, prev) {
+  if (prev != null && prev <= melody && prev >= melody - 17 && ((prev % 12) + 12) % 12 === pc) return prev;
+  return melody - 3 - ((((melody - 3 - pc) % 12) + 12) % 12);
+}
+
+/**
+ * 멜로디 음(실수 MIDI)에 화음 성격·손가락 구성대로 쌓을 음들.
+ * memo: 지속음 자리를 프레임 사이에 기억할 객체 (없으면 매번 새로 고른다).
+ */
+export function harmonyTargets(midi, presetIndex, tonic, scaleName, styleId = DEFAULT_HARMONY_STYLE, memo = null) {
   const scale = SCALES[scaleName] || SCALES.major;
   const snap = snapToScale(midi, tonic, scale);
-  const preset = PRESETS[presetIndex] || PRESETS[0];
-  const targets = preset.voices.map((v) =>
-    v.steps != null ? fromScaleIndex(snap.index + v.steps, tonic, scale) : snap.midi + v.semis,
-  );
+  const preset = harmonyPreset(styleId, presetIndex);
+  const targets = [];
+  preset.voices.forEach((v, i) => {
+    let t;
+    if (v.pedal != null) {
+      const pc = (((tonic + scale[v.pedal % scale.length]) % 12) + 12) % 12;
+      const key = `${styleId}:${v.pedal}`;
+      const base = pedalTarget(snap.midi, pc, memo?.[key]);
+      if (memo && !v.octave) memo[key] = base;
+      t = base + 12 * (v.octave || 0);
+    } else if (v.steps != null) {
+      const chained = v.on != null && targets[v.on] != null;
+      const from = chained ? targets[v.on] : snap.midi;
+      const pure = v.perfect ? perfectTarget(from, v.steps, tonic, scale) : null;
+      t = pure ?? fromScaleIndex((chained ? snapToScale(from, tonic, scale).index : snap.index) + v.steps, tonic, scale);
+    } else {
+      t = snap.midi + v.semis;
+    }
+    targets[i] = t;
+  });
   return { snapped: snap.midi, targets };
 }
 
@@ -491,6 +626,7 @@ export class Harmonizer {
     this.params = {
       engine: 'psola',
       preset: 2,
+      style: DEFAULT_HARMONY_STYLE, // 화음 성격 (HARMONY_STYLES)
       tonic: 0,
       scale: 'major',
       lock: true,
@@ -528,6 +664,7 @@ export class Harmonizer {
     this.targets = [];
     this.snapped = null;
     this.detMidi = null;
+    this.memo = {}; // 드론 지속음 자리
     this.attack = 1 - Math.exp(-1 / (0.006 * sampleRate));
     this.release = 1 - Math.exp(-1 / (0.08 * sampleRate));
     this.voiceSmooth = 1 - Math.exp(-1 / (0.02 * sampleRate));
@@ -539,6 +676,7 @@ export class Harmonizer {
     Object.assign(this.params, p);
     if (this.params.windowMs !== prev.windowMs) this.gran.forEach((g) => g.setWindow(this.params.windowMs));
     if (this.params.engine !== prev.engine) this.psola.forEach((v) => v.reset());
+    if (this.params.style !== prev.style || this.params.tonic !== prev.tonic || this.params.scale !== prev.scale) this.memo = {};
   }
 
   engineLatencyMs() {
@@ -559,7 +697,7 @@ export class Harmonizer {
     const { det, params } = this;
     if (!det.voiced) return;
     const midi = hzToMidi(det.freq);
-    const h = harmonyTargets(midi, params.preset, params.tonic, params.scale);
+    const h = harmonyTargets(midi, params.preset, params.tonic, params.scale, params.style, this.memo);
     this.detMidi = midi;
     this.snapped = h.snapped;
     this.targets = h.targets;
@@ -583,7 +721,7 @@ export class Harmonizer {
     this.analyzer.update();
 
     const { params } = this;
-    const preset = PRESETS[params.preset] || PRESETS[0];
+    const preset = harmonyPreset(params.style, params.preset);
     let power = 0;
     for (let v = 0; v < MAX_VOICES; v++) {
       this.voiceTarget[v] = v < preset.voices.length ? preset.voices[v].gain ?? 1 : 0;

@@ -93,6 +93,86 @@ def test_harmony_diatonic_and_chord_aware(voice):
     assert m == 76 and round(float(np.nanmedian(tr.midi[k - 3:k + 3] + shift[k - 3:k + 3]))) == 72
 
 
+def _track(notes, frame=None):
+    """정답을 아는 음높이 곡선: (MIDI, 초) 목록을 분석 프레임 간격으로."""
+    from band2sheet.vocalfx import ANALYSIS_SR, HOP, PitchTrack
+
+    ft = HOP / ANALYSIS_SR
+    midi = np.concatenate([np.full(int(d / ft), float(m)) for m, d in notes])
+    return PitchTrack(np.arange(len(midi)) * ft, midi)
+
+
+def _sung(track, shift, t):
+    k = int(t / track.frame_t)
+    return round(float(track.midi[k] + shift[k]))
+
+
+def test_harmony_styles_follow_their_character():
+    from band2sheet.vocalfx import HARMONY_STYLES, harmony_shift, harmony_voices, voice_shift
+
+    key = Key.parse("G")
+    # E5·D5·C5·B4 위 C 코드 / D 코드
+    tr = _track([(76, 0.5), (74, 0.5), (72, 0.5), (71, 0.5)])
+    at = [0.25, 0.75, 1.25, 1.75]
+    c_chord = lambda t: {0, 4, 7}  # noqa: E731
+    d_chord = lambda t: {2, 6, 9}  # noqa: E731
+
+    def sung(style, chord_at=None, parts="both"):
+        return [[_sung(tr, voice_shift(tr, key, v, chord_at), t) for t in at] for v in harmony_voices(style, parts)]
+
+    assert set(HARMONY_STYLES) == {"classic", "ballad", "kpop", "gospel", "power", "quartal", "drone"}
+    # 정석 3도는 예전 harmony_shift 와 똑같다
+    for d, part in ((1, "up"), (-1, "down")):
+        (v,) = harmony_voices("classic", part)
+        assert np.allclose(voice_shift(tr, key, v, c_chord), harmony_shift(tr, key, d, c_chord))
+    assert [v["name"] for v in harmony_voices("classic")] == ["up", "down"]
+    # 발라드: 멜로디가 맨 위, C 코드면 E 아래로 C(3도)·G(6도)
+    third, sixth = sung("ballad", c_chord)
+    assert third[0] == 72 and sixth[0] == 67
+    assert all(a < m and b < a for a, b, m in zip(third, sixth, (76, 74, 72, 71)))
+    # 아이돌 훅: 옥타브 아래 더블 + 3도 위 + 옥타브 위
+    below, up, above = sung("kpop", c_chord)
+    assert below == [64, 62, 60, 59] and above == [88, 86, 84, 83] and up[0] == 79
+    # 가스펠·재즈: C 코드면 Cmaj7 (G장조에서 C의 7음은 B), E 아래로 C·B·G 촘촘히
+    assert [v[0] for v in sung("gospel", c_chord)] == [72, 71, 67]
+    # D 코드는 D7 (C#이 아니라 키 안의 C): E 아래로 D·C·A
+    assert [v[0] for v in sung("gospel", d_chord)] == [74, 72, 69]
+    # 파워: 늘 완전4·5도, 키(G장조) 밖의 F 대신 G
+    fifth, octave = sung("power")
+    assert fifth == [69, 67, 67, 64] and octave == [64, 62, 60, 59]
+    # 몽환 4도: 음계 안 4도 위·아래
+    up4, down4 = sung("quartal")
+    assert up4 == [81, 79, 78, 76] and down4 == [71, 69, 67, 66]
+    # 드론: 멜로디가 움직여도 G·D 지속음은 그대로
+    tonic, dominant = sung("drone")
+    assert tonic == [67] * 4 and dominant == [62] * 4
+    with pytest.raises(ValueError):
+        harmony_voices("없는 성격")
+
+
+@pytest.mark.slow
+def test_remix_harmony_style_ballad(tmp_path):
+    from band2sheet.remix import RemixOptions, remix
+    from band2sheet.vocalfx import track_pitch
+
+    wav = tmp_path / "v.wav"
+    sf.write(wav, sing(), SR)
+    opts = RemixOptions(harmony_style="ballad", separate=False, key="G", chords="G | C | D | G")
+    res = remix(wav, tmp_path / "ballad", opts, log=lambda m: None)
+    names = {f.name for f in res.files}
+    assert {"harmony_third_below.wav", "harmony_sixth_below.wav"} <= names and "harmony_up.wav" not in names
+    assert any("가요 발라드" in n for n in res.notes)
+    low, _ = sf.read(tmp_path / "ballad" / "stems" / "harmony_sixth_below.wav")
+    tr = track_pitch(low, SR)
+    got = [pitch_at(tr, c) for m, c in note_centers()]
+    # 발라드 화음은 늘 멜로디보다 아래 (멜로디가 맨 위)
+    assert all(g < m - 2 for g, (m, _) in zip(got, note_centers()) if not np.isnan(g))
+    meta = json.loads((tmp_path / "ballad" / "remix.json").read_text(encoding="utf-8"))
+    assert meta["options"]["harmony_style"] == "ballad"
+    with pytest.raises(ValueError):
+        remix(wav, tmp_path / "bad", RemixOptions(harmony_style="nope", separate=False), log=lambda m: None)
+
+
 def _progression():
     from band2sheet.backing import ChordSpan
 
@@ -294,6 +374,8 @@ def test_app_remix_job(tmp_path):
     assert client.post("/api/remix", files={"file": ("a.zip", b"x")}).status_code == 400
     assert client.post("/api/remix", files={"file": ("a.mp4", data)},
                        data={"options": '{"style": "rock"}'}).status_code == 400
+    assert client.post("/api/remix", files={"file": ("a.mp4", data)},
+                       data={"options": '{"harmony_style": "trot"}'}).status_code == 400
 
     opts = json.dumps({"style": "harmony", "harmony": "up", "autotune": True, "autotune_strength": 0.9,
                        "title": "주일 찬양"})
@@ -309,6 +391,7 @@ def test_app_remix_job(tmp_path):
     res = job["result"]
     assert job["kind"] == "remix" and res["kind"] == "remix" and res["key_short"] == "G"
     assert res["video"].endswith(".mp4") and "v1/stems/harmony_up.wav" in res["files"]
+    assert res["harmony_style"] == "classic" and res["harmony"] == "up"
     assert any("오토튠" in n for n in res["notes"])
     listed = client.get("/api/jobs").json()[0]
     assert listed["kind"] == "remix" and listed["key"] == "G"

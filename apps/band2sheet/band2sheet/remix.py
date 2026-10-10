@@ -28,8 +28,8 @@ from .chords import detect_chords
 from .engines import available
 from .project import Note, TimeMap
 from .theory import Key, detect_key
-from .vocalfx import (ANALYSIS_SR, PitchTrack, add_reverb, autotune_shift, chord_tones, delay,
-                      harmony_shift, pan, psola_shift, track_pitch)
+from .vocalfx import (ANALYSIS_SR, HARMONY_STYLES, PitchTrack, add_reverb, autotune_shift, chord_tones, delay,
+                      harmony_voices, pan, psola_shift, track_pitch, voice_shift)
 
 STYLES = {
     "harmony": "화음 넣기 (기본)",
@@ -57,7 +57,8 @@ Progress = Callable[[float, str], None]
 @dataclass
 class RemixOptions:
     style: str = "harmony"  # STYLES 중 하나
-    harmony: str = "both"  # both | up | down
+    harmony: str = "both"  # both | up | down (정석 3도일 때 위·아래 고르기)
+    harmony_style: str = "classic"  # 화음 성격: vocalfx.HARMONY_STYLES 중 하나
     with_harmony: bool | None = None  # 내 목소리 화음 넣기 (기본: 화음·풀·아카펠라 스타일만)
     autotune: bool = False
     autotune_strength: float = 0.7  # 0~1
@@ -448,6 +449,8 @@ def _validate(opts: RemixOptions) -> None:
         raise ValueError(f"스타일은 {', '.join(STYLES)} 중 하나입니다.")
     if opts.harmony not in ("both", "up", "down"):
         raise ValueError("화음은 both / up / down 중 하나입니다.")
+    if opts.harmony_style not in HARMONY_STYLES:
+        raise ValueError(f"화음 성격은 {', '.join(HARMONY_STYLES)} 중 하나입니다.")
     if opts.beats_per_bar not in (2, 3, 4, 6):
         raise ValueError("박자는 2, 3, 4, 6 박만 지원합니다.")
     if opts.chords:
@@ -520,15 +523,19 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
     with_harmony = opts.with_harmony if opts.with_harmony is not None else opts.style in HARMONY_BY_DEFAULT
     if with_harmony:
         step(0.62, "⑤ 화음 만드는 중")
-        dirs = {"both": (1, -1), "up": (1,), "down": (-1,)}[opts.harmony]
-        for i, d in enumerate(dirs):
-            hs = harmony_shift(track, key, d, chord_at, lead_shift)
+        voices = harmony_voices(opts.harmony_style, opts.harmony)
+        for i, v in enumerate(voices):
+            hs = voice_shift(track, key, v, chord_at, lead_shift)
             h = psola_shift(vocal, SR, track, hs, voiced_only=True, jitter_cents=6.0, seed=i + 1)
-            h = delay(h, SR, 0.022 + 0.009 * i)  # 다른 사람이 함께 부르는 듯한 미세한 시차
-            harmonies.append(pan(h, -0.45 if d > 0 else 0.45))
-            files.append(_write(stems_dir / f"harmony_{'up' if d > 0 else 'down'}.wav", h))
-        note("화음: " + {"both": "3도 위 + 아래", "up": "3도 위", "down": "3도 아래"}[opts.harmony]
-             + " (코드 구성음에 맞춤)")
+            h = delay(h, SR, 0.022 + 0.009 * i) * v.get("gain", 1.0)  # 다른 사람이 함께 부르는 듯한 미세한 시차
+            harmonies.append(pan(h, v["pan"]))
+            files.append(_write(stems_dir / f"harmony_{v['name']}.wav", h))
+        style = HARMONY_STYLES[opts.harmony_style]
+        if opts.harmony_style == "classic":
+            note("화음: " + {"both": "3도 위 + 아래", "up": "3도 위", "down": "3도 아래"}[opts.harmony]
+                 + " (코드 구성음에 맞춤)")
+        else:
+            note(f"화음: {style['label']} — {style['desc']}")
 
     # 6) 새 반주
     orch = None
@@ -567,7 +574,8 @@ def remix(source: Path, out_dir: Path, opts: RemixOptions | None = None, log: Lo
         if backing is not None and keep_backing:
             out = out + backing[:n]
     if harmonies:
-        hbus = sum(_fit(h, n) for h in harmonies) * opts.harmony_level
+        # 성부가 셋 이상이어도 화음 전체 크기는 두 성부(3도 위 + 아래)와 비슷하게
+        hbus = sum(_fit(h, n) for h in harmonies) * opts.harmony_level * min(1.0, np.sqrt(2 / len(harmonies)))
         # 음높이를 옮긴 목소리의 거친 고역(조각 이음 소리)과 아래 화음의 웅웅거림을 살짝 덜어 냄
         from .sound import eq, highpass
 

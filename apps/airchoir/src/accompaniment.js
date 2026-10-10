@@ -5,7 +5,8 @@
 
 const ATTACK = 0.025;
 const RELEASE = 0.08;
-const MAX_SOURCES = 8; // Four held notes plus at most four release tails.
+const MAX_NOTES = 6; // 베이스 + 텐션까지 쌓은 보이싱 (core/voicing.js MAX_CHORD_NOTES)
+const MAX_SOURCES = MAX_NOTES * 2; // Held notes plus at most as many release tails.
 const clampGain = (value) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 
 // 따뜻한 패드 음색: 배음이 1/h^1.6 으로 줄고 3~5배음(모음 '오~' 근처)을 살짝 살린 파형.
@@ -18,7 +19,7 @@ export const PAD_HARMONICS = Array.from({ length: 24 }, (_, i) => {
 export const detuneCents = (note) => ((note * 37) % 9) - 4;
 
 function chordNotes(notes) {
-  if (!Array.isArray(notes) || notes.length < 3 || notes.length > 4) return null;
+  if (!Array.isArray(notes) || notes.length < 3 || notes.length > MAX_NOTES) return null;
   if (!notes.every((note) => Number.isInteger(note) && note >= 0 && note <= 127)) return null;
   const unique = [...new Set(notes)].sort((a, b) => a - b);
   return unique.length >= 3 ? unique : null;

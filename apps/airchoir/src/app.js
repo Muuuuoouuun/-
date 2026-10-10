@@ -1,4 +1,4 @@
-import { PRESETS, NOTE_NAMES, midiName } from '../core/dsp.js';
+import { NOTE_NAMES, midiName, harmonyPreset, harmonyStyle } from '../core/dsp.js';
 import { analyzeHand, GestureTracker, SENSITIVITY, loadSensitivity, saveSensitivity } from './gestures.js';
 import { HandCamera } from './hands.js';
 import { ChoirAudio } from './audio.js';
@@ -490,6 +490,8 @@ function bindControls() {
       audio.mix(orb);
     }
     else if (ENGINE_KEYS[k] && performer.state.product === 'choir') setEngine(ENGINE_KEYS[k]);
+    // H: 화음 성격 바꾸기 (한글 입력 상태에서도 같은 자리 키)
+    else if (e.code === 'KeyH') { e.preventDefault(); performer.cycleStyle(); }
     else if (mode === 'pointer' && performer.legacy && k >= '0' && k <= '5') { pointer.fingers = +k; performer.rearmLegacy(); }
   });
 }
@@ -627,13 +629,25 @@ function renderHud() {
     ? '—'
     : shown.fist
       ? '주먹 · 정지'
-      : `${performer.state.input === 'manual' ? '프리셋' : `${shown.fingers}개`} · ${PRESETS[shown.preset].name}`;
+      : `${performer.state.input === 'manual' ? '프리셋' : `${shown.fingers}개`} · ${harmonyStyle(audio.params.style).short} · ${harmonyPreset(audio.params.style, shown.preset).name}`;
+  renderGuide();
 
   const g = !gesture.present ? 'none' : gesture.fist ? 'fist' : String(Math.min(4, gesture.fingers));
   document.querySelectorAll('#guide li[data-g]').forEach((li) => li.classList.toggle('now', li.dataset.g === g));
 
   if (mode === 'camera' && cam.fps) status('st-cam', `손 인식 ${Math.round(cam.fps)}fps`, 'on');
   renderLoopHud();
+}
+
+// 손동작 안내의 손가락별 화음 이름을 지금 화음 성격에 맞춘다
+let guideStyle = null;
+function renderGuide() {
+  if (guideStyle === audio.params.style) return;
+  guideStyle = audio.params.style;
+  for (let n = 1; n <= 4; n++) {
+    const cell = document.querySelector(`#guide li[data-g="${n}"] span:last-child`);
+    if (cell) cell.textContent = harmonyPreset(guideStyle, n).name;
+  }
 }
 
 function renderLoopHud() {

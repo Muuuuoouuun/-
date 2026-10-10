@@ -343,3 +343,53 @@ test('choir camera loss/fist clears the preset without assigning pinch to a new 
   assert.equal(p.state.armed, false);
   assert.equal(p.state.current.choir, null);
 });
+
+test('화음 성격: 보이싱을 바꾸면 들고 있는 코드를 바로 다시 쌓고, 합창 성격은 엔진에 넘기고, 선택만 저장한다', t => {
+  const { p, events } = setup(t, { input: 'manual' });
+  p.styles = { choir: 'classic', voicing: 'close', smooth: true };
+  const params = [];
+  p.getAudio().setParams = value => params.push(value);
+  p.select({ type: 'chord', value: { root: 0, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+
+  assert.equal(p.setStyle('voicing', 'open'), true);
+  assert.deepEqual(sounds(events).at(-1), ['chord', [36, 43, 52, 60, 67]], '연주 중인 C를 오픈 보이싱으로');
+  assert.equal(p.state.armed, true);
+  assert.match(p.state.status, /C · 오픈 연주 중/);
+  const saved = events.filter(event => event[0] === 'save' && event[1] === 'airchoir.harmony.v1').at(-1);
+  assert.deepEqual(JSON.parse(saved[2]), { choir: 'classic', voicing: 'open', smooth: true });
+
+  assert.equal(p.setStyle('voicing', 'open'), false, '같은 값은 다시 쌓지 않음');
+  assert.equal(p.setStyle('voicing', '없는 성격'), false);
+  assert.equal(p.setStyle('volume', 1), false);
+  assert.equal(p.setStyle('choir', 'ballad'), true);
+  assert.deepEqual(params.at(-1), { style: 'ballad' });
+
+  // H 키: 지금 악기(코드)의 성격을 다음으로
+  assert.equal(p.cycleStyle(), true);
+  assert.equal(p.styles.voicing, 'power');
+  assert.deepEqual(sounds(events).at(-1), ['chord', [36, 43, 48, 55]]);
+
+  // 부드럽게 잇기: 공통음 C를 남기고 F로. 전체 정지 뒤에는 기본 높이에서 새로
+  p.setStyle('voicing', 'close');
+  p.select({ type: 'chord', value: { root: 5, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 53, 57]]);
+  p.stop('all', true);
+  p.select({ type: 'chord', value: { root: 5, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [53, 57, 60]]);
+  assert.equal(p.setStyle('smooth', false), true);
+  p.select({ type: 'chord', value: { root: 0, quality: 'maj' } });
+  assert.deepEqual(sounds(events).at(-1), ['chord', [48, 52, 55]]);
+});
+
+test('화음 성격: 합창에서 H는 합창 쌓기 방식을 바꾸고 설명을 상태 줄에 보여 준다', t => {
+  const { p } = setup(t, { product: 'choir', input: 'hands' });
+  p.styles = { choir: 'drone', voicing: 'close', smooth: true };
+  const params = [];
+  p.getAudio().setParams = value => params.push(value);
+  assert.equal(p.cycleStyle(), true);
+  assert.equal(p.styles.choir, 'classic', '마지막 다음은 처음');
+  assert.deepEqual(params, [{ style: 'classic' }]);
+  assert.match(p.state.status, /정석 3도/);
+  assert.equal(p.styles.voicing, 'close');
+});

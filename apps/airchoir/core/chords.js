@@ -15,6 +15,16 @@ export const QUALITIES = Object.freeze([
   { id: 'm7', label: '마이너 7', intervals: [0, 3, 7, 10] },
   { id: 'dim', label: '디미니시', intervals: [0, 3, 6] },
   { id: 'sus4', label: '서스펜디드 4', intervals: [0, 5, 7] },
+  // 가요·발라드·CCM에서 자주 쓰는 색깔 코드
+  { id: 'add9', label: '애드 9', intervals: [0, 4, 7, 14] },
+  { id: 'sus2', label: '서스펜디드 2', intervals: [0, 2, 7] },
+  { id: '7sus4', label: '7 서스 4', intervals: [0, 5, 7, 10] },
+  { id: '6', label: '식스', intervals: [0, 4, 7, 9] },
+  { id: 'maj9', label: '메이저 9', intervals: [0, 4, 7, 11, 14] },
+  { id: 'm9', label: '마이너 9', intervals: [0, 3, 7, 10, 14] },
+  { id: '9', label: '도미넌트 9', intervals: [0, 4, 7, 10, 14] },
+  { id: 'm7b5', label: '하프 디미니시', intervals: [0, 3, 6, 10] },
+  { id: 'aug', label: '오그먼트', intervals: [0, 4, 8] },
 ].map((quality) => Object.freeze({ ...quality, intervals: Object.freeze(quality.intervals) })));
 
 export const CHOIR_OPTIONS = Object.freeze(
@@ -35,7 +45,10 @@ export const DEFAULT_CONFIG = Object.freeze({
 });
 
 const QUALITY_BY_ID = new Map(QUALITIES.map((quality) => [quality.id, quality]));
-const SUFFIX = { maj: '', min: 'm', '7': '7', maj7: 'maj7', m7: 'm7', dim: 'dim', sus4: 'sus4' };
+const SUFFIX = {
+  maj: '', min: 'm', '7': '7', maj7: 'maj7', m7: 'm7', dim: 'dim', sus4: 'sus4',
+  add9: 'add9', sus2: 'sus2', '7sus4': '7sus4', '6': '6', maj9: 'maj9', m9: 'm9', '9': '9', m7b5: 'm7b5', aug: 'aug',
+};
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const isRoot = (value) => Number.isInteger(value) && value >= 0 && value < ROOTS.length;
 const isQuality = (value) => typeof value === 'string' && QUALITY_BY_ID.has(value);

@@ -27,6 +27,14 @@ ALLOWED_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
 SCORE_OR_STEMS_EXT = {".zip", ".mid", ".midi", ".kar", ".musicxml", ".mxl", ".xml"}  # 곡 나누기 대상 아님
 
 
+def _check_harmony_style(options: dict) -> None:
+    """화음 성격(정석 3도·가요 발라드·…)을 작업을 만들기 전에 확인."""
+    from ..vocalfx import HARMONY_STYLES
+
+    if (options.get("harmony_style") or "classic") not in HARMONY_STYLES:
+        raise ValueError(f"화음 성격은 {' / '.join(HARMONY_STYLES)} 중 하나입니다.")
+
+
 @dataclass
 class Job:
     id: str
@@ -265,6 +273,7 @@ class JobManager(EditMixin, PlaybackMixin):
             raise ValueError(f"영상 또는 음원 파일을 올려 주세요: {ext or '(확장자 없음)'}")
         if options.get("style", "harmony") not in STYLES:
             raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
+        _check_harmony_style(options)
         job_id = uuid.uuid4().hex[:12]
         d = self.job_dir(job_id)
         d.mkdir(parents=True)
@@ -288,6 +297,7 @@ class JobManager(EditMixin, PlaybackMixin):
         num = lambda k: float(o[k]) if o.get(k) not in (None, "") else None  # noqa: E731
         opts = RemixOptions(
             style=o.get("style") or "harmony", harmony=o.get("harmony") or "both",
+            harmony_style=o.get("harmony_style") or "classic",
             autotune=bool(o.get("autotune")),
             autotune_strength=float(min(max(float(o.get("autotune_strength") or 0.7), 0.0), 1.0)),
             hard_tune=bool(o.get("hard_tune")), key=o.get("key") or None,
@@ -315,7 +325,7 @@ class JobManager(EditMixin, PlaybackMixin):
         rel = lambda f: f.relative_to(root).as_posix()  # noqa: E731
         version = {
             "n": n, "style": opts.style, "style_label": STYLES[opts.style], "autotune": opts.autotune,
-            "with_harmony": opts.with_harmony, "key": res.key, "key_short": res.key_short,
+            "with_harmony": opts.with_harmony, "harmony": opts.harmony, "harmony_style": opts.harmony_style, "key": res.key, "key_short": res.key_short,
             "tempo": res.tempo, "beats_per_bar": opts.beats_per_bar, "chord_text": res.chord_text,
             "chords_source": "user" if opts.chords else "auto", "user_key": bool(opts.key),
             "user_bpm": bool(opts.bpm), "notes": res.notes, "reused": res.reused,
@@ -338,6 +348,7 @@ class JobManager(EditMixin, PlaybackMixin):
             raise RuntimeError("후보정 작업이 아닙니다.")
         if options.get("style", job.options.get("style", "harmony")) not in STYLES:
             raise ValueError(f"스타일은 {' / '.join(STYLES)} 중 하나입니다.")
+        _check_harmony_style(options)
         if options.get("chords"):
             parse_chord_text(options["chords"])  # 형식 오류는 바로 알림
         with self.lock:

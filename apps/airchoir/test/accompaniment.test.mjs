@@ -105,8 +105,15 @@ test('rapid chord changes keep both held notes and release tails bounded', () =>
   for (let i = 0; i < 100; i++) {
     const root = 36 + i % 24;
     synth.setChord([root, root + 4, root + 7, root + 10]);
-    assert.ok(openSources(ctx).length <= 8);
+    assert.ok(openSources(ctx).length <= 12);
     assert.equal(synth.count, 4);
+  }
+  // 베이스 + 텐션 보이싱(6음)도 꼬리가 쌓이지 않는다
+  for (let i = 0; i < 100; i++) {
+    const root = 36 + i % 12;
+    synth.setChord([root, root + 16, root + 19, root + 23, root + 26, root + 31]);
+    assert.ok(openSources(ctx).length <= 12);
+    assert.equal(synth.count, 6);
   }
   synth.release();
   ctx.advance(0.2);
@@ -155,7 +162,7 @@ test('replaying a released chord survives late onended callbacks from its old vo
 test('invalid chords release the previous sound instead of leaving a stale chord held', () => {
   const ctx = new Context();
   const synth = new Accompaniment(ctx);
-  for (const invalid of [null, [], [60, 64], [60, 64, NaN], [60, 64, 67.5], [-1, 60, 64], [60, 64, 128], [60, 60, 64], [60, 64, 67, 70, 74]]) {
+  for (const invalid of [null, [], [60, 64], [60, 64, NaN], [60, 64, 67.5], [-1, 60, 64], [60, 64, 128], [60, 60, 64], [36, 48, 52, 55, 59, 62, 67]]) {
     synth.setChord([60, 64, 67]);
     assert.equal(synth.setChord(invalid), false);
     assert.equal(synth.count, 0);

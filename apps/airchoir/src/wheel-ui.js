@@ -1,4 +1,5 @@
 import { ROOTS, QUALITIES, CHOIR_OPTIONS, DEFAULT_CONFIG, cloneConfig, validateConfig, chordKey, chordLabel } from '../core/chords.js';
+import { DEFAULT_STYLES, STYLE_LISTS, styleInfo } from '../core/styles.js';
 
 const GROUPS = { chords: '한 손 코드', roots: '두 손 · 근음', qualities: '두 손 · 코드 종류', choir: '합창 프리셋' };
 const OPTIONS = { roots: ROOTS, qualities: QUALITIES, choir: CHOIR_OPTIONS };
@@ -67,14 +68,14 @@ function ring(count, labels = null) {
 /** UI only: audio ownership, latching and persistence belong to the app callbacks. */
 export class WheelUI {
   constructor({ host = document.getElementById('performance-controls'), stageHost = document.getElementById('performance-wheels'), config = DEFAULT_CONFIG,
-    sensitivity = 'normal', sensitivities = [], ...callbacks } = {}) {
+    styles = DEFAULT_STYLES, sensitivity = 'normal', sensitivities = [], ...callbacks } = {}) {
     this.host = host;
     this.sensitivity = sensitivity;
     this.sensitivities = sensitivities;
     this.stageHost = stageHost;
     this.callbacks = callbacks;
     this.config = cloneConfig(config);
-    this.state = { product: 'choir', hands: 'one', input: 'hands', ready: false, cameraAvailable: false, armed: false, current: {} };
+    this.state = { product: 'choir', hands: 'one', input: 'hands', ready: false, cameraAvailable: false, armed: false, current: {}, styles: { ...styles } };
     this.signature = '';
     this.choices = [];
     this.panels = [];
@@ -90,6 +91,10 @@ export class WheelUI {
       if (e.key === 'Escape') {
         e.preventDefault();
         this.call('onStop');
+      } else if (e.code === 'KeyH' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // 휠 버튼에 초점이 있어도 H로 화음 성격을 넘긴다 (페이지 단축키는 여기까지 오지 않음)
+        e.preventDefault();
+        this.call('onCycleStyle');
       }
     }, { signal: this.events.signal });
     this.stageHost.addEventListener('pointerleave', () => this.call('onPointerLeave'), { signal: this.events.signal });
@@ -133,16 +138,48 @@ export class WheelUI {
     this.modeStatus.id = 'performance-mode-status';
     this.modeStatus.setAttribute('role', 'status');
     this.modeStatus.setAttribute('aria-live', 'polite');
+    // 화음 성격: 합창이면 쌓는 방식, 코드 악기면 보이싱. 목록은 악기가 바뀔 때 다시 채운다.
+    const style = field('화음 성격', 'performance-style', []);
+    style.wrap.classList.add('performance-style');
+    this.style = style.select;
+    this.styleKind = null;
+    this.styleHint = node('span', 'performance-style-hint');
+    this.styleHint.id = 'performance-style-hint';
+    this.style.setAttribute('aria-describedby', this.styleHint.id);
+    this.style.setAttribute('aria-keyshortcuts', 'H');
+    this.smoothWrap = node('label', 'check performance-smooth');
+    this.smooth = node('input');
+    this.smooth.type = 'checkbox';
+    this.smooth.id = 'performance-smooth';
+    this.smoothWrap.append(this.smooth, document.createTextNode('부드럽게 잇기'));
+    this.smoothWrap.title = '앞 코드와 겹치는 음은 그대로 두고 가장 가깝게 움직여요 (성부 진행).';
     const fields = node('div', 'performance-fields');
-    fields.append(product.wrap, hands.wrap, input.wrap);
+    fields.append(product.wrap, hands.wrap, input.wrap, style.wrap, this.smoothWrap);
     const actions = node('div', 'performance-actions');
     actions.append(settings, stop);
     const info = node('div', 'performance-info');
-    info.append(this.handsHint, this.inputHint, this.modeStatus);
+    info.append(this.handsHint, this.inputHint, this.styleHint, this.modeStatus);
     this.host.replaceChildren(fields, actions, info);
     this.product.addEventListener('change', () => this.call('onProduct', this.product.value));
     this.hands.addEventListener('change', () => this.call('onHands', this.hands.value));
     this.input.addEventListener('change', () => this.call('onInput', this.input.value));
+    this.style.addEventListener('change', () => this.call('onStyle', this.styleKind, this.style.value));
+    this.smooth.addEventListener('change', () => this.call('onStyle', 'smooth', this.smooth.checked));
+  }
+
+  renderStyle(product, styles) {
+    const kind = product === 'choir' ? 'choir' : 'voicing';
+    if (this.styleKind !== kind) {
+      this.styleKind = kind;
+      this.style.replaceChildren(...STYLE_LISTS[kind].map((item) => option(item.id, item.label)));
+      this.style.setAttribute('aria-label', kind === 'choir' ? '화음 성격: 목소리를 쌓는 방식' : '화음 성격: 코드 보이싱');
+    }
+    const info = styleInfo(kind, styles[kind]);
+    this.style.value = info.id;
+    const hint = `${info.label} · ${info.desc}`;
+    if (this.styleHint.textContent !== hint) this.styleHint.textContent = hint;
+    this.smoothWrap.hidden = kind !== 'voicing';
+    this.smooth.checked = styles.smooth !== false;
   }
 
   render(next = {}) {
@@ -150,6 +187,7 @@ export class WheelUI {
     if (next.config) this.config = cloneConfig(next.config);
     const { product, hands, input, ready, cameraAvailable, armed, current, status } = this.state;
     this.product.value = product;
+    this.renderStyle(product, this.state.styles || DEFAULT_STYLES);
     this.hands.value = product === 'choir' ? 'one' : hands;
     this.hands.querySelector('option[value="two"]').disabled = product === 'choir';
     this.input.value = input;
@@ -418,7 +456,7 @@ export class WheelUI {
   renderEditor(focus = null) {
     const group = this.groupSelect.value;
     const items = this.draft[group];
-    const maximum = group === 'choir' ? CHOIR_OPTIONS.length : group === 'qualities' ? QUALITIES.length : 12;
+    const maximum = group === 'choir' ? CHOIR_OPTIONS.length : group === 'qualities' ? Math.min(12, QUALITIES.length) : 12;
     this.groupCount.textContent = `${items.length} / ${maximum}개`;
     this.list.replaceChildren();
     items.forEach((value, index) => {

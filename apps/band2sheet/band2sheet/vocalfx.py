@@ -132,30 +132,159 @@ def autotune_shift(track: PitchTrack, key: Key, strength: float = 0.7, hard: boo
 
 def harmony_shift(track: PitchTrack, key: Key, direction: int, chord_at=None,
                   lead_shift: np.ndarray | None = None) -> np.ndarray:
-    """화음 성부의 이동량(반음, 프레임별). direction=+1 위, -1 아래.
+    """정석 3도 화음 성부의 이동량(반음, 프레임별). direction=+1 위, -1 아래.
 
     가능하면 그 시각 코드의 구성음 중 3~9 반음 떨어진 가장 가까운 음을 고르고,
     코드를 모르면 음계 위 3도(위/아래)를 쓴다. 화음 성부는 항상 음계음에 맞춘다(오토튠 여부와 무관).
     """
+    voice = harmony_voices("classic", "up" if direction > 0 else "down")[0]
+    return voice_shift(track, key, voice, chord_at, lead_shift)
+
+
+# ---------------------------------------------------------------------------
+# 화음 성격: 같은 멜로디라도 어떤 음을 쌓을지 (AirChoir core/dsp.js 의 HARMONY_STYLES 와 같은 이름·생각).
+# 영상 후보정은 코드를 알고 있으므로 가능한 한 그 시각 코드의 구성음에 맞춘다.
+#
+# 성부 하나는 아래 중 하나:
+#   chord=(가까운, 먼): 멜로디에서 그 반음 범위(+위, -아래) 안의 가장 가까운 코드 구성음. 없으면 steps(음계 칸)
+#   steps=n: 음계 위 n칸 (2 = 3도, -5 = 6도 아래)
+#   semis=n: 반음 n개 고정 (-12 = 옥타브 아래)
+#   perfect=n: 완전4도(±3)·완전5도(±4). 키 밖으로 나가면 같은 방향의 다른 완전음정으로
+#   close=k: 멜로디 바로 아래 k번째 '색깔 음'(코드 구성음 + 7음). 가스펠·재즈 4성 밀집 화음
+#   pedal=d: 음계 d번째 음(0 = 으뜸음, 4 = 딸림음)을 멜로디 아래에 길게. octave 로 옥타브 이동
+# ---------------------------------------------------------------------------
+
+HARMONY_STYLES: dict[str, dict] = {
+    "classic": {
+        "label": "정석 3도", "desc": "3도 위 + 아래 (코드 구성음에 맞춤)",
+        "voices": [{"chord": (3, 9), "steps": 2, "pan": -0.45, "name": "up"},
+                   {"chord": (-3, -9), "steps": -2, "pan": 0.45, "name": "down"}],
+    },
+    "ballad": {
+        "label": "가요 발라드", "desc": "멜로디는 맨 위, 3도·6도 아래에서 따뜻하게",
+        "voices": [{"chord": (-3, -5), "steps": -2, "pan": -0.4, "name": "third_below"},
+                   {"chord": (-7, -10), "steps": -5, "pan": 0.4, "name": "sixth_below", "gain": 0.85}],
+    },
+    "kpop": {
+        "label": "아이돌 훅", "desc": "옥타브로 겹쳐 두껍게 + 3도 위",
+        "voices": [{"semis": -12, "pan": 0.15, "name": "octave_below", "gain": 0.8},
+                   {"chord": (3, 9), "steps": 2, "pan": -0.45, "name": "third_up"},
+                   {"semis": 12, "pan": 0.45, "name": "octave_up", "gain": 0.45}],
+    },
+    "gospel": {
+        "label": "가스펠·재즈", "desc": "멜로디 아래로 7화음을 촘촘히 (2도가 부딪히는 텐션)",
+        "voices": [{"close": 1, "steps": -1, "pan": -0.4, "name": "close1"},
+                   {"close": 2, "steps": -3, "pan": 0.4, "name": "close2"},
+                   {"close": 3, "steps": -5, "pan": 0.0, "name": "close3", "gain": 0.85}],
+    },
+    "power": {
+        "label": "파워 5도", "desc": "3도 없이 5도·옥타브 (락·영화 음악처럼 웅장하게)",
+        "voices": [{"perfect": -4, "pan": -0.35, "name": "fifth_below"},
+                   {"semis": -12, "pan": 0.35, "name": "octave_below", "gain": 0.85}],
+    },
+    "quartal": {
+        "label": "몽환 4도", "desc": "4도 위·아래로 쌓은 모던한 울림",
+        "voices": [{"steps": 3, "pan": -0.45, "name": "fourth_up"},
+                   {"steps": -3, "pan": 0.45, "name": "fourth_below"}],
+    },
+    "drone": {
+        "label": "드론", "desc": "으뜸음·딸림음을 길게 깔아 몽환적으로 (워십·앰비언트)",
+        "voices": [{"pedal": 0, "pan": -0.3, "name": "tonic", "gain": 0.8},
+                   {"pedal": 4, "pan": 0.3, "name": "fifth", "gain": 0.7}],
+    },
+}
+# 정석 3도의 화음 성부 선택 (위 + 아래 / 위만 / 아래만)
+CLASSIC_PARTS = {"both": ("up", "down"), "up": ("up",), "down": ("down",)}
+
+
+def harmony_voices(style: str = "classic", parts: str = "both") -> list[dict]:
+    """화음 성격의 성부 목록. 정석 3도만 parts(both/up/down)로 위·아래를 고른다."""
+    if style not in HARMONY_STYLES:
+        raise ValueError(f"화음 성격은 {', '.join(HARMONY_STYLES)} 중 하나입니다.")
+    voices = HARMONY_STYLES[style]["voices"]
+    if style == "classic":
+        keep = CLASSIC_PARTS.get(parts, CLASSIC_PARTS["both"])
+        voices = [v for v in voices if v["name"] in keep]
+    return [dict(v) for v in voices]
+
+
+def _chord_root(tones: set[int]) -> int | None:
+    """코드 구성음 집합의 근음 (3도 + 5도가 있는 음)."""
+    for r in sorted(tones):
+        if ((r + 3) % 12 in tones or (r + 4) % 12 in tones) and any((r + f) % 12 in tones for f in (6, 7, 8)):
+            return r
+    return None
+
+
+def _color_tones(tones: set[int], pcs: list[int]) -> set[int]:
+    """코드 구성음 + 그 코드의 7음(음계 안의 장7도 또는 단7도). 가스펠·재즈 밀집 화음의 재료."""
+    root = _chord_root(tones)
+    if root is None or len(tones) >= 4:
+        return set(tones)
+    seventh = (root + 11) % 12 if (root + 11) % 12 in pcs else (root + 10) % 12
+    return set(tones) | {seventh}
+
+
+def _perfect(note: int, steps: int, pcs: list[int]) -> int:
+    size = 5 if abs(steps) % 7 == 3 else 7
+    sign = 1 if steps > 0 else -1
+    pure = note + sign * size
+    if pure % 12 in pcs or note % 12 not in pcs:
+        return pure
+    other = note + sign * (12 - size)
+    return other if other % 12 in pcs else pure
+
+
+def _pedal(note: int, pc: int, prev: int | None) -> int:
+    """멜로디 아래 지속음. 앞 자리가 아직 멜로디 아래 한 옥타브 반 안이면 그대로 (옥타브를 자주 뛰지 않게)."""
+    if prev is not None and note - 17 <= prev <= note:
+        return prev
+    return note - 3 - ((note - 3 - pc) % 12)
+
+
+def _voice_note(q: int, voice: dict, tones: set[int] | None, pcs: list[int]) -> int:
+    if "semis" in voice:
+        return q + voice["semis"]
+    if "perfect" in voice:
+        return _perfect(q, voice["perfect"], pcs)
+    if tones and "chord" in voice:
+        near, far = voice["chord"]
+        step = 1 if far > near else -1
+        for p in range(q + near, q + far + step, step):
+            if p % 12 in tones:
+                return p
+    if tones and "close" in voice:
+        color = _color_tones(tones, pcs)
+        below = [p for p in range(q - 1, q - 15, -1) if p % 12 in color]
+        if len(below) >= voice["close"]:
+            return below[voice["close"] - 1]
+    return scale_step(q, voice.get("steps", 0), pcs)
+
+
+def voice_shift(track: PitchTrack, key: Key, voice: dict, chord_at=None,
+                lead_shift: np.ndarray | None = None) -> np.ndarray:
+    """화음 성격의 성부 하나의 이동량(반음, 프레임별). 화음 음은 늘 음계·코드에 맞추고, 부른 비브라토는 그대로 따라간다."""
     pcs = scale_pcs(key)
     ref = _reference(track)
     melody = nearest_in_scale(ref + (lead_shift if lead_shift is not None else 0.0), pcs)
     out = np.zeros(len(ref))
     cache: dict[tuple, int] = {}
+    held = None
+    if "pedal" in voice:
+        steps = MAJOR_SCALE if key.mode == "major" else MINOR_SCALE[:7]
+        pedal_pc = (key.tonic + steps[voice["pedal"] % 7]) % 12
     for i in np.flatnonzero(~np.isnan(melody)):
         q = int(melody[i])
-        tones = chord_at(track.times[i]) if chord_at else None
-        k = (q, tuple(sorted(tones)) if tones else None)
-        if k not in cache:
-            h = None
-            if tones:
-                rng = range(q + 3, q + 10) if direction > 0 else range(q - 3, q - 10, -1)
-                h = next((p for p in rng if p % 12 in tones), None)
-            if h is None:
-                h = scale_step(q, 2 * direction, pcs)
-            cache[k] = h
-        # 실제 부른 음(비브라토 포함) -> 화음 음 + 같은 비브라토
-        out[i] = cache[k] - ref[i]
+        if "pedal" in voice:
+            held = _pedal(q, pedal_pc, held)
+            h = held + 12 * voice.get("octave", 0)
+        else:
+            tones = chord_at(track.times[i]) if chord_at else None
+            k = (q, tuple(sorted(tones)) if tones else None)
+            if k not in cache:
+                cache[k] = _voice_note(q, voice, tones, pcs)
+            h = cache[k]
+        out[i] = h - ref[i]
     return out
 
 

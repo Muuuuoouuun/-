@@ -1195,6 +1195,9 @@ button.all-stop:hover:not(:disabled) { background:#54332a; border-color:var(--ba
   padding-top:9px;
 }
 .performance-hint { color:var(--voice); }
+.performance-style-hint { color:var(--fg); opacity:.82; }
+.performance-smooth { min-height:34px; white-space:nowrap; }
+.performance-smooth[hidden] { display:none; }
 .performance-mode-status { min-width:0; }
 .performance-wheels {
   position:absolute;
